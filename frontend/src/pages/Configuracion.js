@@ -1,3 +1,4 @@
+// v2.1
 import React, { useState, useEffect } from 'react';
 import { obtenerConfig, guardarConfig, gmailAuthUrl, gmailSync, gmailDisconnect, reiniciarCron } from '../services/api';
 
