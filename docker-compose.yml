@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: dian_facturas
+      POSTGRES_USER: dian_user
+      POSTGRES_PASSWORD: dian_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://dian_user:dian_pass@postgres:5432/dian_facturas
+      JWT_SECRET: local_dev_secret_cambiame
+      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID}
+      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET}
+      GMAIL_REDIRECT_URI: http://localhost:3001/api/gmail/callback
+      GMAIL_USER: ${GMAIL_USER}
+      FRONTEND_URL: http://localhost:3000
+      NODE_ENV: development
+    depends_on:
+      - postgres
+    volumes:
+      - ./backend/uploads:/app/uploads
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    environment:
+      REACT_APP_API_URL: http://localhost:3001/api
+    depends_on:
+      - backend
+
+volumes:
+  pg_data:
