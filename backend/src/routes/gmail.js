@@ -39,10 +39,11 @@ router.get('/callback', async (req, res) => {
   }
 });
 
-// Sincronizar manualmente
+// Sincronizar manualmente (con filtro de fechas opcional)
 router.post('/sync', authMiddleware, async (req, res) => {
   try {
-    const result = await sincronizarCorreos();
+    const { desde, hasta } = req.body || {};
+    const result = await sincronizarCorreos(desde || null, hasta || null);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });

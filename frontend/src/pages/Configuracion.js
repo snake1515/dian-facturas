@@ -8,6 +8,12 @@ export default function Configuracion() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncDesde, setSyncDesde] = useState('');
+  const [syncHasta, setSyncHasta] = useState('');
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncDesde, setSyncDesde] = useState('');
+  const [syncHasta, setSyncHasta] = useState('');
+  const [syncResult, setSyncResult] = useState(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -64,11 +70,15 @@ export default function Configuracion() {
     }
   };
 
-  const sincronizarAhora = async () => {
+  const sincronizarAhora = async (desde, hasta) => {
     setSyncing(true);
+    setSyncResult(null);
     try {
-      const res = await gmailSync();
-      alert(`✅ Sincronización completa. ${res.data.nuevas || 0} facturas nuevas importadas.`);
+      const body = {};
+      if (desde) body.desde = desde;
+      if (hasta) body.hasta = hasta;
+      const res = await gmailSync(body);
+      setSyncResult(res.data.nuevas || 0);
       await cargar();
     } catch (err) {
       alert('Error: ' + (err.response?.data?.error || err.message));
@@ -123,9 +133,35 @@ export default function Configuracion() {
                 📧 {cfg.gmail_connected === 'true' ? 'Reconectar Gmail' : 'Vincular cuenta Gmail'}
               </button>
               {cfg.gmail_connected === 'true' && (
-                <button style={btnGhost} onClick={sincronizarAhora} disabled={syncing}>
+                <button style={btnGhost} onClick={() => sincronizarAhora(syncDesde, syncHasta)} disabled={syncing}>
                   {syncing ? '⟳ Sincronizando...' : '⟳ Sincronizar ahora'}
                 </button>
+              </div>
+              <div style={{ background: '#0f1117', border: '1px solid #2a3348', borderRadius: 8, padding: 14, marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>📅 Importar por rango de fechas</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 140 }}>
+                    <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Desde</label>
+                    <input style={inputSt} type="date" value={syncDesde} onChange={e => setSyncDesde(e.target.value)} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 140 }}>
+                    <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Hasta</label>
+                    <input style={inputSt} type="date" value={syncHasta} onChange={e => setSyncHasta(e.target.value)} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <button style={btnPrimary} onClick={() => sincronizarAhora(syncDesde, syncHasta)} disabled={syncing}>
+                    {syncing ? 'Importando...' : 'Importar rango'}
+                  </button>
+                  <button style={btnGhost} onClick={() => { setSyncDesde(''); setSyncHasta(''); sincronizarAhora(null, null); }} disabled={syncing}>
+                    Importar todo
+                  </button>
+                  {syncResult !== null && !syncing && (
+                    <span style={{ fontSize: 12, color: '#4ade80' }}>Listo: {syncResult} facturas importadas</span>
+                  )}
+                </div>
+              </div>
+              <div style={{ display: 'none' }}>
               )}
             </div>
 

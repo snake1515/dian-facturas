@@ -41,8 +41,8 @@ const getAuthenticatedClient = async () => {
   return oauth2Client;
 };
 
-const sincronizarCorreos = async () => {
-  console.log('🔄 Iniciando sincronización de Gmail...');
+const sincronizarCorreos = async (desde = null, hasta = null) => {
+  console.log(`🔄 Iniciando sincronización de Gmail${desde ? ` desde ${desde} hasta ${hasta}` : ' (todo)'}...`);
   try {
     const auth = await getAuthenticatedClient();
     const gmail = google.gmail({ version: 'v1', auth });
@@ -51,16 +51,39 @@ const sincronizarCorreos = async () => {
       "SELECT valor FROM configuracion WHERE clave = 'palabras_clave'"
     );
     const palabras = (cfgRes.rows[0]?.valor || 'RV:,factura electronica,DIAN').split(',').map(p => p.trim());
-    const query = palabras.map(p => `subject:"${p}"`).join(' OR ');
+    let query = palabras.map(p => `subject:"${p}"`).join(' OR ');
+    query = `(${query}) has:attachment`;
 
-    const listRes = await gmail.users.messages.list({
-      userId: 'me',
-      q: `(${query}) has:attachment`,
-      maxResults: 50,
-    });
+    // Filtro por fechas en formato Gmail (after:YYYY/MM/DD before:YYYY/MM/DD)
+    if (desde) {
+      const d = new Date(desde);
+      query += ` after:${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
+    }
+    if (hasta) {
+      const h = new Date(hasta);
+      // Sumar un dia para incluir el dia hasta
+      h.setDate(h.getDate() + 1);
+      query += ` before:${h.getFullYear()}/${String(h.getMonth()+1).padStart(2,'0')}/${String(h.getDate()).padStart(2,'0')}`;
+    }
 
-    const messages = listRes.data.messages || [];
-    console.log(`📬 Encontrados ${messages.length} correos para revisar`);
+    console.log(`🔍 Query Gmail: ${query}`);
+
+    // Paginar para traer todos los correos del rango
+    let messages = [];
+    let pageToken = null;
+    do {
+      const listRes = await gmail.users.messages.list({
+        userId: 'me',
+        q: query,
+        maxResults: 500,
+        ...(pageToken ? { pageToken } : {}),
+      });
+      const batch = listRes.data.messages || [];
+      messages = messages.concat(batch);
+      pageToken = listRes.data.nextPageToken || null;
+      console.log(`📬 Página: ${batch.length} correos, total acumulado: ${messages.length}`);
+    } while (pageToken);
+    console.log(`📬 Total correos a revisar: ${messages.length}`);
 
     let nuevas = 0;
     for (const msg of messages) {

@@ -42,7 +42,7 @@ export const urlXML = (id) => `${api.defaults.baseURL}/facturas/${id}/xml`;
 // Gmail
 export const gmailStatus = () => api.get('/gmail/status');
 export const gmailAuthUrl = () => api.get('/gmail/auth-url');
-export const gmailSync = () => api.post('/gmail/sync');
+export const gmailSync = (data) => api.post('/gmail/sync', data || {});
 export const gmailDisconnect = () => api.delete('/gmail/disconnect');
 
 // Configuración
