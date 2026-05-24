@@ -1,6 +1,7 @@
 const { google } = require('googleapis');
 const path = require('path');
 const fs = require('fs');
+const AdmZip = require('adm-zip');
 const { pool } = require('../models/db');
 const { parsearXMLDIAN } = require('./xmlParser');
 
@@ -31,8 +32,7 @@ const exchangeCodeForTokens = async (code) => {
 };
 
 const getAuthenticatedClient = async () => {
-  const { pool: db } = require('../models/db');
-  const res = await db.query(
+  const res = await pool.query(
     "SELECT valor FROM configuracion WHERE clave = 'gmail_refresh_token'"
   );
   const refreshToken = res.rows[0]?.valor;
@@ -49,14 +49,12 @@ const sincronizarCorreos = async () => {
     const auth = await getAuthenticatedClient();
     const gmail = google.gmail({ version: 'v1', auth });
 
-    // Obtener palabras clave configuradas
     const cfgRes = await pool.query(
       "SELECT valor FROM configuracion WHERE clave = 'palabras_clave'"
     );
-    const palabras = (cfgRes.rows[0]?.valor || 'factura electrónica,DIAN').split(',').map(p => p.trim());
+    const palabras = (cfgRes.rows[0]?.valor || 'RV:,factura electronica,DIAN').split(',').map(p => p.trim());
     const query = palabras.map(p => `subject:"${p}"`).join(' OR ');
 
-    // Buscar correos con adjuntos no procesados aún
     const listRes = await gmail.users.messages.list({
       userId: 'me',
       q: `(${query}) has:attachment`,
@@ -69,10 +67,10 @@ const sincronizarCorreos = async () => {
     let nuevas = 0;
     for (const msg of messages) {
       try {
-        await procesarMensaje(gmail, msg.id);
-        nuevas++;
+        const resultado = await procesarMensaje(gmail, msg.id);
+        if (resultado) nuevas++;
       } catch (err) {
-        if (!err.message?.includes('duplicate')) {
+        if (!err.message?.includes('duplicate') && !err.message?.includes('ya procesado')) {
           console.error(`❌ Error procesando mensaje ${msg.id}:`, err.message);
         }
       }
@@ -80,7 +78,6 @@ const sincronizarCorreos = async () => {
 
     console.log(`✅ Sincronización completa. ${nuevas} facturas nuevas procesadas.`);
 
-    // Actualizar timestamp
     await pool.query(
       "INSERT INTO configuracion (clave, valor) VALUES ('last_sync', $1) ON CONFLICT (clave) DO UPDATE SET valor = $1",
       [new Date().toISOString()]
@@ -94,12 +91,13 @@ const sincronizarCorreos = async () => {
 };
 
 const procesarMensaje = async (gmail, messageId) => {
-  // Verificar si ya fue procesado
   const existe = await pool.query(
     'SELECT id FROM facturas WHERE gmail_message_id = $1',
     [messageId]
   );
-  if (existe.rows.length > 0) return;
+  if (existe.rows.length > 0) {
+    throw new Error('ya procesado');
+  }
 
   const msgRes = await gmail.users.messages.get({
     userId: 'me',
@@ -111,41 +109,76 @@ const procesarMensaje = async (gmail, messageId) => {
   const parts = obtenerPartes(msg.payload);
 
   let xmlContent = null;
-  let pdfPath = null;
-  let xmlPath = null;
+  let pdfBuffer = null;
+  let pdfFilename = null;
+  let xmlFilename = null;
 
   const uploadDir = path.join(__dirname, '../../uploads');
   if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
   for (const part of parts) {
-    const filename = part.filename || '';
+    const filename = (part.filename || '').toLowerCase();
     const mimeType = part.mimeType || '';
 
-    if (part.body?.attachmentId) {
-      const attRes = await gmail.users.messages.attachments.get({
-        userId: 'me',
-        messageId,
-        id: part.body.attachmentId,
-      });
+    if (!part.body?.attachmentId) continue;
 
-      const data = Buffer.from(attRes.data.data, 'base64');
+    const attRes = await gmail.users.messages.attachments.get({
+      userId: 'me',
+      messageId,
+      id: part.body.attachmentId,
+    });
 
-      if (filename.toLowerCase().endsWith('.xml') || mimeType.includes('xml')) {
-        xmlContent = data.toString('utf-8');
-        xmlPath = path.join(uploadDir, `${messageId}_${filename}`);
-        fs.writeFileSync(xmlPath, data);
+    const data = Buffer.from(attRes.data.data, 'base64');
+
+    // Manejar ZIP — descomprimir y buscar XML y PDF adentro
+    if (filename.endsWith('.zip') || mimeType.includes('zip')) {
+      console.log(`📦 Descomprimiendo ZIP: ${part.filename}`);
+      try {
+        const zip = new AdmZip(data);
+        const entries = zip.getEntries();
+
+        for (const entry of entries) {
+          const entryName = entry.entryName.toLowerCase();
+          const entryData = entry.getData();
+
+          if (entryName.endsWith('.xml')) {
+            xmlContent = entryData.toString('utf-8');
+            xmlFilename = `${messageId}_${entry.entryName}`;
+            fs.writeFileSync(path.join(uploadDir, xmlFilename), entryData);
+            console.log(`📄 XML encontrado en ZIP: ${entry.entryName}`);
+          }
+
+          if (entryName.endsWith('.pdf')) {
+            pdfBuffer = entryData;
+            pdfFilename = `${messageId}_${entry.entryName}`;
+            fs.writeFileSync(path.join(uploadDir, pdfFilename), entryData);
+            console.log(`📄 PDF encontrado en ZIP: ${entry.entryName}`);
+          }
+        }
+      } catch (zipErr) {
+        console.error(`❌ Error descomprimiendo ZIP:`, zipErr.message);
       }
+      continue;
+    }
 
-      if (filename.toLowerCase().endsWith('.pdf') || mimeType.includes('pdf')) {
-        pdfPath = path.join(uploadDir, `${messageId}_${filename}`);
-        fs.writeFileSync(pdfPath, data);
-      }
+    // Adjuntos directos XML
+    if (filename.endsWith('.xml') || mimeType.includes('xml')) {
+      xmlContent = data.toString('utf-8');
+      xmlFilename = `${messageId}_${part.filename}`;
+      fs.writeFileSync(path.join(uploadDir, xmlFilename), data);
+    }
+
+    // Adjuntos directos PDF
+    if (filename.endsWith('.pdf') || mimeType.includes('pdf')) {
+      pdfBuffer = data;
+      pdfFilename = `${messageId}_${part.filename}`;
+      fs.writeFileSync(path.join(uploadDir, pdfFilename), data);
     }
   }
 
   if (!xmlContent) {
-    console.log(`⚠️ Mensaje ${messageId} sin XML DIAN válido, omitiendo`);
-    return;
+    console.log(`⚠️ Mensaje ${messageId} sin XML DIAN válido (ni directo ni en ZIP), omitiendo`);
+    return false;
   }
 
   // Parsear XML DIAN
@@ -164,15 +197,14 @@ const procesarMensaje = async (gmail, messageId) => {
       datos.fechaEmision, datos.fechaVence,
       datos.subtotal, datos.iva, datos.total,
       messageId,
-      pdfPath ? path.basename(pdfPath) : null,
-      xmlPath ? path.basename(xmlPath) : null,
+      pdfFilename || null,
+      xmlFilename || null,
       xmlContent,
     ]
   );
 
   const facturaId = facturaRes.rows[0].id;
 
-  // Insertar productos
   for (const prod of datos.productos) {
     await pool.query(
       `INSERT INTO productos_factura (factura_id, codigo, descripcion, cantidad, precio_unitario, total)
@@ -182,6 +214,7 @@ const procesarMensaje = async (gmail, messageId) => {
   }
 
   console.log(`✅ Factura ${datos.numero} (${datos.tipo}) de ${datos.proveedorNombre} guardada`);
+  return true;
 };
 
 const obtenerPartes = (payload, partes = []) => {
