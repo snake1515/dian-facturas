@@ -2,12 +2,31 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   listarFacturas, actualizarResponsables, reenviarFactura,
-  eliminarFactura, eliminarPorFechas, gmailSync, urlPDF, urlXML
+  eliminarFactura, eliminarPorFechas, gmailSync
 } from '../services/api';
 
 const fmt = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
 const fmtDate = (s) => { if (!s) return '—'; try { const solo = String(s).substring(0, 10); const [y, m, d] = solo.split('-'); if (!y || !m || !d) return s; return d+'/'+m+'/'+y; } catch(e) { return s; } };
 
+
+const descargarArchivo = async (id, tipo) => {
+  const token = localStorage.getItem('token');
+  const base = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+  const url = base + '/facturas/' + id + '/' + tipo;
+  try {
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+    if (!res.ok) { alert('Archivo no disponible'); return; }
+    const blob = await res.blob();
+    const ext = tipo === 'pdf' ? '.pdf' : '.xml';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = tipo + '_factura_' + id + ext;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    alert('Error al descargar: ' + err.message);
+  }
+};
 export default function Facturas({ tipo = 'FE' }) {
   const { isAdmin } = useAuth();
   const [facturas, setFacturas] = useState([]);
@@ -208,8 +227,8 @@ export default function Facturas({ tipo = 'FE' }) {
                         <button style={iconBtn} title="Ver detalle" onClick={() => openModal('ver', f)}>👁</button>
                         <button style={iconBtn} title="Responsables" onClick={() => openModal('responsables', f)}>👤</button>
                         <button style={iconBtn} title="Reenviar" onClick={() => openModal('reenviar', f)}>📤</button>
-                        <a href={urlPDF(f.id)} target="_blank" rel="noreferrer" style={{ ...iconBtn, textDecoration: 'none' }} title="PDF">📄</a>
-                        <a href={urlXML(f.id)} target="_blank" rel="noreferrer" style={{ ...iconBtn, textDecoration: 'none' }} title="XML">📋</a>
+                        <button style={iconBtn} title="PDF" onClick={() => descargarArchivo(f.id, 'pdf')}>📄</button>
+                        <button style={iconBtn} title="XML" onClick={() => descargarArchivo(f.id, 'xml')}>📋</button>
                         {isAdmin && <button style={{ ...iconBtn, color: '#f87171' }} title="Eliminar" onClick={() => handleEliminar(f.id)}>🗑</button>}
                       </div>
                     </td>
