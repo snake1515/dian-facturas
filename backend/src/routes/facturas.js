@@ -177,33 +177,37 @@ router.delete('/', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// Descargar PDF adjunto
+// Descargar PDF adjunto desde Supabase Storage
 router.get('/:id/pdf', authMiddleware, async (req, res) => {
   try {
+    const { descargarArchivo } = require('../services/storageService');
     const result = await pool.query('SELECT pdf_path FROM facturas WHERE id = $1', [req.params.id]);
     if (!result.rows.length || !result.rows[0].pdf_path) {
       return res.status(404).json({ error: 'PDF no disponible' });
     }
-    const filePath = path.join(__dirname, '../../uploads', result.rows[0].pdf_path);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Archivo no encontrado' });
-    res.download(filePath);
+    const buffer = await descargarArchivo(result.rows[0].pdf_path);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + result.rows[0].pdf_path + '"');
+    res.send(buffer);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(404).json({ error: 'Archivo no encontrado: ' + err.message });
   }
 });
 
-// Descargar XML adjunto
+// Descargar XML adjunto desde Supabase Storage
 router.get('/:id/xml', authMiddleware, async (req, res) => {
   try {
+    const { descargarArchivo } = require('../services/storageService');
     const result = await pool.query('SELECT xml_path FROM facturas WHERE id = $1', [req.params.id]);
     if (!result.rows.length || !result.rows[0].xml_path) {
       return res.status(404).json({ error: 'XML no disponible' });
     }
-    const filePath = path.join(__dirname, '../../uploads', result.rows[0].xml_path);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Archivo no encontrado' });
-    res.download(filePath);
+    const buffer = await descargarArchivo(result.rows[0].xml_path);
+    res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + result.rows[0].xml_path + '"');
+    res.send(buffer);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(404).json({ error: 'Archivo no encontrado: ' + err.message });
   }
 });
 

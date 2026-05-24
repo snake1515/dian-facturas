@@ -1,9 +1,8 @@
 const { google } = require('googleapis');
-const path = require('path');
-const fs = require('fs');
 const AdmZip = require('adm-zip');
 const { pool } = require('../models/db');
 const { parsearXMLDIAN } = require('./xmlParser');
+const { subirArchivo } = require('./storageService');
 
 const getOAuth2Client = () => {
   return new google.auth.OAuth2(
@@ -36,8 +35,7 @@ const getAuthenticatedClient = async () => {
     "SELECT valor FROM configuracion WHERE clave = 'gmail_refresh_token'"
   );
   const refreshToken = res.rows[0]?.valor;
-  if (!refreshToken) throw new Error('Gmail no está conectado. Configura OAuth primero.');
-
+  if (!refreshToken) throw new Error('Gmail no está conectado');
   const oauth2Client = getOAuth2Client();
   oauth2Client.setCredentials({ refresh_token: refreshToken });
   return oauth2Client;
@@ -70,7 +68,7 @@ const sincronizarCorreos = async () => {
         const resultado = await procesarMensaje(gmail, msg.id);
         if (resultado) nuevas++;
       } catch (err) {
-        if (!err.message?.includes('duplicate') && !err.message?.includes('ya procesado')) {
+        if (!err.message?.includes('ya procesado')) {
           console.error(`❌ Error procesando mensaje ${msg.id}:`, err.message);
         }
       }
@@ -92,67 +90,48 @@ const sincronizarCorreos = async () => {
 
 const procesarMensaje = async (gmail, messageId) => {
   const existe = await pool.query(
-    'SELECT id FROM facturas WHERE gmail_message_id = $1',
-    [messageId]
+    'SELECT id FROM facturas WHERE gmail_message_id = $1', [messageId]
   );
-  if (existe.rows.length > 0) {
-    throw new Error('ya procesado');
-  }
+  if (existe.rows.length > 0) throw new Error('ya procesado');
 
   const msgRes = await gmail.users.messages.get({
-    userId: 'me',
-    id: messageId,
-    format: 'full',
+    userId: 'me', id: messageId, format: 'full',
   });
 
-  const msg = msgRes.data;
-  const parts = obtenerPartes(msg.payload);
+  const parts = obtenerPartes(msgRes.data.payload);
 
   let xmlContent = null;
   let pdfBuffer = null;
   let pdfFilename = null;
   let xmlFilename = null;
 
-  const uploadDir = path.join(__dirname, '../../uploads');
-  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
   for (const part of parts) {
     const filename = (part.filename || '').toLowerCase();
     const mimeType = part.mimeType || '';
-
     if (!part.body?.attachmentId) continue;
 
     const attRes = await gmail.users.messages.attachments.get({
-      userId: 'me',
-      messageId,
-      id: part.body.attachmentId,
+      userId: 'me', messageId, id: part.body.attachmentId,
     });
-
     const data = Buffer.from(attRes.data.data, 'base64');
 
-    // Manejar ZIP — descomprimir y buscar XML y PDF adentro
+    // Manejar ZIP
     if (filename.endsWith('.zip') || mimeType.includes('zip')) {
       console.log(`📦 Descomprimiendo ZIP: ${part.filename}`);
       try {
         const zip = new AdmZip(data);
-        const entries = zip.getEntries();
-
-        for (const entry of entries) {
+        for (const entry of zip.getEntries()) {
           const entryName = entry.entryName.toLowerCase();
           const entryData = entry.getData();
-
-          if (entryName.endsWith('.xml')) {
+          if (entryName.endsWith('.xml') && !xmlContent) {
             xmlContent = entryData.toString('utf-8');
             xmlFilename = `${messageId}_${entry.entryName}`;
-            fs.writeFileSync(path.join(uploadDir, xmlFilename), entryData);
-            console.log(`📄 XML encontrado en ZIP: ${entry.entryName}`);
+            console.log(`📄 XML en ZIP: ${entry.entryName}`);
           }
-
-          if (entryName.endsWith('.pdf')) {
+          if (entryName.endsWith('.pdf') && !pdfBuffer) {
             pdfBuffer = entryData;
             pdfFilename = `${messageId}_${entry.entryName}`;
-            fs.writeFileSync(path.join(uploadDir, pdfFilename), entryData);
-            console.log(`📄 PDF encontrado en ZIP: ${entry.entryName}`);
+            console.log(`📄 PDF en ZIP: ${entry.entryName}`);
           }
         }
       } catch (zipErr) {
@@ -161,30 +140,44 @@ const procesarMensaje = async (gmail, messageId) => {
       continue;
     }
 
-    // Adjuntos directos XML
     if (filename.endsWith('.xml') || mimeType.includes('xml')) {
       xmlContent = data.toString('utf-8');
       xmlFilename = `${messageId}_${part.filename}`;
-      fs.writeFileSync(path.join(uploadDir, xmlFilename), data);
     }
-
-    // Adjuntos directos PDF
     if (filename.endsWith('.pdf') || mimeType.includes('pdf')) {
       pdfBuffer = data;
       pdfFilename = `${messageId}_${part.filename}`;
-      fs.writeFileSync(path.join(uploadDir, pdfFilename), data);
     }
   }
 
   if (!xmlContent) {
-    console.log(`⚠️ Mensaje ${messageId} sin XML DIAN válido (ni directo ni en ZIP), omitiendo`);
+    console.log(`⚠️ Mensaje ${messageId} sin XML DIAN válido`);
     return false;
   }
 
-  // Parsear XML DIAN
+  // Subir archivos a Supabase Storage
+  if (pdfBuffer && pdfFilename) {
+    try {
+      await subirArchivo(pdfBuffer, pdfFilename, 'application/pdf');
+      console.log(`☁️ PDF subido: ${pdfFilename}`);
+    } catch (err) {
+      console.error(`❌ Error subiendo PDF:`, err.message);
+      pdfFilename = null;
+    }
+  }
+  if (xmlContent && xmlFilename) {
+    try {
+      await subirArchivo(Buffer.from(xmlContent, 'utf-8'), xmlFilename, 'application/xml');
+      console.log(`☁️ XML subido: ${xmlFilename}`);
+    } catch (err) {
+      console.error(`❌ Error subiendo XML:`, err.message);
+      xmlFilename = null;
+    }
+  }
+
+  // Parsear XML
   const datos = await parsearXMLDIAN(xmlContent);
 
-  // Insertar factura
   const facturaRes = await pool.query(
     `INSERT INTO facturas
       (numero, tipo, cufe, proveedor_nombre, proveedor_nit, fecha_emision, fecha_vencimiento,
@@ -196,15 +189,11 @@ const procesarMensaje = async (gmail, messageId) => {
       datos.proveedorNombre, datos.proveedorNit,
       datos.fechaEmision, datos.fechaVence,
       datos.subtotal, datos.iva, datos.total,
-      messageId,
-      pdfFilename || null,
-      xmlFilename || null,
-      xmlContent,
+      messageId, pdfFilename || null, xmlFilename || null, xmlContent,
     ]
   );
 
   const facturaId = facturaRes.rows[0].id;
-
   for (const prod of datos.productos) {
     await pool.query(
       `INSERT INTO productos_factura (factura_id, codigo, descripcion, cantidad, precio_unitario, total)
@@ -213,7 +202,7 @@ const procesarMensaje = async (gmail, messageId) => {
     );
   }
 
-  console.log(`✅ Factura ${datos.numero} (${datos.tipo}) de ${datos.proveedorNombre} guardada`);
+  console.log(`✅ Factura ${datos.numero} de ${datos.proveedorNombre} guardada`);
   return true;
 };
 
