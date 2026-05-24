@@ -128,7 +128,7 @@ export default function Configuracion() {
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
               <button style={btnPrimary} onClick={conectarGmail}>
                 📧 {cfg.gmail_connected === 'true' ? 'Reconectar Gmail' : 'Vincular cuenta Gmail'}
               </button>
@@ -136,8 +136,10 @@ export default function Configuracion() {
                 <button style={btnGhost} onClick={() => sincronizarAhora(syncDesde, syncHasta)} disabled={syncing}>
                   {syncing ? '⟳ Sincronizando...' : '⟳ Sincronizar ahora'}
                 </button>
-              </div>
-              <div style={{ background: '#0f1117', border: '1px solid #2a3348', borderRadius: 8, padding: 14, marginBottom: 16 }}>
+              )}
+            </div>
+            {cfg.gmail_connected === 'true' && (
+              <div style={{ background: '#0f1117', border: '1px solid #2a3348', borderRadius: 8, padding: 14, marginBottom: 24 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>📅 Importar por rango de fechas</div>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
                   <div style={{ flex: 1, minWidth: 140 }}>
@@ -161,9 +163,7 @@ export default function Configuracion() {
                   )}
                 </div>
               </div>
-              <div style={{ display: 'none' }}>
-              )}
-            </div>
+            )}
 
             <h3 style={sectionTitle}>Filtros de recepción</h3>
             <FormGroup label="Palabras clave en asunto (separadas por coma)">
