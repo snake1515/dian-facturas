@@ -2,36 +2,34 @@ const xml2js = require('xml2js');
 
 /**
  * Parsea un XML de factura electrónica DIAN (UBL 2.1)
- * y extrae los campos relevantes.
+ * Soporta:
+ * 1. AttachedDocument (contenedor DIAN con Invoice/CreditNote embebido en CDATA)
+ * 2. Invoice directo
+ * 3. CreditNote directo
  */
 const parsearXMLDIAN = async (xmlString) => {
-  const parser = new xml2js.Parser({ explicitArray: false, ignoreAttrs: false });
-  const resultado = await parser.parseStringPromise(xmlString);
+  const parser = new xml2js.Parser({ explicitArray: false, ignoreAttrs: false, explicitCharkey: true });
 
-  // Detectar si es FE o NC
+  // Intentar extraer el XML embebido en el CDATA del AttachedDocument
+  const xmlReal = extraerXMLDeCDATA(xmlString) || xmlString;
+
+  const resultado = await parser.parseStringPromise(xmlReal);
+
   const esNotaCredito = !!resultado['CreditNote'];
   const raiz = esNotaCredito ? resultado['CreditNote'] : resultado['Invoice'];
   const tipo = esNotaCredito ? 'NC' : 'FE';
 
-  if (!raiz) throw new Error('XML no reconocido como factura electrónica DIAN');
+  if (!raiz) {
+    // Si tampoco funciona, intentar parsear el AttachedDocument directamente
+    return parsearAttachedDocument(xmlString);
+  }
 
-  // Número de documento
-  const numero = getText(raiz, 'cbc:ID') || getText(raiz, 'ID') || 'SIN-NUMERO';
-
-  // CUFE / CUDE
-  const cufe = getText(raiz, 'cbc:UUID') || getText(raiz, 'UUID') || null;
-
-  // Fechas
-  const fechaEmision = getText(raiz, 'cbc:IssueDate') || getText(raiz, 'IssueDate') || null;
-  const fechaVence = getText(raiz, 'cbc:DueDate') || getText(raiz, 'DueDate') || null;
-
-  // Proveedor (AccountingSupplierParty)
+  const numero = getVal(raiz, 'cbc:ID') || getVal(raiz, 'ID') || 'SIN-NUMERO';
+  const cufe = getVal(raiz, 'cbc:UUID') || getVal(raiz, 'UUID') || null;
+  const fechaEmision = getVal(raiz, 'cbc:IssueDate') || getVal(raiz, 'IssueDate') || null;
+  const fechaVence = getVal(raiz, 'cbc:DueDate') || getVal(raiz, 'DueDate') || null;
   const proveedor = extraerProveedor(raiz);
-
-  // Totales
   const totales = extraerTotales(raiz, esNotaCredito);
-
-  // Líneas de productos
   const productos = extraerProductos(raiz, esNotaCredito);
 
   return {
@@ -49,39 +47,102 @@ const parsearXMLDIAN = async (xmlString) => {
   };
 };
 
-const getText = (obj, key) => {
+/**
+ * Extrae el XML real embebido en el CDATA del AttachedDocument DIAN
+ */
+const extraerXMLDeCDATA = (xmlString) => {
+  try {
+    // Buscar el contenido del CDATA que contiene el Invoice o CreditNote
+    const cdataMatch = xmlString.match(/<!\[CDATA\[([\s\S]*?)\]\]>/);
+    if (cdataMatch && cdataMatch[1]) {
+      const contenido = cdataMatch[1].trim();
+      if (contenido.includes('<Invoice') || contenido.includes('<CreditNote')) {
+        return contenido;
+      }
+    }
+
+    // Buscar múltiples CDATA y encontrar el que tenga la factura
+    const allCdata = [...xmlString.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>/g)];
+    for (const match of allCdata) {
+      const contenido = match[1].trim();
+      if (contenido.includes('<Invoice') || contenido.includes('<CreditNote')) {
+        return contenido;
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Parsear AttachedDocument directamente cuando no hay CDATA con Invoice
+ */
+const parsearAttachedDocument = async (xmlString) => {
+  const parser = new xml2js.Parser({ explicitArray: false, ignoreAttrs: false, explicitCharkey: true });
+  const resultado = await parser.parseStringPromise(xmlString);
+  const raiz = resultado['AttachedDocument'];
+
+  if (!raiz) throw new Error('XML no reconocido como factura electrónica DIAN');
+
+  // Extraer datos del AttachedDocument
+  const numero = getVal(raiz, 'cbc:ID') || getVal(raiz, 'cbc:ParentDocumentID') || 'SIN-NUMERO';
+  const fecha = getVal(raiz, 'cbc:IssueDate') || null;
+
+  // Determinar tipo por el ProfileID o número
+  const profileId = getVal(raiz, 'cbc:ProfileID') || '';
+  const esNC = profileId.toLowerCase().includes('nota') || numero.toUpperCase().includes('NC');
+  const tipo = esNC ? 'NC' : 'FE';
+
+  // Proveedor desde SenderParty
+  const sender = raiz['cac:SenderParty'] || raiz['SenderParty'];
+  const taxScheme = sender?.['cac:PartyTaxScheme'] || sender?.['PartyTaxScheme'];
+  const nombre = getVal(taxScheme, 'cbc:RegistrationName') || 'Proveedor desconocido';
+  const nitRaw = taxScheme?.['cbc:CompanyID'];
+  const nit = (typeof nitRaw === 'object' ? nitRaw?._ : nitRaw) || '000000000-0';
+
+  return {
+    tipo,
+    numero,
+    cufe: null,
+    fechaEmision: fecha,
+    fechaVence: null,
+    proveedorNombre: nombre,
+    proveedorNit: nit,
+    subtotal: 0,
+    iva: 0,
+    total: 0,
+    productos: [],
+  };
+};
+
+const getVal = (obj, key) => {
   if (!obj) return null;
   const val = obj[key];
   if (!val) return null;
   if (typeof val === 'string') return val.trim();
-  if (typeof val === 'object' && val._) return val._.trim();
+  if (typeof val === 'object') {
+    if (val._) return val._.trim();
+    if (val['$']) return null;
+  }
   return null;
 };
 
 const extraerProveedor = (raiz) => {
   try {
-    const party =
-      raiz['cac:AccountingSupplierParty'] ||
-      raiz['AccountingSupplierParty'];
-    const partyData =
-      party?.['cac:Party'] ||
-      party?.['Party'] || party;
-
-    const legalEntity =
-      partyData?.['cac:PartyLegalEntity'] ||
-      partyData?.['PartyLegalEntity'];
+    const party = raiz['cac:AccountingSupplierParty'] || raiz['AccountingSupplierParty'];
+    const partyData = party?.['cac:Party'] || party?.['Party'] || party;
+    const legalEntity = partyData?.['cac:PartyLegalEntity'] || partyData?.['PartyLegalEntity'];
 
     const nombre =
-      getText(legalEntity, 'cbc:RegistrationName') ||
-      getText(legalEntity, 'RegistrationName') ||
-      getText(partyData?.['cac:PartyName'] || partyData?.['PartyName'], 'cbc:Name') ||
+      getVal(legalEntity, 'cbc:RegistrationName') ||
+      getVal(legalEntity, 'RegistrationName') ||
+      getVal(partyData?.['cac:PartyName'] || partyData?.['PartyName'], 'cbc:Name') ||
       'Proveedor desconocido';
 
-    const nit =
-      getText(legalEntity, 'cbc:CompanyID') ||
-      getText(legalEntity, 'CompanyID') ||
-      getText(partyData?.['cac:PartyIdentification']?.['cbc:ID'] || {}, '_') ||
-      '000000000-0';
+    const nitRaw = legalEntity?.['cbc:CompanyID'] || legalEntity?.['CompanyID'];
+    const nit = (typeof nitRaw === 'object' ? nitRaw?._ : nitRaw) || '000000000-0';
 
     return { nombre, nit };
   } catch {
@@ -91,36 +152,20 @@ const extraerProveedor = (raiz) => {
 
 const extraerTotales = (raiz, esNC) => {
   try {
-    const monetary =
-      raiz['cac:LegalMonetaryTotal'] ||
-      raiz['LegalMonetaryTotal'];
+    const monetary = raiz['cac:LegalMonetaryTotal'] || raiz['LegalMonetaryTotal'];
+    const subtotal = parseFloat(getVal(monetary, 'cbc:LineExtensionAmount') || '0');
+    const total = parseFloat(getVal(monetary, 'cbc:PayableAmount') || '0');
 
-    const subtotal = parseFloat(
-      getText(monetary, 'cbc:LineExtensionAmount') ||
-      getText(monetary, 'LineExtensionAmount') || '0'
-    );
-    const total = parseFloat(
-      getText(monetary, 'cbc:PayableAmount') ||
-      getText(monetary, 'PayableAmount') || '0'
-    );
-
-    // IVA
     const taxTotals = raiz['cac:TaxTotal'] || raiz['TaxTotal'];
     let iva = 0;
     if (Array.isArray(taxTotals)) {
-      iva = taxTotals.reduce((acc, t) => {
-        return acc + parseFloat(getText(t, 'cbc:TaxAmount') || getText(t, 'TaxAmount') || '0');
-      }, 0);
+      iva = taxTotals.reduce((acc, t) => acc + parseFloat(getVal(t, 'cbc:TaxAmount') || '0'), 0);
     } else if (taxTotals) {
-      iva = parseFloat(getText(taxTotals, 'cbc:TaxAmount') || getText(taxTotals, 'TaxAmount') || '0');
+      iva = parseFloat(getVal(taxTotals, 'cbc:TaxAmount') || '0');
     }
 
     const signo = esNC ? -1 : 1;
-    return {
-      subtotal: signo * subtotal,
-      iva: signo * iva,
-      total: signo * total,
-    };
+    return { subtotal: signo * subtotal, iva: signo * iva, total: signo * total };
   } catch {
     return { subtotal: 0, iva: 0, total: 0 };
   }
@@ -138,31 +183,22 @@ const extraerProductos = (raiz, esNC) => {
       const price = linea['cac:Price'] || linea['Price'] || {};
 
       const descripcion =
-        getText(item, 'cbc:Description') ||
-        getText(item, 'Description') ||
-        getText(item['cac:StandardItemIdentification'] || {}, 'cbc:ID') ||
+        getVal(item, 'cbc:Description') ||
+        getVal(item, 'Description') ||
         'Producto sin descripción';
 
       const codigo =
-        getText(item['cac:SellersItemIdentification'] || {}, 'cbc:ID') ||
-        getText(item['cac:StandardItemIdentification'] || {}, 'cbc:ID') ||
+        getVal(item['cac:SellersItemIdentification'] || {}, 'cbc:ID') ||
+        getVal(item['cac:StandardItemIdentification'] || {}, 'cbc:ID') ||
         null;
 
       const cantidad = parseFloat(
-        getText(linea, 'cbc:InvoicedQuantity') ||
-        getText(linea, 'InvoicedQuantity') ||
-        getText(linea, 'cbc:CreditedQuantity') || '1'
+        getVal(linea, 'cbc:InvoicedQuantity') ||
+        getVal(linea, 'cbc:CreditedQuantity') || '1'
       );
 
-      const precioUnitario = parseFloat(
-        getText(price, 'cbc:PriceAmount') ||
-        getText(price, 'PriceAmount') || '0'
-      );
-
-      const total = parseFloat(
-        getText(linea, 'cbc:LineExtensionAmount') ||
-        getText(linea, 'LineExtensionAmount') || '0'
-      );
+      const precioUnitario = parseFloat(getVal(price, 'cbc:PriceAmount') || '0');
+      const total = parseFloat(getVal(linea, 'cbc:LineExtensionAmount') || '0');
 
       return {
         codigo,
