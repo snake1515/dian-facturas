@@ -12,9 +12,6 @@ export default function Configuracion() {
   const [syncDesde, setSyncDesde] = useState('');
   const [syncHasta, setSyncHasta] = useState('');
   const [syncResult, setSyncResult] = useState(null);
-  const [syncDesde, setSyncDesde] = useState('');
-  const [syncHasta, setSyncHasta] = useState('');
-  const [syncResult, setSyncResult] = useState(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
