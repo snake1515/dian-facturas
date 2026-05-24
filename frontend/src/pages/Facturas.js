@@ -6,7 +6,7 @@ import {
 } from '../services/api';
 
 const fmt = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
-const fmtDate = (s) => { if (!s) return '—'; const d = new Date(s + 'T00:00:00'); return d.toLocaleDateString('es-CO'); };
+const fmtDate = (s) => { if (!s) return '—'; try { const solo = String(s).substring(0, 10); const [y, m, d] = solo.split('-'); if (!y || !m || !d) return s; return d+'/'+m+'/'+y; } catch(e) { return s; } };
 
 export default function Facturas({ tipo = 'FE' }) {
   const { isAdmin } = useAuth();
