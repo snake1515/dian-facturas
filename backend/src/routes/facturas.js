@@ -210,5 +210,21 @@ router.get('/:id/xml', authMiddleware, async (req, res) => {
     res.status(404).json({ error: 'Archivo no encontrado: ' + err.message });
   }
 });
-
+// Actualizar estado contable
+router.put('/:id/estado-contable', authMiddleware, async (req, res) => {
+  try {
+    const { estado_contable } = req.body;
+    const valores = ['sin_gestionar', 'recibido', 'entregado_contabilidad'];
+    if (!valores.includes(estado_contable)) {
+      return res.status(400).json({ error: 'Estado inválido' });
+    }
+    await pool.query(
+      'UPDATE facturas SET estado_contable = $1 WHERE id = $2',
+      [estado_contable, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 module.exports = router;
