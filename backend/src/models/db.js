@@ -34,6 +34,7 @@ const initDB = async () => {
         estado VARCHAR(30) DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'procesado', 'reenviado')),
         reenviado_a VARCHAR(150),
         gmail_message_id VARCHAR(255) UNIQUE,
+        estado_contable VARCHAR(50) DEFAULT 'sin_gestionar',
         pdf_path VARCHAR(500),
         xml_path VARCHAR(500),
         xml_raw TEXT,
