@@ -79,10 +79,15 @@ export default function Facturas({ tipo = 'FE' }) {
     setActionLoading(true);
     try {
       await actualizarResponsables(activeF.id, respEmails);
-      // Actualizar activeF con los nuevos responsables para que reenviar los vea
+      // Actualizar activeF con los nuevos responsables inmediatamente
       setActiveF(prev => ({ ...prev, responsables: respEmails }));
-      await cargar();
+      // Actualizar también la lista local sin esperar al servidor
+      setFacturas(prev => prev.map(f =>
+        f.id === activeF.id ? { ...f, responsables: respEmails } : f
+      ));
       closeModal();
+      // Recargar en background para sincronizar con BD
+      cargar();
     } catch (err) { alert(err.response?.data?.error || 'Error'); }
     finally { setActionLoading(false); }
   };
