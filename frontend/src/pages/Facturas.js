@@ -65,13 +65,22 @@ export default function Facturas({ tipo = 'FE' }) {
     finally { setSyncing(false); }
   };
 
-  const openModal = (m, f) => { setActiveF(f); setModal(m); if (m === 'responsables') setRespEmails([...f.responsables]); if (m === 'reenviar') setReenvioEmails([...f.responsables]); };
+  const openModal = (m, f) => {
+    // Buscar la versión más actualizada de la factura en el estado
+    const fActual = facturas.find(x => x.id === f.id) || f;
+    setActiveF(fActual);
+    setModal(m);
+    if (m === 'responsables') setRespEmails([...(fActual.responsables || [])]);
+    if (m === 'reenviar') setReenvioEmails([...(fActual.responsables || [])]);
+  };
   const closeModal = () => { setModal(null); setActiveF(null); setNewEmail(''); setReenvioMsg(''); };
 
   const guardarResponsables = async () => {
     setActionLoading(true);
     try {
       await actualizarResponsables(activeF.id, respEmails);
+      // Actualizar activeF con los nuevos responsables para que reenviar los vea
+      setActiveF(prev => ({ ...prev, responsables: respEmails }));
       await cargar();
       closeModal();
     } catch (err) { alert(err.response?.data?.error || 'Error'); }
