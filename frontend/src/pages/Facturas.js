@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import {
   listarFacturas, actualizarResponsables, reenviarFactura,
-  eliminarFactura, eliminarPorFechas, gmailSync
+  eliminarFactura, eliminarPorFechas, gmailSync, actualizarEstadoContable
 } from '../services/api';
 
 const fmt = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
@@ -225,6 +225,9 @@ export default function Facturas({ tipo = 'FE' }) {
                       }
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
+                      <EstadoContableSelect factura={f} onUpdate={cargar} />
+                    </td>
+                    <td style={td} onClick={e => e.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 4 }}>
                         <button style={iconBtn} title="Ver detalle" onClick={() => openModal('ver', f)}>👁</button>
                         <button style={iconBtn} title="Responsables" onClick={() => openModal('responsables', f)}>👤</button>
@@ -369,6 +372,59 @@ export default function Facturas({ tipo = 'FE' }) {
         </Modal>
       )}
     </div>
+  );
+}
+
+
+// ── Componente selector de estado contable ────────────────────────────────────
+const ESTADOS_CONTABLES = [
+  { value: 'por_gestionar',        label: 'Por gestionar',         color: '#94a3b8', bg: '#1e2535' },
+  { value: 'recibio_inventarios',  label: 'Recibió inventarios',   color: '#fbbf24', bg: '#451a03' },
+  { value: 'recibio_contabilidad', label: 'Recibió contabilidad',  color: '#60a5fa', bg: '#1e3a5f' },
+  { value: 'aprobado',             label: 'Aprobado',              color: '#4ade80', bg: '#052e16' },
+];
+
+function EstadoContableSelect({ factura, onUpdate }) {
+  const [saving, setSaving] = React.useState(false);
+  const current = factura.estado_contable || 'por_gestionar';
+  const est = ESTADOS_CONTABLES.find(e => e.value === current) || ESTADOS_CONTABLES[0];
+
+  const handleChange = async (e) => {
+    const val = e.target.value;
+    setSaving(true);
+    try {
+      await actualizarEstadoContable(factura.id, val);
+      await onUpdate();
+    } catch (err) {
+      alert('Error al actualizar estado contable');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <select
+      value={current}
+      onChange={handleChange}
+      disabled={saving}
+      onClick={e => e.stopPropagation()}
+      style={{
+        background: est.bg,
+        color: est.color,
+        border: '1px solid rgba(255,255,255,.08)',
+        borderRadius: 6,
+        padding: '3px 8px',
+        fontSize: 11,
+        fontWeight: 600,
+        cursor: 'pointer',
+        outline: 'none',
+        opacity: saving ? 0.6 : 1,
+      }}
+    >
+      {ESTADOS_CONTABLES.map(e => (
+        <option key={e.value} value={e.value}>{e.label}</option>
+      ))}
+    </select>
   );
 }
 

@@ -214,7 +214,7 @@ router.get('/:id/xml', authMiddleware, async (req, res) => {
 router.put('/:id/estado-contable', authMiddleware, async (req, res) => {
   try {
     const { estado_contable } = req.body;
-    const valores = ['sin_gestionar', 'recibido', 'entregado_contabilidad'];
+    const valores = ['por_gestionar', 'recibio_inventarios', 'recibio_contabilidad', 'aprobado'];
     if (!valores.includes(estado_contable)) {
       return res.status(400).json({ error: 'Estado inválido' });
     }
