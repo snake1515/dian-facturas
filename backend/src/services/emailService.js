@@ -1,8 +1,7 @@
 const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
-const fs = require('fs');
-const path = require('path');
 const { pool } = require('../models/db');
+const { descargarArchivo } = require('./storageService');
 
 const getTransporter = async () => {
   const oauth2Client = new google.auth.OAuth2(
@@ -46,19 +45,30 @@ const reenviarFactura = async ({ facturaId, destinatarios, mensaje, usuarioId })
   if (!facturaRes.rows.length) throw new Error('Factura no encontrada');
   const factura = facturaRes.rows[0];
 
-  const uploadDir = path.join(__dirname, '../../uploads');
   const attachments = [];
 
   if (factura.pdf_path) {
-    const pdfFull = path.join(uploadDir, factura.pdf_path);
-    if (fs.existsSync(pdfFull)) {
-      attachments.push({ filename: factura.pdf_path, path: pdfFull });
+    try {
+      const pdfBuffer = await descargarArchivo(factura.pdf_path);
+      attachments.push({
+        filename: factura.pdf_path.split('/').pop() || 'factura.pdf',
+        content: pdfBuffer,
+        contentType: 'application/pdf',
+      });
+    } catch (err) {
+      console.error('No se pudo descargar PDF desde Supabase:', err.message);
     }
   }
   if (factura.xml_path) {
-    const xmlFull = path.join(uploadDir, factura.xml_path);
-    if (fs.existsSync(xmlFull)) {
-      attachments.push({ filename: factura.xml_path, path: xmlFull });
+    try {
+      const xmlBuffer = await descargarArchivo(factura.xml_path);
+      attachments.push({
+        filename: factura.xml_path.split('/').pop() || 'factura.xml',
+        content: xmlBuffer,
+        contentType: 'application/xml',
+      });
+    } catch (err) {
+      console.error('No se pudo descargar XML desde Supabase:', err.message);
     }
   }
 
