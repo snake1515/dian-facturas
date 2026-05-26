@@ -11,7 +11,7 @@ const fmtDate = (s) => { if (!s) return '—'; try { const solo = String(s).subs
 
 
 const descargarArchivo = async (id, tipo) => {
-  const token = localStorage.getItem('token');
+  const token = localStorage.getItem('dian_token');
   const base = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
   const url = base + '/facturas/' + id + '/' + tipo;
   try {
