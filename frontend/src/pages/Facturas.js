@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
+import api from '../services/api';
 import {
   listarFacturas, actualizarResponsables, reenviarFactura,
   eliminarFactura, eliminarPorFechas, gmailSync
@@ -197,6 +198,7 @@ export default function Facturas({ tipo = 'FE' }) {
                   <th style={th}>Total</th>
                   <th style={th}>Estado</th>
                   <th style={th}>Responsable</th>
+                  <th style={th}>Estado contable</th>
                   <th style={th}>Acciones</th>
                 </tr>
               </thead>
