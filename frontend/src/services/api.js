@@ -5,7 +5,7 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('dian_token');
+  const token = localStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
@@ -14,8 +14,8 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
-      localStorage.removeItem('dian_token');
-      localStorage.removeItem('dian_user');
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
       window.location.href = '/login';
     }
     return Promise.reject(err);
@@ -40,6 +40,10 @@ export const urlPDF = (id) => `${api.defaults.baseURL}/facturas/${id}/pdf`;
 export const urlXML = (id) => `${api.defaults.baseURL}/facturas/${id}/xml`;
 
 export const actualizarEstadoContable = (id, estado_contable) => api.put(`/facturas/${id}/estado-contable`, { estado_contable });
+export const actualizarDocumentoIngreso = (id, documento_ingreso) => api.put(`/facturas/${id}/documento-ingreso`, { documento_ingreso });
+export const listarContactos = () => api.get('/facturas/contactos/lista');
+export const crearContacto = (data) => api.post('/facturas/contactos', data);
+export const eliminarContacto = (id) => api.delete(`/facturas/contactos/${id}`);
 
 // Gmail
 export const gmailStatus = () => api.get('/gmail/status');

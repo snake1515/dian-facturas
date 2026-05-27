@@ -19,7 +19,19 @@ router.get('/', authMiddleware, async (req, res) => {
     if (tipo) { where.push(`f.tipo = $${idx++}`); params.push(tipo); }
     if (estado) { where.push(`f.estado = $${idx++}`); params.push(estado); }
     if (search) {
-      where.push(`(f.proveedor_nombre ILIKE $${idx} OR f.numero ILIKE $${idx})`);
+      where.push(`(
+        f.proveedor_nombre ILIKE $${idx} OR
+        f.numero ILIKE $${idx} OR
+        f.estado_contable ILIKE $${idx} OR
+        f.documento_ingreso ILIKE $${idx} OR
+        EXISTS (
+          SELECT 1 FROM responsables_factura r2
+          WHERE r2.factura_id = f.id AND (
+            r2.email ILIKE $${idx} OR
+            r2.nombre ILIKE $${idx}
+          )
+        )
+      )`);
       params.push(`%${search}%`); idx++;
     }
     if (desde) { where.push(`f.fecha_emision >= $${idx++}`); params.push(desde); }
@@ -34,7 +46,7 @@ router.get('/', authMiddleware, async (req, res) => {
           'id', p.id, 'codigo', p.codigo, 'descripcion', p.descripcion,
           'cantidad', p.cantidad, 'precioUnitario', p.precio_unitario, 'total', p.total
         )) FILTER (WHERE p.id IS NOT NULL), '[]') AS productos,
-        COALESCE(json_agg(DISTINCT r.email) FILTER (WHERE r.email IS NOT NULL), '[]') AS responsables
+        COALESCE(json_agg(DISTINCT jsonb_build_object('email', r.email, 'nombre', r.nombre)) FILTER (WHERE r.email IS NOT NULL), '[]') AS responsables
        FROM facturas f
        LEFT JOIN productos_factura p ON p.factura_id = f.id
        LEFT JOIN responsables_factura r ON r.factura_id = f.id
@@ -59,7 +71,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
           'id', p.id, 'codigo', p.codigo, 'descripcion', p.descripcion,
           'cantidad', p.cantidad, 'precioUnitario', p.precio_unitario, 'total', p.total
         )) FILTER (WHERE p.id IS NOT NULL), '[]') AS productos,
-        COALESCE(json_agg(DISTINCT r.email) FILTER (WHERE r.email IS NOT NULL), '[]') AS responsables
+        COALESCE(json_agg(DISTINCT jsonb_build_object('email', r.email, 'nombre', r.nombre)) FILTER (WHERE r.email IS NOT NULL), '[]') AS responsables
        FROM facturas f
        LEFT JOIN productos_factura p ON p.factura_id = f.id
        LEFT JOIN responsables_factura r ON r.factura_id = f.id
@@ -82,11 +94,13 @@ router.put('/:id/responsables', authMiddleware, async (req, res) => {
 
     await pool.query('DELETE FROM responsables_factura WHERE factura_id = $1', [facturaId]);
 
-    for (const email of (emails || [])) {
+    for (const r of (emails || [])) {
+      const email = typeof r === 'string' ? r : r.email;
+      const nombre = typeof r === 'string' ? null : (r.nombre || null);
       if (email?.includes('@')) {
         await pool.query(
-          'INSERT INTO responsables_factura (factura_id, email) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-          [facturaId, email.trim()]
+          'INSERT INTO responsables_factura (factura_id, email, nombre) VALUES ($1, $2, $3) ON CONFLICT (factura_id, email) DO UPDATE SET nombre = $3',
+          [facturaId, email.trim(), nombre]
         );
       }
     }
@@ -227,4 +241,51 @@ router.put('/:id/estado-contable', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// Actualizar documento de ingreso
+router.put('/:id/documento-ingreso', authMiddleware, async (req, res) => {
+  try {
+    const { documento_ingreso } = req.body;
+    await pool.query(
+      'UPDATE facturas SET documento_ingreso = $1 WHERE id = $2',
+      [documento_ingreso || null, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CRUD Contactos
+router.get('/contactos/lista', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM contactos ORDER BY nombre');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/contactos', authMiddleware, async (req, res) => {
+  try {
+    const { nombre, email, cargo } = req.body;
+    if (!nombre || !email) return res.status(400).json({ error: 'Nombre y email requeridos' });
+    const result = await pool.query(
+      'INSERT INTO contactos (nombre, email, cargo) VALUES ($1, $2, $3) ON CONFLICT (email) DO UPDATE SET nombre=$1, cargo=$3 RETURNING *',
+      [nombre, email, cargo || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/contactos/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM contactos WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

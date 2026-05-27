@@ -34,7 +34,8 @@ const initDB = async () => {
         estado VARCHAR(30) DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'procesado', 'reenviado')),
         reenviado_a VARCHAR(150),
         gmail_message_id VARCHAR(255) UNIQUE,
-        estado_contable VARCHAR(50) DEFAULT 'sin_gestionar',
+        estado_contable VARCHAR(50) DEFAULT 'por_gestionar',
+        documento_ingreso VARCHAR(100),
         pdf_path VARCHAR(500),
         xml_path VARCHAR(500),
         xml_raw TEXT,
@@ -51,10 +52,19 @@ const initDB = async () => {
         total NUMERIC(18,2) NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS contactos (
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(150) NOT NULL,
+        email VARCHAR(150) UNIQUE NOT NULL,
+        cargo VARCHAR(100),
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS responsables_factura (
         id SERIAL PRIMARY KEY,
         factura_id INTEGER REFERENCES facturas(id) ON DELETE CASCADE,
         email VARCHAR(150) NOT NULL,
+        nombre VARCHAR(150),
         UNIQUE(factura_id, email)
       );
 
@@ -70,6 +80,18 @@ const initDB = async () => {
         id SERIAL PRIMARY KEY,
         clave VARCHAR(100) UNIQUE NOT NULL,
         valor TEXT NOT NULL
+      );
+
+      -- Migraciones para DBs existentes
+      ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
+      ALTER TABLE responsables_factura ADD COLUMN IF NOT EXISTS nombre VARCHAR(150);
+      ALTER TABLE facturas ALTER COLUMN estado_contable SET DEFAULT 'por_gestionar';
+      CREATE TABLE IF NOT EXISTS contactos (
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(150) NOT NULL,
+        email VARCHAR(150) UNIQUE NOT NULL,
+        cargo VARCHAR(100),
+        created_at TIMESTAMP DEFAULT NOW()
       );
 
       INSERT INTO configuracion (clave, valor) VALUES

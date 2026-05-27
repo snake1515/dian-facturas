@@ -3,7 +3,8 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import {
   listarFacturas, actualizarResponsables, reenviarFactura,
-  eliminarFactura, eliminarPorFechas, gmailSync, actualizarEstadoContable
+  eliminarFactura, eliminarPorFechas, gmailSync, actualizarEstadoContable,
+  actualizarDocumentoIngreso, listarContactos, crearContacto, eliminarContacto
 } from '../services/api';
 
 const fmt = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
@@ -39,6 +40,8 @@ export default function Facturas({ tipo = 'FE' }) {
   const [modal, setModal] = useState(null);
   const [activeF, setActiveF] = useState(null);
   const [respEmails, setRespEmails] = useState([]);
+  const [contactos, setContactos] = useState([]);
+  const [loadingContactos, setLoadingContactos] = useState(false);
   const [newEmail, setNewEmail] = useState('');
   const [reenvioEmails, setReenvioEmails] = useState([]);
   const [reenvioMsg, setReenvioMsg] = useState('');
@@ -57,7 +60,14 @@ export default function Facturas({ tipo = 'FE' }) {
     }
   }, [tipo, search, filterEstado]);
 
-  useEffect(() => { cargar(); }, [cargar]);
+  useEffect(() => { cargar(); cargarContactos(); }, [cargar]);
+
+  const cargarContactos = async () => {
+    try {
+      const res = await listarContactos();
+      setContactos(res.data || []);
+    } catch (err) { console.error('Error cargando contactos:', err); }
+  };
 
   const handleSync = async () => {
     setSyncing(true);
@@ -79,14 +89,11 @@ export default function Facturas({ tipo = 'FE' }) {
     setActionLoading(true);
     try {
       await actualizarResponsables(activeF.id, respEmails);
-      // Actualizar activeF con los nuevos responsables inmediatamente
       setActiveF(prev => ({ ...prev, responsables: respEmails }));
-      // Actualizar también la lista local sin esperar al servidor
       setFacturas(prev => prev.map(f =>
         f.id === activeF.id ? { ...f, responsables: respEmails } : f
       ));
       closeModal();
-      // Recargar en background para sincronizar con BD
       cargar();
     } catch (err) { alert(err.response?.data?.error || 'Error'); }
     finally { setActionLoading(false); }
@@ -171,7 +178,7 @@ export default function Facturas({ tipo = 'FE' }) {
 
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        <input style={{ ...inputSt, flex: 1, minWidth: 200 }} placeholder="Buscar proveedor o número..." value={search} onChange={e => setSearch(e.target.value)} />
+        <input style={{ ...inputSt, flex: 1, minWidth: 200 }} placeholder="Buscar proveedor, número, responsable, estado contable, doc. ingreso..." value={search} onChange={e => setSearch(e.target.value)} />
         <select style={inputSt} value={filterEstado} onChange={e => setFilterEstado(e.target.value)}>
           <option value="">Todos los estados</option>
           <option value="pendiente">Pendiente</option>
@@ -212,6 +219,7 @@ export default function Facturas({ tipo = 'FE' }) {
                   <th style={th}>Total</th>
                   <th style={th}>Estado</th>
                   <th style={th}>Responsable</th>
+                  <th style={th}>Doc. ingreso</th>
                   <th style={th}>Estado contable</th>
                   <th style={th}>Acciones</th>
                 </tr>
@@ -234,9 +242,12 @@ export default function Facturas({ tipo = 'FE' }) {
                       {f.reenviado_a
                         ? <span style={{ fontSize: 11, color: '#4ade80' }}>✓ {f.reenviado_a}</span>
                         : f.responsables?.length > 0
-                          ? <span style={{ fontSize: 11, color: '#94a3b8' }}>{f.responsables.length} asignado(s)</span>
+                          ? <span style={{ fontSize: 11, color: '#94a3b8' }} title={f.responsables.map(r => typeof r === 'string' ? r : `${r.nombre||''} <${r.email}>`).join(', ')}>{f.responsables.map(r => typeof r === 'string' ? r : (r.nombre || r.email)).join(', ')}</span>
                           : <span style={{ fontSize: 11, color: '#64748b' }}>Sin asignar</span>
                       }
+                    </td>
+                    <td style={td} onClick={e => e.stopPropagation()}>
+                      <DocIngresoInput factura={f} onUpdate={cargar} />
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <EstadoContableSelect factura={f} onUpdate={cargar} />
@@ -311,17 +322,46 @@ export default function Facturas({ tipo = 'FE' }) {
             <button style={btnPrimary} onClick={guardarResponsables} disabled={actionLoading}>{actionLoading ? 'Guardando...' : 'Guardar'}</button>
           </>
         }>
-          <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>Ingresa el correo y presiona Enter para agregar</p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, background: '#0f1117', border: '1px solid #2a3348', borderRadius: 6, padding: 8, minHeight: 44, marginBottom: 16 }}>
-            {respEmails.map(e => (
-              <span key={e} style={{ background: 'rgba(59,130,246,.15)', color: '#60a5fa', padding: '2px 8px', borderRadius: 4, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
-                {e} <span style={{ cursor: 'pointer', color: '#64748b' }} onClick={() => setRespEmails(respEmails.filter(x => x !== e))}>×</span>
-              </span>
-            ))}
-            <input style={{ background: 'none', border: 'none', outline: 'none', color: '#e2e8f0', fontSize: 13, flex: 1, minWidth: 160 }} type="email" placeholder="correo@empresa.com" value={newEmail} onChange={e => setNewEmail(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && newEmail.includes('@')) { setRespEmails([...respEmails, newEmail.trim()]); setNewEmail(''); } }} />
+          {/* Seleccionar de lista de contactos */}
+          {contactos.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Seleccionar de contactos registrados:</p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                {contactos.map(c => {
+                  const ya = respEmails.some(r => (typeof r === 'string' ? r : r.email) === c.email);
+                  return (
+                    <button key={c.id} onClick={() => {
+                      if (ya) setRespEmails(respEmails.filter(r => (typeof r === 'string' ? r : r.email) !== c.email));
+                      else setRespEmails([...respEmails, { email: c.email, nombre: c.nombre }]);
+                    }} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 20, border: '1px solid', borderColor: ya ? '#3b82f6' : '#2a3348', background: ya ? 'rgba(59,130,246,.15)' : '#0f1117', color: ya ? '#60a5fa' : '#94a3b8', cursor: 'pointer' }}>
+                      {ya ? '✓ ' : ''}{c.nombre} ({c.email})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {/* Asignados */}
+          <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Asignados actualmente:</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, background: '#0f1117', border: '1px solid #2a3348', borderRadius: 6, padding: 8, minHeight: 44, marginBottom: 12 }}>
+            {respEmails.map((r, i) => {
+              const email = typeof r === 'string' ? r : r.email;
+              const nombre = typeof r === 'string' ? null : r.nombre;
+              return (
+                <span key={email} style={{ background: 'rgba(59,130,246,.15)', color: '#60a5fa', borderRadius: 20, padding: '2px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {nombre ? `${nombre} <${email}>` : email}
+                  <span style={{ cursor: 'pointer', color: '#64748b' }} onClick={() => setRespEmails(respEmails.filter((_, j) => j !== i))}>×</span>
+                </span>
+              );
+            })}
           </div>
-          <InfoBox>Al guardar, el estado reflejará a quién se reenvió más recientemente.</InfoBox>
+          {/* Agregar correo manual */}
+          <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>O agregar correo manualmente:</p>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input style={{ ...inputSt, flex: 1 }} placeholder="correo@empresa.com" value={newEmail} onChange={e => setNewEmail(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && newEmail.includes('@')) { setRespEmails([...respEmails, { email: newEmail.trim(), nombre: null }]); setNewEmail(''); } }} />
+            <button style={btnGhost} onClick={() => { if (newEmail.includes('@')) { setRespEmails([...respEmails, { email: newEmail.trim(), nombre: null }]); setNewEmail(''); } }}>+ Agregar</button>
+          </div>
         </Modal>
       )}
 
@@ -339,11 +379,16 @@ export default function Facturas({ tipo = 'FE' }) {
           </div>
           <div style={{ marginBottom: 16 }}>
             <label style={labelSt}>Destinatarios</label>
-            {activeF.responsables?.length > 0 ? activeF.responsables.map(r => (
-              <label key={r} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #2a3348', fontSize: 13, cursor: 'pointer' }}>
-                <input type="checkbox" checked={reenvioEmails.includes(r)} onChange={e => setReenvioEmails(e.target.checked ? [...reenvioEmails, r] : reenvioEmails.filter(x => x !== r))} /> {r}
-              </label>
-            )) : <p style={{ fontSize: 12, color: '#64748b' }}>No hay responsables. Agrega uno adicional abajo.</p>}
+            {activeF.responsables?.length > 0 ? activeF.responsables.map(r => {
+              const email = typeof r === 'string' ? r : r.email;
+              const nombre = typeof r === 'string' ? null : r.nombre;
+              return (
+                <label key={email} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #2a3348', fontSize: 13, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={reenvioEmails.includes(email)} onChange={e => setReenvioEmails(e.target.checked ? [...reenvioEmails, email] : reenvioEmails.filter(x => x !== email))} />
+                  {nombre ? `${nombre} <${email}>` : email}
+                </label>
+              );
+            }) : <p style={{ fontSize: 12, color: '#64748b' }}>No hay responsables. Agrega uno adicional abajo.</p>}
           </div>
           <div style={{ marginBottom: 16 }}>
             <label style={labelSt}>Destinatario adicional</label>
@@ -386,6 +431,54 @@ export default function Facturas({ tipo = 'FE' }) {
         </Modal>
       )}
     </div>
+  );
+}
+
+
+// ── Componente documento de ingreso ──────────────────────────────────────────
+function DocIngresoInput({ factura, onUpdate }) {
+  const [editing, setEditing] = React.useState(false);
+  const [val, setVal] = React.useState(factura.documento_ingreso || '');
+  const [saving, setSaving] = React.useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await actualizarDocumentoIngreso(factura.id, val);
+      await onUpdate();
+      setEditing(false);
+    } catch (err) {
+      alert('Error al guardar documento de ingreso');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+        <input
+          autoFocus
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setEditing(false); }}
+          style={{ width: 100, background: '#1e2535', border: '1px solid #3b82f6', borderRadius: 4, padding: '2px 6px', color: '#e2e8f0', fontSize: 12 }}
+          placeholder="Ej: OC-001"
+        />
+        <button onClick={handleSave} disabled={saving} style={{ background: '#3b82f6', border: 'none', borderRadius: 4, color: '#fff', padding: '2px 6px', fontSize: 11, cursor: 'pointer' }}>✓</button>
+        <button onClick={() => setEditing(false)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 13 }}>✕</button>
+      </div>
+    );
+  }
+
+  return (
+    <span
+      onClick={e => { e.stopPropagation(); setEditing(true); }}
+      style={{ fontSize: 12, color: factura.documento_ingreso ? '#e2e8f0' : '#475569', cursor: 'pointer', padding: '2px 4px', borderRadius: 4, border: '1px solid transparent' }}
+      title="Clic para editar"
+    >
+      {factura.documento_ingreso || '+ Agregar'}
+    </span>
   );
 }
 
