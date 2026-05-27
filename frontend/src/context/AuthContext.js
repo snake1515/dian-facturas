@@ -7,7 +7,7 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
 // Configura axios para que siempre envíe el token JWT si existe
 axios.interceptors.request.use((config) => {
-  const token = localStorage.getItem('dian_token');
+  const token = localStorage.getItem('token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -19,8 +19,8 @@ axios.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401 && window.location.pathname !== '/login') {
-      localStorage.removeItem('dian_token');
-      localStorage.removeItem('dian_user');
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
       window.location.href = '/login';
     }
     return Promise.reject(err);
@@ -30,14 +30,14 @@ axios.interceptors.response.use(
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
     try {
-      const stored = localStorage.getItem('dian_user');
+      const stored = localStorage.getItem('user');
       return stored ? JSON.parse(stored) : null;
     } catch {
       return null;
     }
   });
 
-  const [token, setToken] = useState(() => localStorage.getItem('dian_token') || null);
+  const [token, setToken] = useState(() => localStorage.getItem('token') || null);
   const [loading, setLoading] = useState(false);
 
   // doLogin: llama al backend, guarda token y user en localStorage
@@ -46,8 +46,8 @@ export function AuthProvider({ children }) {
     try {
       const res = await axios.post(`${API_URL}/auth/login`, { email, password });
       const { token: newToken, user: newUser } = res.data;
-      localStorage.setItem('dian_token', newToken);
-      localStorage.setItem('dian_user', JSON.stringify(newUser));
+      localStorage.setItem('token', newToken);
+      localStorage.setItem('user', JSON.stringify(newUser));
       setToken(newToken);
       setUser(newUser);
       return newUser;
@@ -58,8 +58,8 @@ export function AuthProvider({ children }) {
 
   // doLogout: limpia todo
   const doLogout = useCallback(() => {
-    localStorage.removeItem('dian_token');
-    localStorage.removeItem('dian_user');
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
     setToken(null);
     setUser(null);
   }, []);
