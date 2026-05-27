@@ -91,50 +91,48 @@ const reenviarFactura = async ({ facturaId, destinatarios, mensaje, usuarioId })
     }
   }
 
-  const htmlBody = `
-    <div style="font-family:Arial,sans-serif;max-width:600px">
-      <h2 style="color:#1d4ed8">Factura Electrónica DIAN</h2>
-      <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
-        <tr><td style="padding:6px;color:#666">Número:</td><td style="padding:6px;font-weight:bold">${factura.numero}</td></tr>
-        <tr style="background:#f5f5f5"><td style="padding:6px;color:#666">Proveedor:</td><td style="padding:6px">${factura.proveedor_nombre}</td></tr>
-        <tr><td style="padding:6px;color:#666">NIT:</td><td style="padding:6px">${factura.proveedor_nit}</td></tr>
-        <tr style="background:#f5f5f5"><td style="padding:6px;color:#666">Fecha:</td><td style="padding:6px">${factura.fecha_emision}</td></tr>
-        <tr><td style="padding:6px;color:#666">Total:</td><td style="padding:6px;font-weight:bold;font-size:18px">$${Number(factura.total).toLocaleString('es-CO')}</td></tr>
-      </table>
-      ${mensaje ? `<p style="background:#f0f7ff;padding:12px;border-radius:6px">${mensaje}</p>` : ''}
-      <p style="color:#666;font-size:12px">Este correo fue enviado desde el sistema de gestión de facturas DIAN. Se adjuntan el PDF y el XML de la factura.</p>
-    </div>
-  `;
-
   const { gmail } = await getGmailClient();
   const from = `Facturas DIAN <${process.env.GMAIL_USER}>`;
   const subject = `Factura ${factura.tipo} ${factura.numero} - ${factura.proveedor_nombre}`;
 
-  const raw = buildRawEmail({
-    from,
-    to: destinatarios.join(', '),
-    subject,
-    htmlBody,
-    attachments,
-  });
+  for (const dest of destinatarios) {
+    const email = typeof dest === 'string' ? dest : dest.email;
+    const nombre = (typeof dest === 'object' && dest.nombre) ? dest.nombre : email.split('@')[0];
 
-  await gmail.users.messages.send({
-    userId: 'me',
-    requestBody: { raw },
-  });
+    const htmlBody = `
+      <div style="font-family:Arial,sans-serif;max-width:600px">
+        <h2 style="color:#1d4ed8">Factura Electrónica DIAN</h2>
+        <p>Hola <strong>${nombre}</strong>, te compartimos la siguiente factura:</p>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
+          <tr><td style="padding:6px;color:#666">Número:</td><td style="padding:6px;font-weight:bold">${factura.numero}</td></tr>
+          <tr style="background:#f5f5f5"><td style="padding:6px;color:#666">Proveedor:</td><td style="padding:6px">${factura.proveedor_nombre}</td></tr>
+          <tr><td style="padding:6px;color:#666">NIT:</td><td style="padding:6px">${factura.proveedor_nit}</td></tr>
+          <tr style="background:#f5f5f5"><td style="padding:6px;color:#666">Fecha:</td><td style="padding:6px">${factura.fecha_emision}</td></tr>
+          <tr><td style="padding:6px;color:#666">Total:</td><td style="padding:6px;font-weight:bold;font-size:18px">$${Number(factura.total).toLocaleString('es-CO')}</td></tr>
+        </table>
+        ${mensaje ? `<p style="background:#f0f7ff;padding:12px;border-radius:6px">${mensaje}</p>` : ''}
+        <p style="color:#666;font-size:12px">Este correo fue enviado desde el sistema de gestión de facturas DIAN. Se adjuntan el PDF y el XML de la factura.</p>
+      </div>
+    `;
 
-  console.log(`✅ Factura ${factura.numero} reenviada a ${destinatarios.join(', ')}`);
+    const raw = buildRawEmail({ from, to: email, subject, htmlBody, attachments });
+    await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+    console.log(`✅ Factura ${factura.numero} enviada a ${nombre} <${email}>`);
+  }
+
+  const emailsStr = destinatarios.map(d => typeof d === 'string' ? d : d.email).join(', ');
+  console.log(`✅ Envío completado a: ${emailsStr}`);
 
   // Actualizar estado en BD
   await pool.query(
     `UPDATE facturas SET estado = 'reenviado', reenviado_a = $1 WHERE id = $2`,
-    [destinatarios[0], facturaId]
+    [destinatarios.map(d => typeof d === 'string' ? d : (d.nombre ? `${d.nombre} <${d.email}>` : d.email)).join(', '), facturaId]
   );
 
   // Registrar en log
   await pool.query(
     `INSERT INTO reenvios_log (factura_id, enviado_por, destinatarios) VALUES ($1, $2, $3)`,
-    [facturaId, usuarioId, destinatarios.join(', ')]
+    [facturaId, usuarioId, destinatarios.map(d => typeof d === 'string' ? d : d.email).join(', ')]
   );
 
   return { ok: true };
