@@ -62,6 +62,39 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
+// CRUD Contactos
+router.get('/contactos/lista', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM contactos ORDER BY nombre');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/contactos', authMiddleware, async (req, res) => {
+  try {
+    const { nombre, email, cargo } = req.body;
+    if (!nombre || !email) return res.status(400).json({ error: 'Nombre y email requeridos' });
+    const result = await pool.query(
+      'INSERT INTO contactos (nombre, email, cargo) VALUES ($1, $2, $3) ON CONFLICT (email) DO UPDATE SET nombre=$1, cargo=$3 RETURNING *',
+      [nombre, email, cargo || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/contactos/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM contactos WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Obtener una factura por ID
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
@@ -249,39 +282,6 @@ router.put('/:id/documento-ingreso', authMiddleware, async (req, res) => {
       'UPDATE facturas SET documento_ingreso = $1 WHERE id = $2',
       [documento_ingreso || null, req.params.id]
     );
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// CRUD Contactos
-router.get('/contactos/lista', authMiddleware, async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM contactos ORDER BY nombre');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.post('/contactos', authMiddleware, async (req, res) => {
-  try {
-    const { nombre, email, cargo } = req.body;
-    if (!nombre || !email) return res.status(400).json({ error: 'Nombre y email requeridos' });
-    const result = await pool.query(
-      'INSERT INTO contactos (nombre, email, cargo) VALUES ($1, $2, $3) ON CONFLICT (email) DO UPDATE SET nombre=$1, cargo=$3 RETURNING *',
-      [nombre, email, cargo || null]
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.delete('/contactos/:id', authMiddleware, adminOnly, async (req, res) => {
-  try {
-    await pool.query('DELETE FROM contactos WHERE id = $1', [req.params.id]);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
