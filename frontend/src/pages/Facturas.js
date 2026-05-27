@@ -43,6 +43,7 @@ export default function Facturas({ tipo = 'FE' }) {
   const [contactos, setContactos] = useState([]);
   const [loadingContactos, setLoadingContactos] = useState(false);
   const [newEmail, setNewEmail] = useState('');
+  const [newNombre, setNewNombre] = useState('');
   const [reenvioEmails, setReenvioEmails] = useState([]);
   const [reenvioMsg, setReenvioMsg] = useState('');
   const [deleteRange, setDeleteRange] = useState({ desde: '', hasta: '', tipo: '' });
@@ -96,7 +97,7 @@ export default function Facturas({ tipo = 'FE' }) {
     if (m === 'responsables') setRespEmails([...(fActual.responsables || [])]);
     if (m === 'reenviar') setReenvioEmails([...(fActual.responsables || [])]);
   };
-  const closeModal = () => { setModal(null); setActiveF(null); setNewEmail(''); setReenvioMsg(''); };
+  const closeModal = () => { setModal(null); setActiveF(null); setNewEmail(''); setNewNombre(''); setReenvioMsg(''); };
 
   const guardarResponsables = async () => {
     setActionLoading(true);
@@ -372,11 +373,12 @@ export default function Facturas({ tipo = 'FE' }) {
             })}
           </div>
           {/* Agregar correo manual */}
-          <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>O agregar correo manualmente:</p>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>O agregar manualmente:</p>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            <input style={{ ...inputSt, flex: 1 }} placeholder="Nombre (opcional)" value={newNombre} onChange={e => setNewNombre(e.target.value)} />
             <input style={{ ...inputSt, flex: 1 }} placeholder="correo@empresa.com" value={newEmail} onChange={e => setNewEmail(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && newEmail.includes('@')) { setRespEmails([...respEmails, { email: newEmail.trim(), nombre: null }]); setNewEmail(''); } }} />
-            <button style={btnGhost} onClick={() => { if (newEmail.includes('@')) { setRespEmails([...respEmails, { email: newEmail.trim(), nombre: null }]); setNewEmail(''); } }}>+ Agregar</button>
+              onKeyDown={e => { if (e.key === 'Enter' && newEmail.includes('@')) { setRespEmails([...respEmails, { email: newEmail.trim(), nombre: newNombre.trim() || null }]); setNewEmail(''); setNewNombre(''); } }} />
+            <button style={btnGhost} onClick={() => { if (newEmail.includes('@')) { setRespEmails([...respEmails, { email: newEmail.trim(), nombre: newNombre.trim() || null }]); setNewEmail(''); setNewNombre(''); } }}>+ Agregar</button>
           </div>
         </Modal>
       )}
