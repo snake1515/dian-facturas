@@ -116,7 +116,10 @@ export default function Facturas({ tipo = 'FE' }) {
     if (!reenvioEmails.length) return alert('Agrega al menos un destinatario');
     setActionLoading(true);
     try {
-      await reenviarFactura(activeF.id, { destinatarios: reenvioEmails, mensaje: reenvioMsg });
+      const destinatarios = reenvioEmails.map(r =>
+        typeof r === 'string' ? { email: r, nombre: null } : r
+      );
+      await reenviarFactura(activeF.id, { destinatarios, mensaje: reenvioMsg });
       await cargar();
       closeModal();
     } catch (err) { alert(err.response?.data?.error || 'Error al reenviar'); }
@@ -397,7 +400,7 @@ export default function Facturas({ tipo = 'FE' }) {
               const nombre = typeof r === 'string' ? null : r.nombre;
               return (
                 <label key={email} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #2a3348', fontSize: 13, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={reenvioEmails.includes(email)} onChange={e => setReenvioEmails(e.target.checked ? [...reenvioEmails, email] : reenvioEmails.filter(x => x !== email))} />
+                  <input type="checkbox" checked={reenvioEmails.some(x => (typeof x === 'string' ? x : x.email) === email)} onChange={e => setReenvioEmails(e.target.checked ? [...reenvioEmails, { email, nombre }] : reenvioEmails.filter(x => (typeof x === 'string' ? x : x.email) !== email))} />
                   {nombre ? `${nombre} <${email}>` : email}
                 </label>
               );
