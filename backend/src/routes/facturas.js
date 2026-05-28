@@ -7,7 +7,7 @@ const router = express.Router();
 // ── GET /api/facturas ─────────────────────────────────────────────────────────
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const { tipo, search, estado } = req.query;
+    const { tipo, search, estado, estado_contable } = req.query;
 
     const condiciones = [];
     const valores = [];
@@ -23,6 +23,11 @@ router.get('/', authMiddleware, async (req, res) => {
       valores.push(estado);
     }
 
+    if (estado_contable) {
+      condiciones.push(`f.estado_contable = $${i++}`);
+      valores.push(estado_contable);
+    }
+
     if (search) {
       condiciones.push(`(
         f.proveedor_nombre ILIKE $${i}
@@ -30,6 +35,8 @@ router.get('/', authMiddleware, async (req, res) => {
         OR f.estado_contable ILIKE $${i}
         OR f.documento_ingreso ILIKE $${i}
         OR f.proveedor_nit ILIKE $${i}
+        OR f.notas ILIKE $${i}
+        OR f.total::text ILIKE $${i}
       )`);
       valores.push(`%${search}%`);
       i++;
@@ -57,6 +64,7 @@ router.get('/', authMiddleware, async (req, res) => {
         f.pdf_path,
         f.xml_path,
         f.gmail_message_id,
+        f.notas,
         f.created_at,
         COALESCE(
           json_agg(
@@ -122,13 +130,10 @@ router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(`
-      SELECT
-        f.*,
+      SELECT f.*,
         COALESCE(
-          json_agg(
-            json_build_object('email', r.email, 'nombre', r.nombre)
-          ) FILTER (WHERE r.email IS NOT NULL),
-          '[]'
+          json_agg(json_build_object('email', r.email, 'nombre', r.nombre))
+          FILTER (WHERE r.email IS NOT NULL), '[]'
         ) AS responsables
       FROM facturas f
       LEFT JOIN responsables_factura r ON r.factura_id = f.id
@@ -148,9 +153,7 @@ router.get('/:id/pdf', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('SELECT pdf_path FROM facturas WHERE id = $1', [id]);
-    if (!result.rows.length || !result.rows[0].pdf_path) {
-      return res.status(404).json({ error: 'PDF no disponible' });
-    }
+    if (!result.rows.length || !result.rows[0].pdf_path) return res.status(404).json({ error: 'PDF no disponible' });
     res.sendFile(result.rows[0].pdf_path);
   } catch (err) {
     console.error(err);
@@ -163,9 +166,7 @@ router.get('/:id/xml', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('SELECT xml_path FROM facturas WHERE id = $1', [id]);
-    if (!result.rows.length || !result.rows[0].xml_path) {
-      return res.status(404).json({ error: 'XML no disponible' });
-    }
+    if (!result.rows.length || !result.rows[0].xml_path) return res.status(404).json({ error: 'XML no disponible' });
     res.sendFile(result.rows[0].xml_path);
   } catch (err) {
     console.error(err);
@@ -178,10 +179,7 @@ router.put('/:id/responsables', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { emails } = req.body;
-
-    // Borra los responsables actuales y los reinserta
     await pool.query('DELETE FROM responsables_factura WHERE factura_id = $1', [id]);
-
     for (const e of emails) {
       const email = typeof e === 'string' ? e : e.email;
       const nombre = typeof e === 'string' ? null : (e.nombre || null);
@@ -190,7 +188,6 @@ router.put('/:id/responsables', authMiddleware, async (req, res) => {
         [id, email, nombre]
       );
     }
-
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -203,10 +200,7 @@ router.put('/:id/estado-contable', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { estado_contable } = req.body;
-    await pool.query(
-      'UPDATE facturas SET estado_contable = $1 WHERE id = $2',
-      [estado_contable, id]
-    );
+    await pool.query('UPDATE facturas SET estado_contable = $1 WHERE id = $2', [estado_contable, id]);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -219,14 +213,24 @@ router.put('/:id/documento-ingreso', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { documento_ingreso } = req.body;
-    await pool.query(
-      'UPDATE facturas SET documento_ingreso = $1 WHERE id = $2',
-      [documento_ingreso, id]
-    );
+    await pool.query('UPDATE facturas SET documento_ingreso = $1 WHERE id = $2', [documento_ingreso, id]);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al actualizar documento de ingreso' });
+  }
+});
+
+// ── PUT /api/facturas/:id/notas ───────────────────────────────────────────────
+router.put('/:id/notas', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notas } = req.body;
+    await pool.query('UPDATE facturas SET notas = $1 WHERE id = $2', [notas, id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al actualizar notas' });
   }
 });
 
@@ -265,15 +269,9 @@ router.delete('/', authMiddleware, async (req, res) => {
     const { desde, hasta, tipo } = req.body;
     const condiciones = [`fecha_emision BETWEEN $1 AND $2`];
     const valores = [desde, hasta];
-
-    if (tipo) {
-      condiciones.push(`tipo = $3`);
-      valores.push(tipo);
-    }
-
+    if (tipo) { condiciones.push(`tipo = $3`); valores.push(tipo); }
     const result = await pool.query(
-      `DELETE FROM facturas WHERE ${condiciones.join(' AND ')}`,
-      valores
+      `DELETE FROM facturas WHERE ${condiciones.join(' AND ')}`, valores
     );
     res.json({ eliminadas: result.rowCount });
   } catch (err) {
