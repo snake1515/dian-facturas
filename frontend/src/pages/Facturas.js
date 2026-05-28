@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
-  listarFacturas, actualizarResponsables, reenviarFactura,
+  listarFacturas, obtenerFactura, actualizarResponsables, reenviarFactura,
   eliminarFactura, eliminarPorFechas, gmailSync, actualizarEstadoContable,
   actualizarDocumentoIngreso, listarContactos, crearContacto, eliminarContacto
 } from '../services/api';
@@ -123,11 +123,18 @@ export default function Facturas({ tipo = 'FE' }) {
     finally { setSyncing(false); setSyncModal(false); }
   };
 
-  const openModal = (m, f) => {
+  const openModal = async (m, f) => {
     const fActual = facturas.find(x => x.id === f.id) || f;
     setActiveF(fActual); setModal(m);
     if (m === 'responsables') setRespEmails([...(fActual.responsables || [])]);
     if (m === 'reenviar') setReenvioEmails([...(fActual.responsables || [])]);
+    // Fetch full factura with productos when opening detail
+    if (m === 'ver') {
+      try {
+        const res = await obtenerFactura(f.id);
+        setActiveF(res.data);
+      } catch (err) { console.error('Error cargando detalle:', err); }
+    }
   };
   const closeModal = () => { setModal(null); setActiveF(null); setNewEmail(''); setNewNombre(''); setReenvioMsg(''); };
 
