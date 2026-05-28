@@ -86,6 +86,9 @@ const initDB = async () => {
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS notas TEXT;
+      ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
+      ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check CHECK (rol IN ('admin', 'editor', 'lector', 'consulta'));
+      
       ALTER TABLE responsables_factura ADD COLUMN IF NOT EXISTS nombre VARCHAR(150);
       ALTER TABLE facturas ALTER COLUMN estado_contable SET DEFAULT 'por_gestionar';
       CREATE TABLE IF NOT EXISTS contactos (
