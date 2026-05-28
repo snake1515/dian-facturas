@@ -1,11 +1,11 @@
 const express = require('express');
 const { pool } = require('../models/db');
-const { verificarToken } = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ── GET /api/facturas ─────────────────────────────────────────────────────────
-router.get('/', verificarToken, async (req, res) => {
+router.get('/', authMiddleware, async (req, res) => {
   try {
     const { tipo, search, estado } = req.query;
 
@@ -72,7 +72,7 @@ router.get('/', verificarToken, async (req, res) => {
 });
 
 // ── GET /api/facturas/contactos/lista ─────────────────────────────────────────
-router.get('/contactos/lista', verificarToken, async (req, res) => {
+router.get('/contactos/lista', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM contactos ORDER BY nombre ASC');
     res.json(result.rows);
@@ -83,7 +83,7 @@ router.get('/contactos/lista', verificarToken, async (req, res) => {
 });
 
 // ── POST /api/facturas/contactos ──────────────────────────────────────────────
-router.post('/contactos', verificarToken, async (req, res) => {
+router.post('/contactos', authMiddleware, async (req, res) => {
   try {
     const { email, nombre } = req.body;
     const result = await pool.query(
@@ -98,7 +98,7 @@ router.post('/contactos', verificarToken, async (req, res) => {
 });
 
 // ── DELETE /api/facturas/contactos/:id ────────────────────────────────────────
-router.delete('/contactos/:id', verificarToken, async (req, res) => {
+router.delete('/contactos/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     await pool.query('DELETE FROM contactos WHERE id = $1', [id]);
@@ -110,7 +110,7 @@ router.delete('/contactos/:id', verificarToken, async (req, res) => {
 });
 
 // ── GET /api/facturas/:id ─────────────────────────────────────────────────────
-router.get('/:id', verificarToken, async (req, res) => {
+router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('SELECT * FROM facturas WHERE id = $1', [id]);
@@ -123,7 +123,7 @@ router.get('/:id', verificarToken, async (req, res) => {
 });
 
 // ── GET /api/facturas/:id/pdf ─────────────────────────────────────────────────
-router.get('/:id/pdf', verificarToken, async (req, res) => {
+router.get('/:id/pdf', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('SELECT pdf_path FROM facturas WHERE id = $1', [id]);
@@ -138,7 +138,7 @@ router.get('/:id/pdf', verificarToken, async (req, res) => {
 });
 
 // ── GET /api/facturas/:id/xml ─────────────────────────────────────────────────
-router.get('/:id/xml', verificarToken, async (req, res) => {
+router.get('/:id/xml', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('SELECT xml_path FROM facturas WHERE id = $1', [id]);
@@ -153,7 +153,7 @@ router.get('/:id/xml', verificarToken, async (req, res) => {
 });
 
 // ── PUT /api/facturas/:id/responsables ────────────────────────────────────────
-router.put('/:id/responsables', verificarToken, async (req, res) => {
+router.put('/:id/responsables', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { emails } = req.body;
@@ -169,7 +169,7 @@ router.put('/:id/responsables', verificarToken, async (req, res) => {
 });
 
 // ── PUT /api/facturas/:id/estado-contable ─────────────────────────────────────
-router.put('/:id/estado-contable', verificarToken, async (req, res) => {
+router.put('/:id/estado-contable', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { estado_contable } = req.body;
@@ -185,7 +185,7 @@ router.put('/:id/estado-contable', verificarToken, async (req, res) => {
 });
 
 // ── PUT /api/facturas/:id/documento-ingreso ───────────────────────────────────
-router.put('/:id/documento-ingreso', verificarToken, async (req, res) => {
+router.put('/:id/documento-ingreso', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { documento_ingreso } = req.body;
@@ -201,7 +201,7 @@ router.put('/:id/documento-ingreso', verificarToken, async (req, res) => {
 });
 
 // ── POST /api/facturas/:id/reenviar ───────────────────────────────────────────
-router.post('/:id/reenviar', verificarToken, async (req, res) => {
+router.post('/:id/reenviar', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { destinatarios } = req.body;
@@ -218,7 +218,7 @@ router.post('/:id/reenviar', verificarToken, async (req, res) => {
 });
 
 // ── DELETE /api/facturas/:id ──────────────────────────────────────────────────
-router.delete('/:id', verificarToken, async (req, res) => {
+router.delete('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     await pool.query('DELETE FROM facturas WHERE id = $1', [id]);
@@ -230,7 +230,7 @@ router.delete('/:id', verificarToken, async (req, res) => {
 });
 
 // ── DELETE /api/facturas (por rango de fechas) ────────────────────────────────
-router.delete('/', verificarToken, async (req, res) => {
+router.delete('/', authMiddleware, async (req, res) => {
   try {
     const { desde, hasta, tipo } = req.body;
     const condiciones = [`fecha_emision BETWEEN $1 AND $2`];
