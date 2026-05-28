@@ -131,7 +131,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(`
-const result = await pool.query(`
         SELECT f.*,
           COALESCE(json_agg(DISTINCT jsonb_build_object(
             'id', p.id, 'codigo', p.codigo, 'descripcion', p.descripcion,
