@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
+const { descargarArchivo } = require('../services/storageService');
 
 const router = express.Router();
 
@@ -152,12 +153,17 @@ router.get('/:id', authMiddleware, async (req, res) => {
 router.get('/:id/pdf', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT pdf_path FROM facturas WHERE id = $1', [id]);
+    const result = await pool.query('SELECT pdf_path, numero FROM facturas WHERE id = $1', [id]);
     if (!result.rows.length || !result.rows[0].pdf_path) return res.status(404).json({ error: 'PDF no disponible' });
-    res.sendFile(result.rows[0].pdf_path);
+    const buffer = await descargarArchivo(result.rows[0].pdf_path);
+    const filename = `factura_${result.rows[0].numero || id}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error al descargar PDF' });
   }
 });
 
@@ -165,12 +171,17 @@ router.get('/:id/pdf', authMiddleware, async (req, res) => {
 router.get('/:id/xml', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT xml_path FROM facturas WHERE id = $1', [id]);
+    const result = await pool.query('SELECT xml_path, numero FROM facturas WHERE id = $1', [id]);
     if (!result.rows.length || !result.rows[0].xml_path) return res.status(404).json({ error: 'XML no disponible' });
-    res.sendFile(result.rows[0].xml_path);
+    const buffer = await descargarArchivo(result.rows[0].xml_path);
+    const filename = `factura_${result.rows[0].numero || id}.xml`;
+    res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error al descargar XML' });
   }
 });
 
