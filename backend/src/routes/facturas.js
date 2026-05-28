@@ -1,11 +1,10 @@
-import express from 'express';
-import pool from '../db.js'; // ajusta la ruta si tu archivo de conexión está en otro lugar
-import { verificarToken } from '../middleware/auth.js'; // ajusta si es necesario
+const express = require('express');
+const { pool } = require('../models/db');
+const { verificarToken } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ── GET /api/facturas ─────────────────────────────────────────────────────────
-// Parámetros opcionales: tipo (FE|NC), search, estado
 router.get('/', verificarToken, async (req, res) => {
   try {
     const { tipo, search, estado } = req.query;
@@ -14,19 +13,16 @@ router.get('/', verificarToken, async (req, res) => {
     const valores = [];
     let i = 1;
 
-    // Filtrar por tipo (FE o NC) — si no viene, trae todo
     if (tipo) {
       condiciones.push(`f.tipo = $${i++}`);
       valores.push(tipo);
     }
 
-    // Filtrar por estado (pendiente, procesado, reenviado)
     if (estado) {
       condiciones.push(`f.estado = $${i++}`);
       valores.push(estado);
     }
 
-    // Búsqueda por proveedor, número, responsable, estado contable, doc. ingreso
     if (search) {
       condiciones.push(`(
         f.proveedor_nombre ILIKE $${i}
@@ -72,6 +68,44 @@ router.get('/', verificarToken, async (req, res) => {
   } catch (err) {
     console.error('Error al listar facturas:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/facturas/contactos/lista ─────────────────────────────────────────
+router.get('/contactos/lista', verificarToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM contactos ORDER BY nombre ASC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al listar contactos' });
+  }
+});
+
+// ── POST /api/facturas/contactos ──────────────────────────────────────────────
+router.post('/contactos', verificarToken, async (req, res) => {
+  try {
+    const { email, nombre } = req.body;
+    const result = await pool.query(
+      'INSERT INTO contactos (email, nombre) VALUES ($1, $2) RETURNING *',
+      [email, nombre]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al crear contacto' });
+  }
+});
+
+// ── DELETE /api/facturas/contactos/:id ────────────────────────────────────────
+router.delete('/contactos/:id', verificarToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM contactos WHERE id = $1', [id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al eliminar contacto' });
   }
 });
 
@@ -170,16 +204,12 @@ router.put('/:id/documento-ingreso', verificarToken, async (req, res) => {
 router.post('/:id/reenviar', verificarToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { destinatarios, mensaje } = req.body;
-
-    // Aquí va tu lógica de envío de correo
-    // Por ahora actualiza el estado y guarda a quién se reenvió
+    const { destinatarios } = req.body;
     const emailsStr = destinatarios.map(d => d.email || d).join(', ');
     await pool.query(
       `UPDATE facturas SET estado = 'reenviado', reenviado_a = $1 WHERE id = $2`,
       [emailsStr, id]
     );
-
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -203,7 +233,6 @@ router.delete('/:id', verificarToken, async (req, res) => {
 router.delete('/', verificarToken, async (req, res) => {
   try {
     const { desde, hasta, tipo } = req.body;
-
     const condiciones = [`fecha_emision BETWEEN $1 AND $2`];
     const valores = [desde, hasta];
 
@@ -216,7 +245,6 @@ router.delete('/', verificarToken, async (req, res) => {
       `DELETE FROM facturas WHERE ${condiciones.join(' AND ')}`,
       valores
     );
-
     res.json({ eliminadas: result.rowCount });
   } catch (err) {
     console.error(err);
@@ -224,42 +252,4 @@ router.delete('/', verificarToken, async (req, res) => {
   }
 });
 
-// ── GET /api/facturas/contactos/lista ─────────────────────────────────────────
-router.get('/contactos/lista', verificarToken, async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM contactos ORDER BY nombre ASC');
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al listar contactos' });
-  }
-});
-
-// ── POST /api/facturas/contactos ──────────────────────────────────────────────
-router.post('/contactos', verificarToken, async (req, res) => {
-  try {
-    const { email, nombre } = req.body;
-    const result = await pool.query(
-      'INSERT INTO contactos (email, nombre) VALUES ($1, $2) RETURNING *',
-      [email, nombre]
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al crear contacto' });
-  }
-});
-
-// ── DELETE /api/facturas/contactos/:id ────────────────────────────────────────
-router.delete('/contactos/:id', verificarToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    await pool.query('DELETE FROM contactos WHERE id = $1', [id]);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al eliminar contacto' });
-  }
-});
-
-export default router;
+module.exports = router;
