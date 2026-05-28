@@ -326,6 +326,28 @@ export default function Facturas({ tipo = 'FE' }) {
               {activeF.reenviado_a && <Item label="Reenviado a" val={<span style={{ color: '#4ade80' }}>{activeF.reenviado_a}</span>} />}
             </Grid2>
           </Section>
+          {activeF.productos?.length > 0 && (
+            <Section title="Productos / Servicios">
+              <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>{['Código', 'Descripción', 'Cant.', 'P. Unit.', 'Total'].map(h => (
+                    <th key={h} style={{ padding: '6px 8px', textAlign: 'left', color: '#64748b', borderBottom: '1px solid #2a3348', fontSize: 10, textTransform: 'uppercase' }}>{h}</th>
+                  ))}</tr>
+                </thead>
+                <tbody>
+                  {activeF.productos.map((p, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid rgba(42,51,72,.5)' }}>
+                      <td style={{ padding: '8px', color: '#64748b', fontFamily: 'monospace', fontSize: 11 }}>{p.codigo || '—'}</td>
+                      <td style={{ padding: '8px' }}>{p.descripcion}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', color: '#94a3b8' }}>{p.cantidad}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', color: '#94a3b8' }}>{fmt(p.precioUnitario || p.precio_unitario)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', fontWeight: 600 }}>{fmt(p.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Section>
+          )}
           <Section title="Totales">
             <TotalRow label="Subtotal" val={fmt(activeF.subtotal)} />
             <TotalRow label="IVA" val={fmt(activeF.iva)} />
