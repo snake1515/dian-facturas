@@ -30,7 +30,6 @@ router.get('/', authMiddleware, async (req, res) => {
         OR f.estado_contable ILIKE $${i}
         OR f.documento_ingreso ILIKE $${i}
         OR f.proveedor_nit ILIKE $${i}
-        OR f.responsables::text ILIKE $${i}
       )`);
       valores.push(`%${search}%`);
       i++;
@@ -43,23 +42,32 @@ router.get('/', authMiddleware, async (req, res) => {
         f.id,
         f.tipo,
         f.numero,
+        f.cufe,
         f.proveedor_nombre,
         f.proveedor_nit,
         f.fecha_emision,
+        f.fecha_vencimiento,
+        f.subtotal,
+        f.iva,
         f.total,
         f.estado,
         f.estado_contable,
         f.documento_ingreso,
-        f.responsables,
         f.reenviado_a,
-        f.subtotal,
-        f.impuestos,
-        f.descuentos,
-        f.moneda,
-        f.notas,
-        f.created_at
+        f.pdf_path,
+        f.xml_path,
+        f.gmail_message_id,
+        f.created_at,
+        COALESCE(
+          json_agg(
+            json_build_object('email', r.email, 'nombre', r.nombre)
+          ) FILTER (WHERE r.email IS NOT NULL),
+          '[]'
+        ) AS responsables
       FROM facturas f
+      LEFT JOIN responsables_factura r ON r.factura_id = f.id
       ${where}
+      GROUP BY f.id
       ORDER BY f.fecha_emision DESC, f.created_at DESC
     `;
 
@@ -113,7 +121,20 @@ router.delete('/contactos/:id', authMiddleware, async (req, res) => {
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT * FROM facturas WHERE id = $1', [id]);
+    const result = await pool.query(`
+      SELECT
+        f.*,
+        COALESCE(
+          json_agg(
+            json_build_object('email', r.email, 'nombre', r.nombre)
+          ) FILTER (WHERE r.email IS NOT NULL),
+          '[]'
+        ) AS responsables
+      FROM facturas f
+      LEFT JOIN responsables_factura r ON r.factura_id = f.id
+      WHERE f.id = $1
+      GROUP BY f.id
+    `, [id]);
     if (!result.rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
     res.json(result.rows[0]);
   } catch (err) {
@@ -157,10 +178,19 @@ router.put('/:id/responsables', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { emails } = req.body;
-    await pool.query(
-      'UPDATE facturas SET responsables = $1 WHERE id = $2',
-      [JSON.stringify(emails), id]
-    );
+
+    // Borra los responsables actuales y los reinserta
+    await pool.query('DELETE FROM responsables_factura WHERE factura_id = $1', [id]);
+
+    for (const e of emails) {
+      const email = typeof e === 'string' ? e : e.email;
+      const nombre = typeof e === 'string' ? null : (e.nombre || null);
+      await pool.query(
+        'INSERT INTO responsables_factura (factura_id, email, nombre) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+        [id, email, nombre]
+      );
+    }
+
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
