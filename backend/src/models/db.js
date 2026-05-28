@@ -84,6 +84,8 @@ const initDB = async () => {
 
       -- Migraciones para DBs existentes
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
+      ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
+      ALTER TABLE facturas ADD COLUMN IF NOT EXISTS notas TEXT;
       ALTER TABLE responsables_factura ADD COLUMN IF NOT EXISTS nombre VARCHAR(150);
       ALTER TABLE facturas ALTER COLUMN estado_contable SET DEFAULT 'por_gestionar';
       CREATE TABLE IF NOT EXISTS contactos (
