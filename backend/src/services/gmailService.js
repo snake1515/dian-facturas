@@ -55,16 +55,22 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
     let query = palabras.map(p => `subject:"${p}"`).join(' OR ');
     query = `(${query}) has:attachment`;
 
-    // Filtro por fechas en formato Gmail (after:YYYY/MM/DD before:YYYY/MM/DD)
+    // Filtro por fechas en formato Gmail
+    let desdeTimestamp = null;
+    let hastaTimestamp = null;
+
     if (desde) {
-      const d = new Date(desde);
+      const d = new Date(desde + 'T00:00:00');
+      desdeTimestamp = d.getTime();
       query += ` after:${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
     }
     if (hasta) {
-      const h = new Date(hasta);
-      // Sumar un dia para incluir el dia hasta
-      h.setDate(h.getDate() + 1);
-      query += ` before:${h.getFullYear()}/${String(h.getMonth()+1).padStart(2,'0')}/${String(h.getDate()).padStart(2,'0')}`;
+      const h = new Date(hasta + 'T23:59:59');
+      hastaTimestamp = h.getTime();
+      // Sumar un dia para incluir el dia hasta en Gmail
+      const hNext = new Date(h);
+      hNext.setDate(hNext.getDate() + 1);
+      query += ` before:${hNext.getFullYear()}/${String(hNext.getMonth()+1).padStart(2,'0')}/${String(hNext.getDate()).padStart(2,'0')}`;
     }
 
     console.log(`🔍 Query Gmail: ${query}`);
@@ -84,7 +90,35 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
       pageToken = listRes.data.nextPageToken || null;
       console.log(`📬 Página: ${batch.length} correos, total acumulado: ${messages.length}`);
     } while (pageToken);
-    console.log(`📬 Total correos a revisar: ${messages.length}`);
+
+    // Filtro adicional por fecha interna del mensaje (evita correos fuera del rango)
+    if (desdeTimestamp || hastaTimestamp) {
+      const antes = messages.length;
+      // Obtenemos metadatos de cada mensaje para verificar fecha real
+      // Solo filtramos si hay rango definido
+      const messagesFiltrados = [];
+      for (const msg of messages) {
+        try {
+          const meta = await gmail.users.messages.get({
+            userId: 'me',
+            id: msg.id,
+            format: 'metadata',
+            metadataHeaders: ['Date'],
+          });
+          const internalDate = parseInt(meta.data.internalDate); // en millisegundos
+          if (desdeTimestamp && internalDate < desdeTimestamp) continue;
+          if (hastaTimestamp && internalDate > hastaTimestamp) continue;
+          messagesFiltrados.push(msg);
+        } catch (err) {
+          // Si no podemos obtener metadatos, incluimos el mensaje
+          messagesFiltrados.push(msg);
+        }
+      }
+      messages = messagesFiltrados;
+      console.log(`🗓️ Filtro de fechas: ${antes} → ${messages.length} correos dentro del rango`);
+    }
+
+    console.log(`📬 Total correos a procesar: ${messages.length}`);
 
     let nuevas = 0;
     for (const msg of messages) {
@@ -139,7 +173,6 @@ const procesarMensaje = async (gmail, messageId) => {
     });
     const data = Buffer.from(attRes.data.data, 'base64');
 
-    // Manejar ZIP
     if (filename.endsWith('.zip') || mimeType.includes('zip')) {
       console.log(`📦 Descomprimiendo ZIP: ${part.filename}`);
       try {
@@ -179,7 +212,6 @@ const procesarMensaje = async (gmail, messageId) => {
     return false;
   }
 
-  // Subir archivos a Supabase Storage
   if (pdfBuffer && pdfFilename) {
     try {
       await subirArchivo(pdfBuffer, pdfFilename, 'application/pdf');
@@ -199,7 +231,6 @@ const procesarMensaje = async (gmail, messageId) => {
     }
   }
 
-  // Parsear XML
   const datos = await parsearXMLDIAN(xmlContent);
 
   const facturaRes = await pool.query(
