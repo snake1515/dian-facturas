@@ -131,16 +131,21 @@ router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(`
-      SELECT f.*,
-        COALESCE(
-          json_agg(json_build_object('email', r.email, 'nombre', r.nombre))
-          FILTER (WHERE r.email IS NOT NULL), '[]'
-        ) AS responsables
-      FROM facturas f
-      LEFT JOIN responsables_factura r ON r.factura_id = f.id
-      WHERE f.id = $1
-      GROUP BY f.id
-    `, [id]);
+const result = await pool.query(`
+        SELECT f.*,
+          COALESCE(json_agg(DISTINCT jsonb_build_object(
+            'id', p.id, 'codigo', p.codigo, 'descripcion', p.descripcion,
+            'cantidad', p.cantidad, 'precioUnitario', p.precio_unitario, 'total', p.total
+          )) FILTER (WHERE p.id IS NOT NULL), '[]') AS productos,
+          COALESCE(json_agg(DISTINCT jsonb_build_object(
+            'email', r.email, 'nombre', r.nombre
+          )) FILTER (WHERE r.email IS NOT NULL), '[]') AS responsables
+        FROM facturas f
+        LEFT JOIN productos_factura p ON p.factura_id = f.id
+        LEFT JOIN responsables_factura r ON r.factura_id = f.id
+        WHERE f.id = $1
+        GROUP BY f.id
+      `, [id]);
     if (!result.rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
     res.json(result.rows[0]);
   } catch (err) {
