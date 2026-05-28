@@ -1,20 +1,15 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 import axios from 'axios';
 
 const AuthContext = createContext(null);
-
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
-// Configura axios para que siempre envíe el token JWT si existe
 axios.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// Si el backend responde 401, limpia la sesión automáticamente
 axios.interceptors.response.use(
   (res) => res,
   (err) => {
@@ -29,18 +24,12 @@ axios.interceptors.response.use(
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    try {
-      const stored = localStorage.getItem('user');
-      return stored ? JSON.parse(stored) : null;
-    } catch {
-      return null;
-    }
+    try { const s = localStorage.getItem('user'); return s ? JSON.parse(s) : null; }
+    catch { return null; }
   });
-
   const [token, setToken] = useState(() => localStorage.getItem('token') || null);
   const [loading, setLoading] = useState(false);
 
-  // doLogin: llama al backend, guarda token y user en localStorage
   const doLogin = useCallback(async (email, password) => {
     setLoading(true);
     try {
@@ -51,12 +40,9 @@ export function AuthProvider({ children }) {
       setToken(newToken);
       setUser(newUser);
       return newUser;
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }, []);
 
-  // doLogout: limpia todo
   const doLogout = useCallback(() => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
@@ -64,17 +50,44 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
-  // isAdmin: helper para verificar rol
-  const isAdmin = user?.rol === 'admin';
+  // Actualizar usuario en contexto (para cambios de perfil)
+  const updateUser = useCallback((updates) => {
+    const updated = { ...user, ...updates };
+    localStorage.setItem('user', JSON.stringify(updated));
+    setUser(updated);
+  }, [user]);
+
+  const rol = user?.rol || '';
+
+  // Permisos por rol
+  const isAdmin  = rol === 'admin';
+  const isEditor = rol === 'editor' || rol === 'admin';
+  const isLector = rol === 'lector' || rol === 'editor' || rol === 'admin';
+
+  // Capacidades específicas
+  const puede = {
+    verFacturas:        isLector,
+    descargarArchivos:  isLector,
+    asignarResponsables: isLector,
+    reenviarFacturas:   isLector,
+    editarEstadoContable: isEditor,
+    editarDocIngreso:   isEditor,
+    editarNotas:        isEditor,
+    borrarPorFechas:    isEditor,
+    sincronizar:        isEditor,
+    eliminarFacturas:   isAdmin,
+    verUsuarios:        isAdmin,
+    verConfiguracion:   isAdmin,
+    gestionarUsuarios:  isAdmin,
+  };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, isAdmin, doLogin, doLogout }}>
+    <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isLector, puede, doLogin, doLogout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
 }
 
-// Hook de acceso al contexto
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth debe usarse dentro de <AuthProvider>');
