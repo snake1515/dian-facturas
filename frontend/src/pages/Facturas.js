@@ -11,7 +11,7 @@ const fmt = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency:
 const fmtDate = (s) => { if (!s) return '—'; try { const solo = String(s).substring(0, 10); const [y, m, d] = solo.split('-'); if (!y || !m || !d) return s; return d+'/'+m+'/'+y; } catch(e) { return s; } };
 
 const descargarArchivo = async (id, tipo) => {
-  const token = localStorage.getItem('dian_token');
+  const token = localStorage.getItem('token');
   const base = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
   const url = base + '/facturas/' + id + '/' + tipo;
   try {
