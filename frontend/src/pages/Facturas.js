@@ -10,16 +10,6 @@ import api from '../services/api';
 const fmt = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
 const fmtDate = (s) => { if (!s) return '—'; try { const solo = String(s).substring(0, 10); const [y, m, d] = solo.split('-'); if (!y || !m || !d) return s; return d+'/'+m+'/'+y; } catch(e) { return s; } };
 
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-  useEffect(() => {
-    const handler = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener('resize', handler);
-    return () => window.removeEventListener('resize', handler);
-  }, []);
-  return isMobile;
-}
-
 const descargarArchivo = async (id, tipo) => {
   const token = localStorage.getItem('token');
   const base = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
@@ -46,7 +36,6 @@ const ESTADOS_CONTABLES = [
 
 export default function Facturas({ tipo = 'FE' }) {
   const { puede, isAdmin } = useAuth();
-  const isMobile = useIsMobile();
   const [facturas, setFacturas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -256,7 +245,7 @@ export default function Facturas({ tipo = 'FE' }) {
         </button>
       </div>
 
-      {/* Tabla / Tarjetas */}
+      {/* Tabla */}
       <div style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, overflow: 'hidden' }}>
         {loading ? (
           <div style={{ textAlign: 'center', padding: 48, color: '#64748b' }}>Cargando...</div>
@@ -265,46 +254,7 @@ export default function Facturas({ tipo = 'FE' }) {
             <div style={{ fontSize: 40, marginBottom: 12 }}>📄</div>
             <p>No hay {tipo === 'FE' ? 'facturas' : 'notas crédito'} registradas</p>
           </div>
-        ) : isMobile ? (
-          /* ── Vista móvil: tarjetas ── */
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {sortedFacturas.map(f => (
-              <div key={f.id} onClick={() => openModal('ver', f)}
-                style={{ padding: '12px 14px', borderBottom: '1px solid #2a3348', cursor: 'pointer', background: selected.has(f.id) ? 'rgba(59,130,246,.08)' : 'transparent' }}>
-                {/* Fila 1: checkbox + tipo + número + acciones */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <input type="checkbox" checked={selected.has(f.id)} onChange={() => toggleSelect(f.id)} onClick={e => e.stopPropagation()} />
-                  <span style={{ background: f.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: f.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 7px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{f.tipo}</span>
-                  <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#94a3b8', flex: 1 }}>{f.numero}</span>
-                  {estadoBadge(f)}
-                </div>
-                {/* Fila 2: proveedor + total */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-                  <div>
-                    <div style={{ fontWeight: 600, color: '#e2e8f0', fontSize: 13 }}>{f.proveedor_nombre}</div>
-                    <div style={{ fontSize: 11, color: '#64748b' }}>NIT: {f.proveedor_nit} · {fmtDate(f.fecha_emision)}</div>
-                  </div>
-                  <div style={{ fontWeight: 700, color: parseFloat(f.total) < 0 ? '#f87171' : '#4ade80', fontSize: 14, whiteSpace: 'nowrap', marginLeft: 8 }}>{fmt(f.total)}</div>
-                </div>
-                {/* Fila 3: estado contable + doc ingreso */}
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }} onClick={e => e.stopPropagation()}>
-                  <EstadoContableSelect factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} />
-                  <DocIngresoInput factura={f} onUpdate={cargar} canEdit={puede.editarDocIngreso} />
-                </div>
-                {/* Fila 4: acciones */}
-                <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
-                  <button style={iconBtn} title="Ver detalle" onClick={() => openModal('ver', f)}>👁</button>
-                  <button style={iconBtn} title="Responsables" onClick={() => openModal('responsables', f)}>👤</button>
-                  <button style={iconBtn} title="Reenviar" onClick={() => openModal('reenviar', f)}>📤</button>
-                  <button style={iconBtn} title="PDF" onClick={() => descargarArchivo(f.id, 'pdf')}>📄</button>
-                  <button style={iconBtn} title="XML" onClick={() => descargarArchivo(f.id, 'xml')}>📋</button>
-                  {puede.eliminarFacturas && <button style={{ ...iconBtn, color: '#f87171' }} title="Eliminar" onClick={() => handleEliminar(f.id)}>🗑</button>}
-                </div>
-              </div>
-            ))}
-          </div>
         ) : (
-          /* ── Vista desktop: tabla ── */
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
               <thead>
