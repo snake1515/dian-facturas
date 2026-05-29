@@ -47,21 +47,8 @@ const iniciarCron = async () => {
 
     if (cronJob) cronJob.stop();
 
-    cronJob = cron.schedule(expresion, async () => {
-      console.log(`⏰ Cron: sincronizando Gmail (cada ${horas}h)`);
-      try {
-        const gmailConnected = await pool.query(
-          "SELECT valor FROM configuracion WHERE clave = 'gmail_connected'"
-        );
-        if (gmailConnected.rows[0]?.valor === 'true') {
-          await sincronizarCorreos();
-        }
-      } catch (err) {
-        console.error('❌ Error en cron de sincronización:', err.message);
-      }
-    });
-
-    console.log(`✅ Cron configurado: sincronización cada ${horas} hora(s)`);
+    // Cron automático desactivado — importación solo por rango de fechas manual
+    console.log(`ℹ️ Sincronización automática desactivada. Usar importación por rango de fechas.`);
   } catch (err) {
     console.error('Error iniciando cron:', err.message);
   }
