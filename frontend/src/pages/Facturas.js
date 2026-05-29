@@ -11,7 +11,7 @@ const fmt = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency:
 const fmtDate = (s) => { if (!s) return '—'; try { const solo = String(s).substring(0, 10); const [y, m, d] = solo.split('-'); if (!y || !m || !d) return s; return d+'/'+m+'/'+y; } catch(e) { return s; } };
 
 const descargarArchivo = async (id, tipo) => {
-  const token = localStorage.getItem('token');
+  const token = localStorage.getItem('dian_token');
   const base = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
   const url = base + '/facturas/' + id + '/' + tipo;
   try {
@@ -240,6 +240,9 @@ export default function Facturas({ tipo = 'FE' }) {
             {syncing ? '⟳ Sincronizando...' : '⟳ Sincronizar'}
           </button>
         )}
+        <button style={btnGhost} onClick={() => setModal('exportar')} title="Descargar reporte Excel">
+          📥 Exportar
+        </button>
       </div>
 
       {/* Tabla */}
@@ -451,6 +454,11 @@ export default function Facturas({ tipo = 'FE' }) {
         </Modal>
       )}
 
+      {/* MODAL EXPORTAR */}
+      {modal === 'exportar' && (
+        <ExportModal facturas={sortedFacturas} tipo={tipo} onClose={closeModal} />
+      )}
+
       {/* MODAL SINCRONIZAR */}
       {syncModal && (
         <Modal title="Sincronizar Gmail" onClose={() => setSyncModal(false)} footer={
@@ -555,6 +563,86 @@ const Section = ({ title, children }) => <div style={{ marginBottom: 20 }}><div 
 const Grid2 = ({ children }) => <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>{children}</div>;
 const Item = ({ label, val }) => <div><div style={{ fontSize: 11, color: '#64748b' }}>{label}</div><div style={{ fontSize: 13, fontWeight: 500, marginTop: 2 }}>{val}</div></div>;
 const TotalRow = ({ label, val, grand }) => <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: grand ? 14 : 13, fontWeight: grand ? 600 : 400, color: grand ? '#e2e8f0' : '#94a3b8', borderTop: grand ? '1px solid #2a3348' : 'none', marginTop: grand ? 4 : 0 }}><span>{label}</span><span>{val}</span></div>;
+
+
+// ── ExportModal ───────────────────────────────────────────────────────────────
+function ExportModal({ facturas, tipo, onClose }) {
+  const [desde, setDesde] = React.useState('');
+  const [hasta, setHasta] = React.useState('');
+
+  const filtered = facturas.filter(f => {
+    if (desde && f.fecha_emision < desde) return false;
+    if (hasta && f.fecha_emision > hasta) return false;
+    return true;
+  });
+
+  const exportar = () => {
+    const ESTADOS = {
+      por_gestionar: 'Por gestionar', recibio_inventarios: 'Recibió inventarios',
+      recibio_contabilidad: 'Recibió contabilidad', ingresado: 'Ingresado', aprobado: 'Aprobado',
+    };
+    const headers = ['Tipo','Número','Proveedor','NIT','Fecha Emisión','Subtotal','IVA','Total',
+      'Estado','Estado Contable','Doc. Ingreso','Responsables','Reenviado a','CUFE'];
+    const rows = filtered.map(f => [
+      f.tipo, f.numero, f.proveedor_nombre, f.proveedor_nit,
+      f.fecha_emision ? String(f.fecha_emision).substring(0,10) : '',
+      f.subtotal || 0, f.iva || 0, f.total || 0,
+      f.estado || '', ESTADOS[f.estado_contable] || f.estado_contable || '',
+      f.documento_ingreso || '',
+      (f.responsables || []).map(r => typeof r === 'string' ? r : (r.nombre ? r.nombre+' <'+r.email+'>' : r.email)).join('; '),
+      f.reenviado_a || '', f.cufe || '',
+    ]);
+
+    // Build CSV with BOM for Excel spanish encoding
+    const bom = '﻿';
+    const csv = bom + [headers, ...rows].map(row =>
+      row.map(v => {
+        const s = String(v).replace(/"/g, '""');
+        return s.includes(',') || s.includes('"') || s.includes('
+') ? `"${s}"` : s;
+      }).join(',')
+    ).join('
+');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `reporte_${tipo}_${desde||'todo'}_${hasta||'todo'}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    onClose();
+  };
+
+  const inputSt2 = { width: '100%', background: '#0f1117', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 12px', color: '#e2e8f0', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
+
+  return (
+    <Modal title={`Exportar reporte — ${tipo === 'FE' ? 'Facturas' : 'Notas crédito'}`} onClose={onClose} footer={
+      <>
+        <button style={{ background: '#1e2535', color: '#94a3b8', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }} onClick={onClose}>Cancelar</button>
+        <button style={{ background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }} onClick={exportar}>
+          📥 Descargar CSV ({filtered.length} registros)
+        </button>
+      </>
+    }>
+      <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
+        Filtra por rango de fechas o deja vacío para exportar todo. El archivo abre directamente en Excel.
+      </p>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+        <div style={{ flex: 1 }}>
+          <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Desde</label>
+          <input style={inputSt2} type="date" value={desde} onChange={e => setDesde(e.target.value)} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Hasta</label>
+          <input style={inputSt2} type="date" value={hasta} onChange={e => setHasta(e.target.value)} />
+        </div>
+      </div>
+      <div style={{ background: '#0f1117', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: '#64748b' }}>
+        📋 Se exportarán <strong style={{ color: '#e2e8f0' }}>{filtered.length}</strong> registros con todas las columnas: tipo, número, proveedor, NIT, fecha, subtotal, IVA, total, estado, estado contable, documento de ingreso, responsables, CUFE.
+      </div>
+    </Modal>
+  );
+}
 
 const card = { background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, padding: '12px 14px' };
 const th = { padding: '10px 14px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: '#64748b', letterSpacing: '.06em', textTransform: 'uppercase' };
