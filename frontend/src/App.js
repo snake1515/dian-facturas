@@ -6,6 +6,7 @@ import Login from './pages/Login';
 import Facturas from './pages/Facturas';
 import Usuarios from './pages/Usuarios';
 import Configuracion from './pages/Configuracion';
+import CruceDIAN from './pages/CruceDIAN';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user } = useAuth();
@@ -56,6 +57,10 @@ function Layout({ children }) {
               Usuarios
             </NavLink>
           )}
+          <NavLink to="/cruce-dian" style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Cruce DIAN
+          </NavLink>
           {puede.verConfiguracion && (
             <NavLink to="/configuracion" style={navStyle}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M4.93 19.07l1.41-1.41M19.07 19.07l-1.41-1.41M21 12h-2M5 12H3M12 21v-2M12 5V3"/></svg>
@@ -90,6 +95,7 @@ export default function App() {
           <Route path="/notas-credito" element={<PrivateRoute><Layout><Facturas tipo="NC" /></Layout></PrivateRoute>} />
           <Route path="/usuarios" element={<PrivateRoute adminOnly><Layout><Usuarios /></Layout></PrivateRoute>} />
           <Route path="/configuracion" element={<PrivateRoute adminOnly><Layout><Configuracion /></Layout></PrivateRoute>} />
+          <Route path="/cruce-dian" element={<PrivateRoute><Layout><CruceDIAN /></Layout></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
