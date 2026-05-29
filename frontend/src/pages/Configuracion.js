@@ -130,11 +130,7 @@ export default function Configuracion() {
               <button style={btnPrimary} onClick={conectarGmail}>
                 📧 {cfg.gmail_connected === 'true' ? 'Reconectar Gmail' : 'Vincular cuenta Gmail'}
               </button>
-              {cfg.gmail_connected === 'true' && (
-                <button style={btnGhost} onClick={() => sincronizarAhora(syncDesde, syncHasta)} disabled={syncing}>
-                  {syncing ? '⟳ Sincronizando...' : '⟳ Sincronizar ahora'}
-                </button>
-              )}
+
             </div>
             {cfg.gmail_connected === 'true' && (
               <div style={{ background: '#0f1117', border: '1px solid #2a3348', borderRadius: 8, padding: 14, marginBottom: 24 }}>
@@ -153,9 +149,7 @@ export default function Configuracion() {
                   <button style={btnPrimary} onClick={() => sincronizarAhora(syncDesde, syncHasta)} disabled={syncing}>
                     {syncing ? 'Importando...' : 'Importar rango'}
                   </button>
-                  <button style={btnGhost} onClick={() => { setSyncDesde(''); setSyncHasta(''); sincronizarAhora(null, null); }} disabled={syncing}>
-                    Importar todo
-                  </button>
+
                   {syncResult !== null && !syncing && (
                     <span style={{ fontSize: 12, color: '#4ade80' }}>Listo: {syncResult} facturas importadas</span>
                   )}
@@ -174,27 +168,14 @@ export default function Configuracion() {
         {/* SINCRONIZACIÓN */}
         {tab === 'sincronizacion' && (
           <div>
-            <h3 style={sectionTitle}>Intervalo de sincronización automática</h3>
-            <FormGroup label="¿Cada cuánto tiempo revisar el correo?">
-              <select style={inputSt} value={cfg.sync_interval_hours || '2'} onChange={e => set('sync_interval_hours', e.target.value)}>
-                <option value="1">Cada 1 hora</option>
-                <option value="2">Cada 2 horas</option>
-                <option value="4">Cada 4 horas</option>
-                <option value="6">Cada 6 horas</option>
-                <option value="8">Cada 8 horas</option>
-                <option value="12">Cada 12 horas</option>
-                <option value="24">Cada 24 horas</option>
-              </select>
-            </FormGroup>
-
-            <ToggleRow label="Procesar XML automáticamente" desc="Extrae datos del XML DIAN al recibir el correo"
-              value={cfg.auto_process_xml === 'true'} onChange={v => set('auto_process_xml', v ? 'true' : 'false')} />
-            <ToggleRow label="Guardar PDF y XML adjunto" desc="Almacena los archivos adjuntos de cada factura"
-              value={cfg.save_attachments !== 'false'} onChange={v => set('save_attachments', v ? 'true' : 'false')} />
-
-            <div style={{ background: '#0f1117', borderRadius: 8, padding: '12px 14px', fontSize: 12, color: '#94a3b8', marginTop: 16 }}>
-              ⏰ Con el intervalo actual ({cfg.sync_interval_hours || 2}h), el sistema revisa el correo {Math.round(24 / (cfg.sync_interval_hours || 2))} veces al día.
+            <h3 style={sectionTitle}>Importación de facturas</h3>
+            <div style={{ background: 'rgba(59,130,246,.08)', border: '1px solid rgba(59,130,246,.2)', borderRadius: 8, padding: '14px 16px', fontSize: 13, color: '#94a3b8', marginBottom: 16 }}>
+              ℹ️ La sincronización automática está <strong style={{ color: '#e2e8f0' }}>desactivada</strong>. Las facturas se importan únicamente cuando solicitas un rango de fechas desde la pestaña <strong style={{ color: '#e2e8f0' }}>Correo Gmail</strong>. Esto evita consumo innecesario de ancho de banda.
             </div>
+            <ToggleRow label="Procesar XML automáticamente" desc="Extrae datos del XML DIAN al importar"
+              value={cfg.auto_process_xml === 'true'} onChange={v => set('auto_process_xml', v ? 'true' : 'false')} />
+            <ToggleRow label="Guardar PDF y XML adjunto" desc="Almacena los archivos adjuntos de cada factura en Supabase"
+              value={cfg.save_attachments !== 'false'} onChange={v => set('save_attachments', v ? 'true' : 'false')} />
           </div>
         )}
 
