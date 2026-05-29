@@ -594,15 +594,13 @@ function ExportModal({ facturas, tipo, onClose }) {
     ]);
 
     // Build CSV with BOM for Excel spanish encoding
-    const bom = '﻿';
+    const bom = '\uFEFF';
     const csv = bom + [headers, ...rows].map(row =>
       row.map(v => {
         const s = String(v).replace(/"/g, '""');
-        return s.includes(',') || s.includes('"') || s.includes('
-') ? `"${s}"` : s;
+        return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s}"` : s;
       }).join(',')
-    ).join('
-');
+    ).join('\n');
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
