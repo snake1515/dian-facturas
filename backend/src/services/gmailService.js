@@ -56,18 +56,14 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
     query = `(${query}) has:attachment`;
 
     // Filtro por fechas en formato Gmail
-    let desdeTimestamp = null;
-    let hastaTimestamp = null;
-
+    // El filtro after/before de Gmail es suficientemente preciso,
+    // no se necesita verificación adicional por internalDate
     if (desde) {
       const d = new Date(desde + 'T00:00:00');
-      desdeTimestamp = d.getTime();
       query += ` after:${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
     }
     if (hasta) {
       const h = new Date(hasta + 'T23:59:59');
-      hastaTimestamp = h.getTime();
-      // Sumar un dia para incluir el dia hasta en Gmail
       const hNext = new Date(h);
       hNext.setDate(hNext.getDate() + 1);
       query += ` before:${hNext.getFullYear()}/${String(hNext.getMonth()+1).padStart(2,'0')}/${String(hNext.getDate()).padStart(2,'0')}`;
@@ -75,7 +71,7 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
 
     console.log(`🔍 Query Gmail: ${query}`);
 
-    // Paginar para traer todos los correos del rango
+    // Paginar para traer todos los IDs del rango (muy liviano, no baja adjuntos)
     let messages = [];
     let pageToken = null;
     do {
@@ -90,33 +86,6 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
       pageToken = listRes.data.nextPageToken || null;
       console.log(`📬 Página: ${batch.length} correos, total acumulado: ${messages.length}`);
     } while (pageToken);
-
-    // Filtro adicional por fecha interna del mensaje (evita correos fuera del rango)
-    if (desdeTimestamp || hastaTimestamp) {
-      const antes = messages.length;
-      // Obtenemos metadatos de cada mensaje para verificar fecha real
-      // Solo filtramos si hay rango definido
-      const messagesFiltrados = [];
-      for (const msg of messages) {
-        try {
-          const meta = await gmail.users.messages.get({
-            userId: 'me',
-            id: msg.id,
-            format: 'metadata',
-            metadataHeaders: ['Date'],
-          });
-          const internalDate = parseInt(meta.data.internalDate); // en millisegundos
-          if (desdeTimestamp && internalDate < desdeTimestamp) continue;
-          if (hastaTimestamp && internalDate > hastaTimestamp) continue;
-          messagesFiltrados.push(msg);
-        } catch (err) {
-          // Si no podemos obtener metadatos, incluimos el mensaje
-          messagesFiltrados.push(msg);
-        }
-      }
-      messages = messagesFiltrados;
-      console.log(`🗓️ Filtro de fechas: ${antes} → ${messages.length} correos dentro del rango`);
-    }
 
     console.log(`📬 Total correos a procesar: ${messages.length}`);
 
@@ -147,11 +116,13 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
 };
 
 const procesarMensaje = async (gmail, messageId) => {
+  // Deduplicación: si ya existe, no procesamos
   const existe = await pool.query(
     'SELECT id FROM facturas WHERE gmail_message_id = $1', [messageId]
   );
   if (existe.rows.length > 0) throw new Error('ya procesado');
 
+  // Una sola llamada a Gmail con el contenido completo
   const msgRes = await gmail.users.messages.get({
     userId: 'me', id: messageId, format: 'full',
   });
@@ -249,15 +220,33 @@ const procesarMensaje = async (gmail, messageId) => {
   );
 
   const facturaId = facturaRes.rows[0].id;
-  for (const prod of datos.productos) {
+
+  // ✅ Insert masivo de productos en una sola query
+  // El resultado en la tabla es idéntico al insert individual
+  if (datos.productos && datos.productos.length > 0) {
+    const placeholders = datos.productos.map((_, i) =>
+      `($1, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5}, $${i * 5 + 6})`
+    ).join(', ');
+
+    const valores = [
+      facturaId,
+      ...datos.productos.flatMap(p => [
+        p.codigo,
+        p.descripcion,
+        p.cantidad,
+        p.precioUnitario,
+        p.total,
+      ]),
+    ];
+
     await pool.query(
       `INSERT INTO productos_factura (factura_id, codigo, descripcion, cantidad, precio_unitario, total)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [facturaId, prod.codigo, prod.descripcion, prod.cantidad, prod.precioUnitario, prod.total]
+       VALUES ${placeholders}`,
+      valores
     );
   }
 
-  console.log(`✅ Factura ${datos.numero} de ${datos.proveedorNombre} guardada`);
+  console.log(`✅ Factura ${datos.numero} de ${datos.proveedorNombre} guardada con ${datos.productos?.length || 0} productos`);
   return true;
 };
 
@@ -269,3 +258,4 @@ const obtenerPartes = (payload, partes = []) => {
 };
 
 module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos };
+
