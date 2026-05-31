@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const cron = require('node-cron');
 const path = require('path');
 
@@ -15,11 +16,29 @@ const configuracionRoutes = require('./routes/configuracion');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middlewares
+// Security headers
+app.use(helmet({
+  contentSecurityPolicy: false, // Desactivado para no bloquear la API REST
+  crossOriginEmbedderPolicy: false,
+}));
+
+// CORS
 app.use(cors({
   origin: [process.env.FRONTEND_URL, 'http://localhost:3000'],
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+
+// Headers adicionales de seguridad
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -34,33 +53,23 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Cron job dinámico - lee el intervalo configurado en BD
+// Cron desactivado — importación solo por rango de fechas manual
 let cronJob = null;
 
 const iniciarCron = async () => {
   try {
-    const res = await pool.query(
-      "SELECT valor FROM configuracion WHERE clave = 'sync_interval_hours'"
-    );
-    const horas = parseInt(res.rows[0]?.valor || '2');
-    const expresion = `0 */${horas} * * *`; // cada N horas en punto
-
     if (cronJob) cronJob.stop();
-
-    // Cron automático desactivado — importación solo por rango de fechas manual
     console.log(`ℹ️ Sincronización automática desactivada. Usar importación por rango de fechas.`);
   } catch (err) {
     console.error('Error iniciando cron:', err.message);
   }
 };
 
-// Endpoint para reiniciar cron cuando cambia la configuración
 app.post('/api/configuracion/restart-cron', async (req, res) => {
   await iniciarCron();
   res.json({ ok: true });
 });
 
-// Inicializar
 const arrancar = async () => {
   try {
     await initDB();
