@@ -71,9 +71,19 @@ export default function CruceDIAN() {
   // Col E (índice 4) = FACT (número completo: Prefijo+Folio)
   // Col O (índice 14) = VALOR (número, se formatea como COP)
   // Col S (índice 18) = RESPONSABLE
+  const MESES_HOJA = {
+    '01': 'FACT ENE', '02': 'FACT FEB', '03': 'FACT MAR', '04': 'FACT ABR',
+    '05': 'FACT MAY', '06': 'FACT JUN', '07': 'FACT JUL', '08': 'FACT AGO',
+    '09': 'FACT SEP', '10': 'FACT OCT', '11': 'FACT NOV', '12': 'FACT DIC',
+  };
+
   const parseArchivoExcel = (arrayBuffer) => {
     const wb = XLSX.read(arrayBuffer, { type: 'array' });
-    const sheetName = wb.SheetNames.includes('BASE') ? 'BASE' : wb.SheetNames[0];
+    // Buscar hoja del mes (ej: "FACT MAY"), si no existe usar la primera hoja
+    const hojaDelMes = MESES_HOJA[mesArchivo];
+    const sheetName = (hojaDelMes && wb.SheetNames.includes(hojaDelMes))
+      ? hojaDelMes
+      : wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
