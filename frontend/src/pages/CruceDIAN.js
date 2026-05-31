@@ -109,9 +109,9 @@ export default function CruceDIAN() {
         iva:            String(cols[12] || '').trim(),
         valor:          valorNum,
         valorFormato:   fmt(valorNum),
-        estado:         String(cols[16] || '').trim(),
-        notas:          String(cols[17] || '').trim(),
-        responsable:    String(cols[18] || '').trim(),
+        estado:         String(cols[15] || '').trim(),
+        responsable:    String(cols[17] || '').trim(),
+        notas:          String(cols[18] || '').trim(),
       });
     }
     return registros;
