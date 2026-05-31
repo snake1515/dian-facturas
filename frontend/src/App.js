@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { ThemeProvider } from './context/ThemeContext';
+import { ThemeProvider, useTheme, TEMAS } from './context/ThemeContext';
 
 import Login from './pages/Login';
 import Facturas from './pages/Facturas';
@@ -97,7 +97,11 @@ function Layout({ children }) {
       <div style={{ borderTop: '1px solid var(--t-border)', paddingTop: 14, marginTop: 8 }}>
         <div style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 2, paddingLeft: 4 }}>{user?.nombre}</div>
         <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 10, paddingLeft: 4 }}>{rolLabel}</div>
-        <button onClick={handleLogout} style={{ width: '100%', background: 'transparent', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', color: 'var(--t-text-muted)', fontSize: 12, cursor: 'pointer', textAlign: 'left' }}>
+
+        {/* Selector de tema */}
+        <TemaSelector />
+
+        <button onClick={handleLogout} style={{ width: '100%', background: 'transparent', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', color: 'var(--t-text-muted)', fontSize: 12, cursor: 'pointer', textAlign: 'left', marginTop: 6 }}>
           Cerrar sesión
         </button>
       </div>
@@ -149,6 +153,49 @@ function Layout({ children }) {
   );
 }
 
+function TemaSelector() {
+  const { temaId, cambiarTema } = useTheme();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div style={{ position: 'relative', marginBottom: 4 }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        width: '100%', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)',
+        borderRadius: 6, padding: '7px 10px', color: 'var(--t-text-secondary)',
+        fontSize: 12, cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 6,
+      }}>
+        <span>{TEMAS[temaId]?.emoji}</span>
+        <span style={{ flex: 1 }}>{TEMAS[temaId]?.nombre}</span>
+        <span style={{ fontSize: 10, opacity: 0.6 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', bottom: '110%', left: 0, right: 0,
+          background: 'var(--t-bg-card)', border: '1px solid var(--t-border)',
+          borderRadius: 8, overflow: 'hidden', zIndex: 100, boxShadow: '0 4px 20px rgba(0,0,0,.4)',
+        }}>
+          {Object.entries(TEMAS).map(([id, t]) => (
+            <div key={id} onClick={() => { cambiarTema(id); setOpen(false); }} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+              cursor: 'pointer', fontSize: 12, color: 'var(--t-text-primary)',
+              background: temaId === id ? 'var(--t-bg-inner)' : 'transparent',
+              borderLeft: temaId === id ? `3px solid ${t['--t-accent']}` : '3px solid transparent',
+            }}>
+              <span>{t.emoji}</span>
+              <span style={{ flex: 1 }}>{t.nombre}</span>
+              {/* Color preview */}
+              <div style={{ display: 'flex', gap: 3 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: t['--t-accent'] }} />
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: t['--t-bg-card'] }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -171,4 +218,5 @@ function LoginGuard() {
   const { user } = useAuth();
   return user ? <Navigate to="/" replace /> : <Login />;
 }
+
 
