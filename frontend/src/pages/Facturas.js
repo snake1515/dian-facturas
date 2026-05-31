@@ -27,7 +27,7 @@ const descargarArchivo = async (id, tipo) => {
 };
 
 const ESTADOS_CONTABLES = [
-  { value: 'por_gestionar',             label: 'Por gestionar',              color: '#94a3b8', bg: '#1e2535' },
+  { value: 'por_gestionar',             label: 'Por gestionar',              color: 'var(--t-text-secondary)', bg: 'var(--t-bg-card)' },
   { value: 'recibio_inventarios',       label: 'Recibió inventarios',        color: '#fbbf24', bg: '#451a03' },
   { value: 'recibio_contabilidad',      label: 'Recibió contabilidad',       color: '#60a5fa', bg: '#1e3a5f' },
   { value: 'ingresado_caja_menor',      label: 'Ingresado por caja menor',   color: '#a78bfa', bg: '#2e1065' },
@@ -112,7 +112,7 @@ export default function Facturas({ tipo = 'FE' }) {
   };
 
   const SortIcon = ({ col }) => {
-    if (sortCol !== col) return <span style={{ color: '#2a3348', marginLeft: 4 }}>↕</span>;
+    if (sortCol !== col) return <span style={{ color: 'var(--t-border)', marginLeft: 4 }}>↕</span>;
     return <span style={{ color: '#3b82f6', marginLeft: 4 }}>{sortDir === 'asc' ? '↑' : '↓'}</span>;
   };
 
@@ -196,7 +196,7 @@ export default function Facturas({ tipo = 'FE' }) {
 
   const estadoBadge = (f) => {
     const map = { pendiente: ['#fbbf24', '#451a03', 'Pendiente'], procesado: ['#60a5fa', '#1e3a5f', 'Procesado'], reenviado: ['#4ade80', '#052e16', 'Reenviado'] };
-    const [c, bg, label] = map[f.estado] || ['#94a3b8', '#1e2535', f.estado];
+    const [c, bg, label] = map[f.estado] || ['var(--t-text-secondary)', 'var(--t-bg-card)', f.estado];
     return <span style={{ background: bg, color: c, padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{label}</span>;
   };
 
@@ -226,11 +226,11 @@ export default function Facturas({ tipo = 'FE' }) {
           { label: 'Valor total', val: fmt(totales.valor), sub: 'acumulado', color: '#22c55e' },
         ].map(s => (
           <div key={s.label} style={card}>
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: s.color, display: 'inline-block' }} />{s.label}
             </div>
-            <div style={{ fontSize: typeof s.val === 'string' ? 15 : 22, fontWeight: 700, color: '#e2e8f0' }}>{s.val}</div>
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{s.sub}</div>
+            <div style={{ fontSize: typeof s.val === 'string' ? 15 : 22, fontWeight: 700, color: 'var(--t-text-primary)' }}>{s.val}</div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 2 }}>{s.sub}</div>
           </div>
         ))}
       </div>
@@ -273,11 +273,11 @@ export default function Facturas({ tipo = 'FE' }) {
       </div>
 
       {/* Tabla */}
-      <div style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, overflow: 'hidden' }}>
+      <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, overflow: 'hidden' }}>
         {loading ? (
-          <div style={{ textAlign: 'center', padding: 48, color: '#64748b' }}>Cargando...</div>
+          <div style={{ textAlign: 'center', padding: 48, color: 'var(--t-text-muted)' }}>Cargando...</div>
         ) : facturas.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 48, color: '#64748b' }}>
+          <div style={{ textAlign: 'center', padding: 48, color: 'var(--t-text-muted)' }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>📄</div>
             <p>No hay {tipo === 'FE' ? 'facturas' : 'notas crédito'} registradas</p>
           </div>
@@ -285,7 +285,7 @@ export default function Facturas({ tipo = 'FE' }) {
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
               <thead>
-                <tr style={{ background: '#161b27', borderBottom: '1px solid #2a3348' }}>
+                <tr style={{ background: 'var(--t-bg-sidebar)', borderBottom: '1px solid var(--t-border)' }}>
                   <th style={th}><input type="checkbox" checked={selected.size === facturas.length && facturas.length > 0} onChange={toggleAll} /></th>
                   <th style={th}>Tipo</th>
                   {thSort('numero', 'Número')}
@@ -310,11 +310,11 @@ export default function Facturas({ tipo = 'FE' }) {
                     <td style={td}><span style={{ background: f.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: f.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{f.tipo}</span></td>
                     <td style={{ ...td, fontFamily: 'monospace', fontSize: 13, color: '#c8d0e0', whiteSpace: 'nowrap', fontWeight: 500 }}>{f.numero}</td>
                     <td style={td}>
-                      <div style={{ fontWeight: 500, color: '#e2e8f0', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.proveedor_nombre}</div>
-                      <div style={{ fontSize: 11, color: '#64748b' }}>NIT: {f.proveedor_nit}</div>
+                      <div style={{ fontWeight: 500, color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.proveedor_nombre}</div>
+                      <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>NIT: {f.proveedor_nit}</div>
                     </td>
-                    <td style={{ ...td, color: '#94a3b8', whiteSpace: 'nowrap' }}>{fmtDate(f.fecha_emision)}</td>
-                    <td style={{ ...td, fontWeight: 600, color: parseFloat(f.total) < 0 ? '#f87171' : '#e2e8f0', whiteSpace: 'nowrap' }}>{fmt(f.total)}</td>
+                    <td style={{ ...td, color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(f.fecha_emision)}</td>
+                    <td style={{ ...td, fontWeight: 600, color: parseFloat(f.total) < 0 ? '#f87171' : 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>{fmt(f.total)}</td>
                     <td style={td}>{estadoBadge(f)}</td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <ResponsableSelect factura={f} contactos={contactos} onUpdate={cargar} canEdit={puede.editarResponsables !== false} />
@@ -368,16 +368,16 @@ export default function Facturas({ tipo = 'FE' }) {
               <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
                 <thead>
                   <tr>{['Código', 'Descripción', 'Cant.', 'P. Unit.', 'Total'].map(h => (
-                    <th key={h} style={{ padding: '6px 8px', textAlign: 'left', color: '#64748b', borderBottom: '1px solid #2a3348', fontSize: 10, textTransform: 'uppercase' }}>{h}</th>
+                    <th key={h} style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)', fontSize: 10, textTransform: 'uppercase' }}>{h}</th>
                   ))}</tr>
                 </thead>
                 <tbody>
                   {activeF.productos.map((p, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid rgba(42,51,72,.5)' }}>
-                      <td style={{ padding: '8px', color: '#64748b', fontFamily: 'monospace', fontSize: 11 }}>{p.codigo || '—'}</td>
+                      <td style={{ padding: '8px', color: 'var(--t-text-muted)', fontFamily: 'monospace', fontSize: 11 }}>{p.codigo || '—'}</td>
                       <td style={{ padding: '8px' }}>{p.descripcion}</td>
-                      <td style={{ padding: '8px', textAlign: 'right', color: '#94a3b8' }}>{p.cantidad}</td>
-                      <td style={{ padding: '8px', textAlign: 'right', color: '#94a3b8' }}>{fmt(p.precioUnitario || p.precio_unitario)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', color: 'var(--t-text-secondary)' }}>{p.cantidad}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', color: 'var(--t-text-secondary)' }}>{fmt(p.precioUnitario || p.precio_unitario)}</td>
                       <td style={{ padding: '8px', textAlign: 'right', fontWeight: 600 }}>{fmt(p.total)}</td>
                     </tr>
                   ))}
@@ -392,7 +392,7 @@ export default function Facturas({ tipo = 'FE' }) {
           </Section>
           {activeF.notas && (
             <Section title="Notas">
-              <div style={{ fontSize: 13, color: '#94a3b8', whiteSpace: 'pre-wrap' }}>{activeF.notas}</div>
+              <div style={{ fontSize: 13, color: 'var(--t-text-secondary)', whiteSpace: 'pre-wrap' }}>{activeF.notas}</div>
             </Section>
           )}
         </Modal>
@@ -406,24 +406,24 @@ export default function Facturas({ tipo = 'FE' }) {
         }>
           {contactos.length > 0 && (
             <div style={{ marginBottom: 12 }}>
-              <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Seleccionar de contactos:</p>
+              <p style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 8 }}>Seleccionar de contactos:</p>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {contactos.map(c => {
                   const ya = respEmails.some(r => (typeof r === 'string' ? r : r.email) === c.email);
-                  return <button key={c.id} onClick={() => { if (ya) setRespEmails(respEmails.filter(r => (typeof r === 'string' ? r : r.email) !== c.email)); else setRespEmails([...respEmails, { email: c.email, nombre: c.nombre }]); }} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 20, border: '1px solid', borderColor: ya ? '#3b82f6' : '#2a3348', background: ya ? 'rgba(59,130,246,.15)' : '#0f1117', color: ya ? '#60a5fa' : '#94a3b8', cursor: 'pointer' }}>{ya ? '✓ ' : ''}{c.nombre} ({c.email})</button>;
+                  return <button key={c.id} onClick={() => { if (ya) setRespEmails(respEmails.filter(r => (typeof r === 'string' ? r : r.email) !== c.email)); else setRespEmails([...respEmails, { email: c.email, nombre: c.nombre }]); }} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 20, border: '1px solid', borderColor: ya ? 'var(--t-accent)' : 'var(--t-border)', background: ya ? 'rgba(59,130,246,.15)' : 'var(--t-bg-app)', color: ya ? '#60a5fa' : 'var(--t-text-secondary)', cursor: 'pointer' }}>{ya ? '✓ ' : ''}{c.nombre} ({c.email})</button>;
                 })}
               </div>
             </div>
           )}
-          <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Asignados:</p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, background: '#0f1117', border: '1px solid #2a3348', borderRadius: 6, padding: 8, minHeight: 44, marginBottom: 12 }}>
+          <p style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 8 }}>Asignados:</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 6, padding: 8, minHeight: 44, marginBottom: 12 }}>
             {respEmails.map((r, i) => {
               const email = typeof r === 'string' ? r : r.email;
               const nombre = typeof r === 'string' ? null : r.nombre;
-              return <span key={email} style={{ background: 'rgba(59,130,246,.15)', color: '#60a5fa', borderRadius: 20, padding: '2px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>{nombre ? `${nombre} <${email}>` : email}<span style={{ cursor: 'pointer', color: '#64748b' }} onClick={() => setRespEmails(respEmails.filter((_, j) => j !== i))}>×</span></span>;
+              return <span key={email} style={{ background: 'rgba(59,130,246,.15)', color: '#60a5fa', borderRadius: 20, padding: '2px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>{nombre ? `${nombre} <${email}>` : email}<span style={{ cursor: 'pointer', color: 'var(--t-text-muted)' }} onClick={() => setRespEmails(respEmails.filter((_, j) => j !== i))}>×</span></span>;
             })}
           </div>
-          <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>Agregar manualmente:</p>
+          <p style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 6 }}>Agregar manualmente:</p>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <input style={{ ...inputSt, flex: '1 1 120px' }} placeholder="Nombre (opcional)" value={newNombre} onChange={e => setNewNombre(e.target.value)} />
             <input style={{ ...inputSt, flex: '1 1 150px' }} placeholder="correo@empresa.com" value={newEmail} onChange={e => setNewEmail(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newEmail.includes('@')) { setRespEmails([...respEmails, { email: newEmail.trim(), nombre: newNombre.trim() || null }]); setNewEmail(''); setNewNombre(''); } }} />
@@ -438,20 +438,20 @@ export default function Facturas({ tipo = 'FE' }) {
           <><button style={btnGhost} onClick={closeModal}>Cancelar</button>
           <button style={btnPrimary} onClick={confirmarReenvio} disabled={actionLoading}>{actionLoading ? 'Enviando...' : '📤 Enviar'}</button></>
         }>
-          <div style={{ background: '#0f1117', borderRadius: 8, padding: '10px 12px', marginBottom: 16 }}>
+          <div style={{ background: 'var(--t-bg-app)', borderRadius: 8, padding: '10px 12px', marginBottom: 16 }}>
             <div style={{ fontWeight: 500 }}>{activeF.proveedor_nombre}</div>
-            <div style={{ color: '#64748b', fontSize: 12 }}>{activeF.numero} · {fmt(activeF.total)}</div>
+            <div style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>{activeF.numero} · {fmt(activeF.total)}</div>
           </div>
           <div style={{ marginBottom: 16 }}>
             <label style={labelSt}>Destinatarios</label>
             {activeF.responsables?.length > 0 ? activeF.responsables.map(r => {
               const email = typeof r === 'string' ? r : r.email;
               const nombre = typeof r === 'string' ? null : r.nombre;
-              return <label key={email} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #2a3348', fontSize: 13, cursor: 'pointer' }}>
+              return <label key={email} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--t-border)', fontSize: 13, cursor: 'pointer' }}>
                 <input type="checkbox" checked={reenvioEmails.some(x => (typeof x === 'string' ? x : x.email) === email)} onChange={e => setReenvioEmails(e.target.checked ? [...reenvioEmails, { email, nombre }] : reenvioEmails.filter(x => (typeof x === 'string' ? x : x.email) !== email))} />
                 {nombre ? `${nombre} <${email}>` : email}
               </label>;
-            }) : <p style={{ fontSize: 12, color: '#64748b' }}>Sin responsables. Agrega uno abajo.</p>}
+            }) : <p style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin responsables. Agrega uno abajo.</p>}
           </div>
           <div style={{ marginBottom: 16 }}>
             <label style={labelSt}>Destinatario adicional</label>
@@ -493,7 +493,7 @@ export default function Facturas({ tipo = 'FE' }) {
           <button style={btnGhost} onClick={handleSync} disabled={syncing}>⟳ Sincronizar todo</button>
           <button style={btnPrimary} onClick={handleSyncRango} disabled={syncing}>{syncing ? 'Sincronizando...' : '⟳ Sincronizar rango'}</button></>
         }>
-          <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 16 }}>Sincroniza todos los correos o selecciona un rango de fechas específico.</p>
+          <p style={{ fontSize: 13, color: 'var(--t-text-secondary)', marginBottom: 16 }}>Sincroniza todos los correos o selecciona un rango de fechas específico.</p>
           <div style={{ marginBottom: 12 }}><label style={labelSt}>Desde</label><input style={inputSt} type="date" value={syncRange.desde} onChange={e => setSyncRange({ ...syncRange, desde: e.target.value })} /></div>
           <div><label style={labelSt}>Hasta</label><input style={inputSt} type="date" value={syncRange.hasta} onChange={e => setSyncRange({ ...syncRange, hasta: e.target.value })} /></div>
         </Modal>
@@ -515,18 +515,18 @@ function NotasInput({ factura, onUpdate, canEdit }) {
     finally { setSaving(false); }
   };
 
-  if (!canEdit) return <span style={{ fontSize: 12, color: factura.notas ? '#e2e8f0' : '#475569' }}>{factura.notas || '—'}</span>;
+  if (!canEdit) return <span style={{ fontSize: 12, color: factura.notas ? 'var(--t-text-primary)' : 'var(--t-text-muted)' }}>{factura.notas || '—'}</span>;
 
   if (editing) return (
     <div style={{ display: 'flex', gap: 4, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
       <input autoFocus value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setEditing(false); }}
-        style={{ width: 110, background: '#1e2535', border: '1px solid #3b82f6', borderRadius: 4, padding: '2px 6px', color: '#e2e8f0', fontSize: 12 }} placeholder="Nota..." />
+        style={{ width: 110, background: 'var(--t-bg-card)', border: '1px solid #3b82f6', borderRadius: 4, padding: '2px 6px', color: 'var(--t-text-primary)', fontSize: 12 }} placeholder="Nota..." />
       <button onClick={handleSave} disabled={saving} style={{ background: '#3b82f6', border: 'none', borderRadius: 4, color: '#fff', padding: '2px 6px', fontSize: 11, cursor: 'pointer' }}>✓</button>
-      <button onClick={() => setEditing(false)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 13 }}>✕</button>
+      <button onClick={() => setEditing(false)} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13 }}>✕</button>
     </div>
   );
 
-  return <span onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ fontSize: 12, color: factura.notas ? '#e2e8f0' : '#475569', cursor: 'pointer', padding: '2px 4px', borderRadius: 4 }} title="Clic para editar">{factura.notas || '+ Agregar'}</span>;
+  return <span onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ fontSize: 12, color: factura.notas ? 'var(--t-text-primary)' : 'var(--t-text-muted)', cursor: 'pointer', padding: '2px 4px', borderRadius: 4 }} title="Clic para editar">{factura.notas || '+ Agregar'}</span>;
 }
 
 // ── Doc Ingreso Input ─────────────────────────────────────────────────────────
@@ -542,18 +542,18 @@ function DocIngresoInput({ factura, onUpdate, canEdit }) {
     finally { setSaving(false); }
   };
 
-  if (!canEdit) return <span style={{ fontSize: 12, color: factura.documento_ingreso ? '#e2e8f0' : '#475569' }}>{factura.documento_ingreso || '—'}</span>;
+  if (!canEdit) return <span style={{ fontSize: 12, color: factura.documento_ingreso ? 'var(--t-text-primary)' : 'var(--t-text-muted)' }}>{factura.documento_ingreso || '—'}</span>;
 
   if (editing) return (
     <div style={{ display: 'flex', gap: 4, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
       <input autoFocus value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setEditing(false); }}
-        style={{ width: 90, background: '#1e2535', border: '1px solid #3b82f6', borderRadius: 4, padding: '2px 6px', color: '#e2e8f0', fontSize: 12 }} placeholder="Ej: OC-001" />
+        style={{ width: 90, background: 'var(--t-bg-card)', border: '1px solid #3b82f6', borderRadius: 4, padding: '2px 6px', color: 'var(--t-text-primary)', fontSize: 12 }} placeholder="Ej: OC-001" />
       <button onClick={handleSave} disabled={saving} style={{ background: '#3b82f6', border: 'none', borderRadius: 4, color: '#fff', padding: '2px 6px', fontSize: 11, cursor: 'pointer' }}>✓</button>
-      <button onClick={() => setEditing(false)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 13 }}>✕</button>
+      <button onClick={() => setEditing(false)} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13 }}>✕</button>
     </div>
   );
 
-  return <span onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ fontSize: 12, color: factura.documento_ingreso ? '#e2e8f0' : '#475569', cursor: 'pointer', padding: '2px 4px', borderRadius: 4 }} title="Clic para editar">{factura.documento_ingreso || '+ Agregar'}</span>;
+  return <span onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ fontSize: 12, color: factura.documento_ingreso ? 'var(--t-text-primary)' : 'var(--t-text-muted)', cursor: 'pointer', padding: '2px 4px', borderRadius: 4 }} title="Clic para editar">{factura.documento_ingreso || '+ Agregar'}</span>;
 }
 
 // ── Responsable Select inline ─────────────────────────────────────────────────
@@ -569,8 +569,8 @@ function ResponsableSelect({ factura, contactos, onUpdate, canEdit }) {
     return factura.reenviado_a
       ? <span style={{ fontSize: 11, color: '#4ade80' }}>✓ {nombreActual || factura.reenviado_a}</span>
       : nombreActual
-        ? <span style={{ fontSize: 11, color: '#94a3b8' }}>{nombreActual}</span>
-        : <span style={{ fontSize: 11, color: '#64748b' }}>Sin asignar</span>;
+        ? <span style={{ fontSize: 11, color: 'var(--t-text-secondary)' }}>{nombreActual}</span>
+        : <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Sin asignar</span>;
   }
 
   const handleChange = async (e) => {
@@ -589,7 +589,7 @@ function ResponsableSelect({ factura, contactos, onUpdate, canEdit }) {
 
   return (
     <select value={emailActual} onChange={handleChange} disabled={saving} onClick={e => e.stopPropagation()}
-      style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 6, color: emailActual ? '#e2e8f0' : '#64748b', fontSize: 11, padding: '3px 6px', cursor: 'pointer', outline: 'none', maxWidth: 130, opacity: saving ? 0.6 : 1 }}>
+      style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 6, color: emailActual ? 'var(--t-text-primary)' : 'var(--t-text-muted)', fontSize: 11, padding: '3px 6px', cursor: 'pointer', outline: 'none', maxWidth: 130, opacity: saving ? 0.6 : 1 }}>
       <option value="">Sin asignar</option>
       {contactos.map(c => <option key={c.email} value={c.email}>{c.nombre}</option>)}
     </select>
@@ -616,20 +616,20 @@ function EstadoContableSelect({ factura, onUpdate, canEdit }) {
 // ── Componentes auxiliares ────────────────────────────────────────────────────
 const Modal = ({ title, children, onClose, footer }) => (
   <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }} onClick={e => e.target === e.currentTarget && onClose()}>
-    <div style={{ background: '#161b27', border: '1px solid #374460', borderRadius: 14, width: 600, maxWidth: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '16px 20px', borderBottom: '1px solid #2a3348', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+    <div style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 14, width: 600, maxWidth: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--t-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ fontWeight: 600, fontSize: 15 }}>{title}</span>
-        <button style={{ background: '#1e2535', border: 'none', color: '#94a3b8', borderRadius: 6, width: 28, height: 28, cursor: 'pointer', fontSize: 16 }} onClick={onClose}>×</button>
+        <button style={{ background: 'var(--t-bg-card)', border: 'none', color: 'var(--t-text-secondary)', borderRadius: 6, width: 28, height: 28, cursor: 'pointer', fontSize: 16 }} onClick={onClose}>×</button>
       </div>
       <div style={{ padding: 20, overflowY: 'auto', flex: 1 }}>{children}</div>
-      {footer && <div style={{ padding: '14px 20px', borderTop: '1px solid #2a3348', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>{footer}</div>}
+      {footer && <div style={{ padding: '14px 20px', borderTop: '1px solid var(--t-border)', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>{footer}</div>}
     </div>
   </div>
 );
-const Section = ({ title, children }) => <div style={{ marginBottom: 20 }}><div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10, paddingBottom: 6, borderBottom: '1px solid #2a3348' }}>{title}</div>{children}</div>;
+const Section = ({ title, children }) => <div style={{ marginBottom: 20 }}><div style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10, paddingBottom: 6, borderBottom: '1px solid var(--t-border)' }}>{title}</div>{children}</div>;
 const Grid2 = ({ children }) => <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>{children}</div>;
-const Item = ({ label, val }) => <div><div style={{ fontSize: 11, color: '#64748b' }}>{label}</div><div style={{ fontSize: 13, fontWeight: 500, marginTop: 2 }}>{val}</div></div>;
-const TotalRow = ({ label, val, grand }) => <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: grand ? 14 : 13, fontWeight: grand ? 600 : 400, color: grand ? '#e2e8f0' : '#94a3b8', borderTop: grand ? '1px solid #2a3348' : 'none', marginTop: grand ? 4 : 0 }}><span>{label}</span><span>{val}</span></div>;
+const Item = ({ label, val }) => <div><div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{label}</div><div style={{ fontSize: 13, fontWeight: 500, marginTop: 2 }}>{val}</div></div>;
+const TotalRow = ({ label, val, grand }) => <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: grand ? 14 : 13, fontWeight: grand ? 600 : 400, color: grand ? 'var(--t-text-primary)' : 'var(--t-text-secondary)', borderTop: grand ? '1px solid #2a3348' : 'none', marginTop: grand ? 4 : 0 }}><span>{label}</span><span>{val}</span></div>;
 
 
 // ── ExportModal ───────────────────────────────────────────────────────────────
@@ -679,43 +679,44 @@ function ExportModal({ facturas, tipo, onClose }) {
     onClose();
   };
 
-  const inputSt2 = { width: '100%', background: '#0f1117', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 12px', color: '#e2e8f0', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
+  const inputSt2 = { width: '100%', background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', color: 'var(--t-text-primary)', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 
   return (
     <Modal title={`Exportar reporte — ${tipo === 'FE' ? 'Facturas' : 'Notas crédito'}`} onClose={onClose} footer={
       <>
-        <button style={{ background: '#1e2535', color: '#94a3b8', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }} onClick={onClose}>Cancelar</button>
+        <button style={{ background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }} onClick={onClose}>Cancelar</button>
         <button style={{ background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }} onClick={exportar}>
           📥 Descargar CSV ({filtered.length} registros)
         </button>
       </>
     }>
-      <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
+      <p style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 16 }}>
         Filtra por rango de fechas o deja vacío para exportar todo. El archivo abre directamente en Excel.
       </p>
       <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
-          <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Desde</label>
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Desde</label>
           <input style={inputSt2} type="date" value={desde} onChange={e => setDesde(e.target.value)} />
         </div>
         <div style={{ flex: 1 }}>
-          <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Hasta</label>
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Hasta</label>
           <input style={inputSt2} type="date" value={hasta} onChange={e => setHasta(e.target.value)} />
         </div>
       </div>
-      <div style={{ background: '#0f1117', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: '#64748b' }}>
-        📋 Se exportarán <strong style={{ color: '#e2e8f0' }}>{filtered.length}</strong> registros con todas las columnas: tipo, número, proveedor, NIT, fecha, subtotal, IVA, total, estado, estado contable, documento de ingreso, responsables, CUFE.
+      <div style={{ background: 'var(--t-bg-app)', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: 'var(--t-text-muted)' }}>
+        📋 Se exportarán <strong style={{ color: 'var(--t-text-primary)' }}>{filtered.length}</strong> registros con todas las columnas: tipo, número, proveedor, NIT, fecha, subtotal, IVA, total, estado, estado contable, documento de ingreso, responsables, CUFE.
       </div>
     </Modal>
   );
 }
 
-const card = { background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, padding: '12px 14px' };
-const th = { padding: '10px 14px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: '#64748b', letterSpacing: '.06em', textTransform: 'uppercase' };
-const td = { padding: '10px 14px', fontSize: 13, color: '#e2e8f0', verticalAlign: 'middle' };
-const inputSt = { width: '100%', background: '#1e2535', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 12px', color: '#e2e8f0', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
-const labelSt = { display: 'block', fontSize: 12, fontWeight: 500, color: '#94a3b8', marginBottom: 6 };
+const card = { background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '12px 14px' };
+const th = { padding: '10px 14px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--t-text-muted)', letterSpacing: '.06em', textTransform: 'uppercase' };
+const td = { padding: '10px 14px', fontSize: 13, color: 'var(--t-text-primary)', verticalAlign: 'middle' };
+const inputSt = { width: '100%', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', color: 'var(--t-text-primary)', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
+const labelSt = { display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--t-text-secondary)', marginBottom: 6 };
 const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 500, cursor: 'pointer' };
-const btnGhost = { background: '#1e2535', color: '#94a3b8', border: '1px solid #2a3348', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
+const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
