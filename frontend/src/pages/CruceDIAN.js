@@ -102,8 +102,7 @@ export default function CruceDIAN() {
         prefijo:        String(cols[3]  || '').trim(),
         numero,
         mes:            String(cols[5]  || '').trim(),
-        fechaEmision:   String(cols[6]  || '').trim(),
-        fechaRecepcion: String(cols[7]  || '').trim(),
+        fechaEmision:   String(cols[5]  || '').trim(),
         nitEmisor:      String(cols[7]  || '').trim(),
         emisor:         String(cols[8]  || '').trim(),
         iva:            String(cols[12] || '').trim(),
@@ -507,7 +506,7 @@ export default function CruceDIAN() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: '#161b27' }}>
-                      {['N° DIAN','Tipo','Emisor','Fecha Recepción','Valor DIAN','Estado','Notas','Responsable'].map(h => (
+                      {['N° DIAN','Tipo','NIT Emisor','Nombre Emisor','Fecha Emisión','Valor DIAN','Estado','Notas','Responsable'].map(h => (
                         <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: '#64748b', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid #2a3348' }}>{h}</th>
                       ))}
                     </tr>
@@ -517,8 +516,9 @@ export default function CruceDIAN() {
                       <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
                         <td style={{ padding: '8px 12px', color: '#f87171', fontFamily: 'monospace' }}>{dian.numero}</td>
                         <td style={{ padding: '8px 12px', color: '#94a3b8', fontSize: 11 }}>{dian.tipo}</td>
+                        <td style={{ padding: '8px 12px', color: '#94a3b8', fontFamily: 'monospace' }}>{dian.nitEmisor}</td>
                         <td style={{ padding: '8px 12px', color: '#e2e8f0', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{dian.fechaRecepcion}</td>
+                        <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{dian.fechaEmision}</td>
                         <td style={{ padding: '8px 12px', color: '#e2e8f0', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#2a1a1a', color: '#f87171', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
                         <td style={{ padding: '8px 12px', color: '#94a3b8', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
@@ -538,4 +538,5 @@ export default function CruceDIAN() {
     </div>
   );
 }
+
 
