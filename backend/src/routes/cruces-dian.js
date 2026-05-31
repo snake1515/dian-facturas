@@ -23,14 +23,14 @@ router.get('/', authMiddleware, async (req, res) => {
 
 // ── GET /api/cruces-dian/:año/:mes ────────────────────────────────────────────
 // Trae los registros de un mes específico
-router.get('/:año/:mes', authMiddleware, async (req, res) => {
+router.get('/:anio/:mes', authMiddleware, async (req, res) => {
   try {
-    const { año, mes } = req.params;
+    const { anio, mes } = req.params;
     const result = await pool.query(
       `SELECT mes, año, nombre_archivo, fecha_subida, registros
        FROM cruces_dian
        WHERE año = $1 AND mes = $2`,
-      [año, mes]
+      [anio, mes]
     );
     if (!result.rows.length) {
       return res.status(404).json({ error: 'No hay archivo guardado para ese mes' });
@@ -72,3 +72,4 @@ router.post('/', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
