@@ -371,10 +371,10 @@ export default function CruceDIAN() {
         >
           <div style={{ fontSize: 28, marginBottom: 6 }}>{archivo ? '✅' : '📊'}</div>
           <div style={{ fontSize: 13, color: archivo ? '#4ade80' : '#64748b' }}>
-            {archivo ? archivo.name : 'Clic para seleccionar el archivo Excel (.xlsx) de la DIAN'}
+            {archivo ? archivo.name : 'Clic para seleccionar el archivo Excel (.xlsx/.xlsm) de la DIAN'}
           </div>
           {archivo && <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{(archivo.size / 1024).toFixed(1)} KB</div>}
-          <input id="dian-file" type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }}
+          <input id="dian-file" type="file" accept=".xlsx,.xlsm,.xls,.csv" style={{ display: 'none' }}
             onChange={e => {
               const f = e.target.files[0] || null;
               setArchivo(f);
@@ -528,3 +528,4 @@ export default function CruceDIAN() {
     </div>
   );
 }
+
