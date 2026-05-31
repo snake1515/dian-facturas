@@ -12,13 +12,14 @@ const authRoutes = require('./routes/auth');
 const facturasRoutes = require('./routes/facturas');
 const gmailRoutes = require('./routes/gmail');
 const configuracionRoutes = require('./routes/configuracion');
+const crucesDianRoutes = require('./routes/cruces-dian');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Security headers
 app.use(helmet({
-  contentSecurityPolicy: false, // Desactivado para no bloquear la API REST
+  contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,
 }));
 
@@ -39,7 +40,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Rutas
@@ -47,6 +48,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/facturas', facturasRoutes);
 app.use('/api/gmail', gmailRoutes);
 app.use('/api/configuracion', configuracionRoutes);
+app.use('/api/cruces-dian', crucesDianRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
