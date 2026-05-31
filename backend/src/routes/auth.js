@@ -25,7 +25,7 @@ router.post('/login', async (req, res) => {
       { expiresIn: '8h' }
     );
 
-    res.json({ token, user: { id: user.id, nombre: user.nombre, email: user.email, rol: user.rol } });
+    res.json({ token, user: { id: user.id, nombre: user.nombre, email: user.email, rol: user.rol, tema: user.tema || 'oscuro' } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -110,4 +110,18 @@ router.delete('/usuarios/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// Guardar tema del usuario
+router.put('/tema', authMiddleware, async (req, res) => {
+  try {
+    const { tema } = req.body;
+    const temas = ['oscuro', 'blanco', 'rosado', 'morado', 'azul', 'verde'];
+    if (!temas.includes(tema)) return res.status(400).json({ error: 'Tema inválido' });
+    await pool.query('UPDATE usuarios SET tema = $1 WHERE id = $2', [tema, req.user.id]);
+    res.json({ ok: true, tema });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
+
