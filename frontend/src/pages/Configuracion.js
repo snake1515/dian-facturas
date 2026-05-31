@@ -1,6 +1,6 @@
 // v2.1
 import React, { useState, useEffect } from 'react';
-import { obtenerConfig, guardarConfig, gmailAuthUrl, gmailSync, gmailDisconnect, reiniciarCron } from '../services/api';
+import { obtenerConfig, guardarConfig, gmailAuthUrl, gmailSync, gmailDisconnect, reiniciarCron, listarContactos, crearContacto, eliminarContacto } from '../services/api';
 
 export default function Configuracion() {
   const [tab, setTab] = useState('correo');
@@ -12,6 +12,10 @@ export default function Configuracion() {
   const [syncDesde, setSyncDesde] = useState('');
   const [syncHasta, setSyncHasta] = useState('');
   const [syncResult, setSyncResult] = useState(null);
+  const [contactos, setContactos] = useState([]);
+  const [nuevoNombre, setNuevoNombre] = useState('');
+  const [nuevoEmail, setNuevoEmail] = useState('');
+  const [savingContacto, setSavingContacto] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -20,7 +24,30 @@ export default function Configuracion() {
       setTab('correo');
     }
     cargar();
+    cargarContactos();
   }, []);
+
+  const cargarContactos = async () => {
+    try { const res = await listarContactos(); setContactos(res.data || []); }
+    catch (err) { console.error(err); }
+  };
+
+  const agregarContacto = async () => {
+    if (!nuevoNombre.trim() || !nuevoEmail.includes('@')) return alert('Ingresa nombre y correo válido');
+    setSavingContacto(true);
+    try {
+      await crearContacto({ nombre: nuevoNombre.trim(), email: nuevoEmail.trim() });
+      setNuevoNombre(''); setNuevoEmail('');
+      await cargarContactos();
+    } catch (err) { alert(err.response?.data?.error || 'Error al agregar contacto'); }
+    finally { setSavingContacto(false); }
+  };
+
+  const borrarContacto = async (id) => {
+    if (!window.confirm('¿Eliminar este contacto?')) return;
+    try { await eliminarContacto(id); await cargarContactos(); }
+    catch (err) { alert(err.response?.data?.error || 'Error'); }
+  };
 
   const cargar = async () => {
     try {
@@ -88,6 +115,7 @@ export default function Configuracion() {
   const tabs = [
     { id: 'correo', label: '📧 Correo Gmail' },
     { id: 'sincronizacion', label: '🔄 Sincronización' },
+    { id: 'contactos', label: '👥 Contactos' },
     { id: 'notificaciones', label: '🔔 Notificaciones' },
     { id: 'seguridad', label: '🔒 Seguridad' },
   ];
@@ -176,6 +204,61 @@ export default function Configuracion() {
               value={cfg.auto_process_xml === 'true'} onChange={v => set('auto_process_xml', v ? 'true' : 'false')} />
             <ToggleRow label="Guardar PDF y XML adjunto" desc="Almacena los archivos adjuntos de cada factura en Supabase"
               value={cfg.save_attachments !== 'false'} onChange={v => set('save_attachments', v ? 'true' : 'false')} />
+          </div>
+        )}
+
+        {/* CONTACTOS */}
+        {tab === 'contactos' && (
+          <div>
+            <h3 style={sectionTitle}>Contactos / Responsables</h3>
+            <p style={{ fontSize: 12, color: '#64748b', marginBottom: 16 }}>
+              Estos contactos aparecen como opciones en la columna <strong style={{ color: '#94a3b8' }}>Responsable</strong> de cada factura y se usan para el reenvío automático de correos.
+            </p>
+
+            {/* Lista de contactos */}
+            <div style={{ marginBottom: 20 }}>
+              {contactos.length === 0 ? (
+                <div style={{ background: '#0f1117', borderRadius: 8, padding: '16px', textAlign: 'center', color: '#64748b', fontSize: 13 }}>
+                  No hay contactos registrados. Agrega uno abajo.
+                </div>
+              ) : (
+                <div style={{ background: '#0f1117', border: '1px solid #2a3348', borderRadius: 8, overflow: 'hidden' }}>
+                  {contactos.map((c, i) => (
+                    <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderBottom: i < contactos.length - 1 ? '1px solid #1e2535' : 'none' }}>
+                      <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#1e3a5f', color: '#60a5fa', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
+                        {c.nombre.charAt(0).toUpperCase()}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: '#e2e8f0' }}>{c.nombre}</div>
+                        <div style={{ fontSize: 11, color: '#64748b' }}>{c.email}</div>
+                      </div>
+                      <button onClick={() => borrarContacto(c.id)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 16, padding: '2px 6px', borderRadius: 4 }} title="Eliminar contacto">🗑</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Agregar nuevo contacto */}
+            <h3 style={{ ...sectionTitle, marginTop: 8 }}>Agregar contacto</h3>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <div style={{ flex: '1 1 160px' }}>
+                <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Nombre completo</label>
+                <input style={inputSt} placeholder="Ej: Juan Pérez" value={nuevoNombre} onChange={e => setNuevoNombre(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && agregarContacto()} />
+              </div>
+              <div style={{ flex: '1 1 200px' }}>
+                <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Correo electrónico</label>
+                <input style={inputSt} type="email" placeholder="correo@empresa.com" value={nuevoEmail} onChange={e => setNuevoEmail(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && agregarContacto()} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                <button style={btnPrimary} onClick={agregarContacto} disabled={savingContacto}>
+                  {savingContacto ? 'Guardando...' : '+ Agregar'}
+                </button>
+              </div>
+            </div>
+            <InfoBox>Los contactos se guardan globalmente y están disponibles en todas las facturas.</InfoBox>
           </div>
         )}
 

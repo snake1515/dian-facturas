@@ -27,11 +27,12 @@ const descargarArchivo = async (id, tipo) => {
 };
 
 const ESTADOS_CONTABLES = [
-  { value: 'por_gestionar',        label: 'Por gestionar',         color: '#94a3b8', bg: '#1e2535' },
-  { value: 'recibio_inventarios',  label: 'Recibió inventarios',   color: '#fbbf24', bg: '#451a03' },
-  { value: 'recibio_contabilidad', label: 'Recibió contabilidad',  color: '#60a5fa', bg: '#1e3a5f' },
-  { value: 'ingresado',            label: 'Ingresado',             color: '#a78bfa', bg: '#2e1065' },
-  { value: 'aprobado',             label: 'Aprobado',              color: '#4ade80', bg: '#052e16' },
+  { value: 'por_gestionar',             label: 'Por gestionar',              color: '#94a3b8', bg: '#1e2535' },
+  { value: 'recibio_inventarios',       label: 'Recibió inventarios',        color: '#fbbf24', bg: '#451a03' },
+  { value: 'recibio_contabilidad',      label: 'Recibió contabilidad',       color: '#60a5fa', bg: '#1e3a5f' },
+  { value: 'ingresado_caja_menor',      label: 'Ingresado por caja menor',   color: '#a78bfa', bg: '#2e1065' },
+  { value: 'ingresado_orden_compra',    label: 'Ingresado por orden de compra', color: '#f472b6', bg: '#4a044e' },
+  { value: 'aprobado',                  label: 'Aprobado',                   color: '#4ade80', bg: '#052e16' },
 ];
 
 export default function Facturas({ tipo = 'FE' }) {
@@ -42,6 +43,7 @@ export default function Facturas({ tipo = 'FE' }) {
   const [search, setSearch] = useState('');
   const [filterEstado, setFilterEstado] = useState('');
   const [filterEstadoContable, setFilterEstadoContable] = useState('');
+  const [filterMes, setFilterMes] = useState('');
   const [selected, setSelected] = useState(new Set());
   const [modal, setModal] = useState(null);
   const [activeF, setActiveF] = useState(null);
@@ -88,7 +90,13 @@ export default function Facturas({ tipo = 'FE' }) {
   useEffect(() => { cargar(); cargarContactos(); }, [cargar, cargarContactos]);
 
   // Sort logic (client-side)
-  const sortedFacturas = [...facturas].sort((a, b) => {
+  const facturasFiltradas = facturas.filter(f => {
+    if (!filterMes) return true;
+    const fecha = String(f.fecha_emision || '').substring(0, 7); // YYYY-MM
+    return fecha === filterMes;
+  });
+
+  const sortedFacturas = [...facturasFiltradas].sort((a, b) => {
     let va = a[sortCol], vb = b[sortCol];
     if (sortCol === 'total' || sortCol === 'subtotal') { va = parseFloat(va||0); vb = parseFloat(vb||0); }
     else if (sortCol === 'fecha_emision') { va = va || ''; vb = vb || ''; }
@@ -127,7 +135,10 @@ export default function Facturas({ tipo = 'FE' }) {
     const fActual = facturas.find(x => x.id === f.id) || f;
     setActiveF(fActual); setModal(m);
     if (m === 'responsables') setRespEmails([...(fActual.responsables || [])]);
-    if (m === 'reenviar') setReenvioEmails([...(fActual.responsables || [])]);
+    if (m === 'reenviar') {
+      const responsables = fActual.responsables || [];
+      setReenvioEmails(responsables.length > 0 ? [...responsables] : []);
+    }
     // Fetch full factura with productos when opening detail
     if (m === 'ver') {
       try {
@@ -189,7 +200,15 @@ export default function Facturas({ tipo = 'FE' }) {
     return <span style={{ background: bg, color: c, padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{label}</span>;
   };
 
-  const totales = { docs: facturas.length, pendientes: facturas.filter(f => f.estado === 'pendiente').length, valor: facturas.reduce((a, f) => a + Math.abs(parseFloat(f.total || 0)), 0) };
+  const totales = { docs: facturasFiltradas.length, pendientes: facturasFiltradas.filter(f => f.estado === 'pendiente').length, valor: facturasFiltradas.reduce((a, f) => a + Math.abs(parseFloat(f.total || 0)), 0) };
+
+  // Detectar doc_ingreso duplicados
+  const docIngresoCount = {};
+  facturas.forEach(f => { if (f.documento_ingreso) { docIngresoCount[f.documento_ingreso] = (docIngresoCount[f.documento_ingreso] || 0) + 1; } });
+  const docIngresoDuplicado = (doc) => doc && docIngresoCount[doc] > 1;
+
+  // Meses disponibles para filtro
+  const mesesDisponibles = [...new Set(facturas.map(f => String(f.fecha_emision || '').substring(0, 7)).filter(Boolean))].sort().reverse();
 
   const thSort = (col, label) => (
     <th style={{ ...th, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} onClick={() => handleSort(col)}>
@@ -224,6 +243,14 @@ export default function Facturas({ tipo = 'FE' }) {
           <option value="pendiente">Pendiente</option>
           <option value="procesado">Procesado</option>
           <option value="reenviado">Reenviado</option>
+        </select>
+        <select style={{ ...inputSt, flex: '0 1 140px' }} value={filterMes} onChange={e => setFilterMes(e.target.value)}>
+          <option value="">Todos los meses</option>
+          {mesesDisponibles.map(m => {
+            const [y, mo] = m.split('-');
+            const nombre = new Date(parseInt(y), parseInt(mo)-1, 1).toLocaleString('es-CO', { month: 'long', year: 'numeric' });
+            return <option key={m} value={m}>{nombre.charAt(0).toUpperCase() + nombre.slice(1)}</option>;
+          })}
         </select>
         <select style={{ ...inputSt, flex: '0 1 170px' }} value={filterEstadoContable} onChange={e => setFilterEstadoContable(e.target.value)}>
           <option value="">Todo estado contable</option>
@@ -274,12 +301,14 @@ export default function Facturas({ tipo = 'FE' }) {
                 </tr>
               </thead>
               <tbody>
-                {sortedFacturas.map(f => (
-                  <tr key={f.id} style={{ borderBottom: '1px solid rgba(42,51,72,.7)', cursor: 'pointer', background: selected.has(f.id) ? 'rgba(59,130,246,.08)' : 'transparent' }}
+                {sortedFacturas.map(f => {
+                  const filaRoja = docIngresoDuplicado(f.documento_ingreso);
+                  return (
+                  <tr key={f.id} style={{ borderBottom: '1px solid rgba(42,51,72,.7)', cursor: 'pointer', background: filaRoja ? 'rgba(239,68,68,.10)' : selected.has(f.id) ? 'rgba(59,130,246,.08)' : 'transparent' }}
                     onClick={() => openModal('ver', f)}>
                     <td style={td} onClick={e => e.stopPropagation()}><input type="checkbox" checked={selected.has(f.id)} onChange={() => toggleSelect(f.id)} /></td>
                     <td style={td}><span style={{ background: f.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: f.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{f.tipo}</span></td>
-                    <td style={{ ...td, fontFamily: 'monospace', fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>{f.numero}</td>
+                    <td style={{ ...td, fontFamily: 'monospace', fontSize: 13, color: '#c8d0e0', whiteSpace: 'nowrap', fontWeight: 500 }}>{f.numero}</td>
                     <td style={td}>
                       <div style={{ fontWeight: 500, color: '#e2e8f0', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.proveedor_nombre}</div>
                       <div style={{ fontSize: 11, color: '#64748b' }}>NIT: {f.proveedor_nit}</div>
@@ -287,15 +316,12 @@ export default function Facturas({ tipo = 'FE' }) {
                     <td style={{ ...td, color: '#94a3b8', whiteSpace: 'nowrap' }}>{fmtDate(f.fecha_emision)}</td>
                     <td style={{ ...td, fontWeight: 600, color: parseFloat(f.total) < 0 ? '#f87171' : '#e2e8f0', whiteSpace: 'nowrap' }}>{fmt(f.total)}</td>
                     <td style={td}>{estadoBadge(f)}</td>
-                    <td style={td}>
-                      {f.reenviado_a
-                        ? <span style={{ fontSize: 11, color: '#4ade80' }}>✓ {f.reenviado_a}</span>
-                        : f.responsables?.length > 0
-                          ? <span style={{ fontSize: 11, color: '#94a3b8', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', display: 'block', whiteSpace: 'nowrap' }} title={f.responsables.map(r => typeof r === 'string' ? r : `${r.nombre||''} <${r.email}>`).join(', ')}>{f.responsables.map(r => typeof r === 'string' ? r : (r.nombre || r.email)).join(', ')}</span>
-                          : <span style={{ fontSize: 11, color: '#64748b' }}>Sin asignar</span>}
-                    </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
+                      <ResponsableSelect factura={f} contactos={contactos} onUpdate={cargar} canEdit={puede.editarResponsables !== false} />
+                    </td>
+                    <td style={{ ...td, borderLeft: filaRoja ? '3px solid #ef4444' : 'none' }} onClick={e => e.stopPropagation()}>
                       <DocIngresoInput factura={f} onUpdate={cargar} canEdit={puede.editarDocIngreso} />
+                      {filaRoja && <span style={{ fontSize: 10, color: '#f87171', display: 'block', marginTop: 2 }}>⚠ duplicado</span>}
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <EstadoContableSelect factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} />
@@ -314,7 +340,8 @@ export default function Facturas({ tipo = 'FE' }) {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -529,6 +556,46 @@ function DocIngresoInput({ factura, onUpdate, canEdit }) {
   return <span onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ fontSize: 12, color: factura.documento_ingreso ? '#e2e8f0' : '#475569', cursor: 'pointer', padding: '2px 4px', borderRadius: 4 }} title="Clic para editar">{factura.documento_ingreso || '+ Agregar'}</span>;
 }
 
+// ── Responsable Select inline ─────────────────────────────────────────────────
+function ResponsableSelect({ factura, contactos, onUpdate, canEdit }) {
+  const [saving, setSaving] = React.useState(false);
+
+  const responsableActual = factura.responsables?.[0];
+  const nombreActual = responsableActual
+    ? (typeof responsableActual === 'string' ? responsableActual : (responsableActual.nombre || responsableActual.email))
+    : null;
+
+  if (!canEdit || contactos.length === 0) {
+    return factura.reenviado_a
+      ? <span style={{ fontSize: 11, color: '#4ade80' }}>✓ {nombreActual || factura.reenviado_a}</span>
+      : nombreActual
+        ? <span style={{ fontSize: 11, color: '#94a3b8' }}>{nombreActual}</span>
+        : <span style={{ fontSize: 11, color: '#64748b' }}>Sin asignar</span>;
+  }
+
+  const handleChange = async (e) => {
+    const val = e.target.value;
+    setSaving(true);
+    try {
+      const contacto = contactos.find(c => c.email === val);
+      const nuevos = val ? [{ email: contacto.email, nombre: contacto.nombre }] : [];
+      await actualizarResponsables(factura.id, nuevos);
+      await onUpdate();
+    } catch { alert('Error al asignar responsable'); }
+    finally { setSaving(false); }
+  };
+
+  const emailActual = responsableActual ? (typeof responsableActual === 'string' ? responsableActual : responsableActual.email) : '';
+
+  return (
+    <select value={emailActual} onChange={handleChange} disabled={saving} onClick={e => e.stopPropagation()}
+      style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 6, color: emailActual ? '#e2e8f0' : '#64748b', fontSize: 11, padding: '3px 6px', cursor: 'pointer', outline: 'none', maxWidth: 130, opacity: saving ? 0.6 : 1 }}>
+      <option value="">Sin asignar</option>
+      {contactos.map(c => <option key={c.email} value={c.email}>{c.nombre}</option>)}
+    </select>
+  );
+}
+
 // ── Estado Contable Select ────────────────────────────────────────────────────
 function EstadoContableSelect({ factura, onUpdate, canEdit }) {
   const [saving, setSaving] = React.useState(false);
@@ -579,7 +646,8 @@ function ExportModal({ facturas, tipo, onClose }) {
   const exportar = () => {
     const ESTADOS = {
       por_gestionar: 'Por gestionar', recibio_inventarios: 'Recibió inventarios',
-      recibio_contabilidad: 'Recibió contabilidad', ingresado: 'Ingresado', aprobado: 'Aprobado',
+      recibio_contabilidad: 'Recibió contabilidad', ingresado_caja_menor: 'Ingresado por caja menor',
+      ingresado_orden_compra: 'Ingresado por orden de compra', aprobado: 'Aprobado',
     };
     const headers = ['Tipo','Número','Proveedor','NIT','Fecha Emisión','Subtotal','IVA','Total',
       'Estado','Estado Contable','Doc. Ingreso','Responsables','Reenviado a','CUFE'];
