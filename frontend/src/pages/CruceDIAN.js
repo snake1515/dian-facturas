@@ -283,35 +283,35 @@ export default function CruceDIAN() {
   };
 
   const selectSt = {
-    background: '#0f1117', border: '1px solid #2a3348', borderRadius: 6,
-    color: '#e2e8f0', fontSize: 13, padding: '8px 10px', outline: 'none', cursor: 'pointer',
+    background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 6,
+    color: 'var(--t-text-primary)', fontSize: 13, padding: '8px 10px', outline: 'none', cursor: 'pointer',
   };
   const mesAppLabel = MESES.find(m => m.value === mesApp)?.label || mesApp;
 
   return (
-    <div style={{ padding: '20px 0', color: '#e2e8f0', fontFamily: 'system-ui, sans-serif' }}>
+    <div style={{ padding: '20px 0', color: 'var(--t-text-primary)', fontFamily: 'system-ui, sans-serif' }}>
 
       {/* ── Selector mes de la app ── */}
-      <div style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, padding: 20, marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 12 }}>
+      <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 20, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-primary)', marginBottom: 12 }}>
           🗓️ ¿Contra qué mes de la app comparar?
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div>
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Mes</div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Mes</div>
             <select style={selectSt} value={mesApp} onChange={e => { setMesApp(e.target.value); setResultado(null); }}>
               {MESES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </div>
           <div>
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Año</div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Año</div>
             <select style={selectSt} value={añoApp} onChange={e => { setAñoApp(e.target.value); setResultado(null); }}>
               {AÑOS.map(a => <option key={a} value={a}>{a}</option>)}
             </select>
           </div>
           {responsables.length > 0 && (
             <div>
-              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Responsable</div>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Responsable</div>
               <select style={selectSt} value={filtroResponsable} onChange={e => { setFiltroResponsable(e.target.value); setResultado(null); }}>
                 <option value="">Todos los responsables</option>
                 {responsables.map(r => <option key={r} value={r}>{r}</option>)}
@@ -322,14 +322,14 @@ export default function CruceDIAN() {
       </div>
 
       {/* ── Archivos guardados en Supabase ── */}
-      <div style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 10 }}>
+      <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-primary)', marginBottom: 10 }}>
           📁 Archivos DIAN guardados
         </div>
         {cargandoArchivos ? (
-          <div style={{ fontSize: 12, color: '#64748b' }}>Cargando...</div>
+          <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Cargando...</div>
         ) : archivosGuardados.length === 0 ? (
-          <div style={{ fontSize: 12, color: '#64748b' }}>No hay archivos guardados aún. Sube el primer reporte DIAN abajo.</div>
+          <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>No hay archivos guardados aún. Sube el primer reporte DIAN abajo.</div>
         ) : (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {archivosGuardados.map(a => {
@@ -339,14 +339,14 @@ export default function CruceDIAN() {
               return (
                 <button key={`${a.año}-${a.mes}`} onClick={() => cargarMesGuardado(a.año, a.mes)}
                   style={{
-                    background: esActivo ? 'rgba(59,130,246,.15)' : '#161b27',
-                    border: `1px solid ${esActivo ? '#3b82f6' : '#2a3348'}`,
+                    background: esActivo ? 'rgba(59,130,246,.15)' : 'var(--t-bg-sidebar)',
+                    border: `1px solid ${esActivo ? '#3b82f6' : 'var(--t-border)'}`,
                     borderRadius: 8, padding: '8px 14px', cursor: 'pointer',
-                    color: esActivo ? '#60a5fa' : '#94a3b8', fontSize: 12, textAlign: 'left',
+                    color: esActivo ? '#60a5fa' : 'var(--t-text-secondary)', fontSize: 12, textAlign: 'left',
                   }}>
                   <div style={{ fontWeight: 600 }}>{mesLabel} {a.año}</div>
-                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{a.nombre_archivo}</div>
-                  <div style={{ fontSize: 10, color: '#64748b' }}>{a.total_registros} registros · {fechaSubida}</div>
+                  <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2 }}>{a.nombre_archivo}</div>
+                  <div style={{ fontSize: 10, color: 'var(--t-text-muted)' }}>{a.total_registros} registros · {fechaSubida}</div>
                 </button>
               );
             })}
@@ -355,19 +355,19 @@ export default function CruceDIAN() {
       </div>
 
       {/* ── Subir nuevo archivo DIAN ── */}
-      <div style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, padding: 20, marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 12 }}>
+      <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 20, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-primary)', marginBottom: 12 }}>
           📂 Subir nuevo reporte DIAN
         </div>
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
           <div>
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Mes del archivo</div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Mes del archivo</div>
             <select style={selectSt} value={mesArchivo} onChange={e => setMesArchivo(e.target.value)}>
               {MESES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </div>
           <div>
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Año del archivo</div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Año del archivo</div>
             <select style={selectSt} value={añoArchivo} onChange={e => setAñoArchivo(e.target.value)}>
               {AÑOS.map(a => <option key={a} value={a}>{a}</option>)}
             </select>
@@ -379,10 +379,10 @@ export default function CruceDIAN() {
           onClick={() => document.getElementById('dian-file').click()}
         >
           <div style={{ fontSize: 28, marginBottom: 6 }}>{archivo ? '✅' : '📊'}</div>
-          <div style={{ fontSize: 13, color: archivo ? '#4ade80' : '#64748b' }}>
+          <div style={{ fontSize: 13, color: archivo ? '#4ade80' : 'var(--t-text-muted)' }}>
             {archivo ? archivo.name : 'Clic para seleccionar el archivo Excel (.xlsx/.xlsm) de la DIAN'}
           </div>
-          {archivo && <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{(archivo.size / 1024).toFixed(1)} KB</div>}
+          {archivo && <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 4 }}>{(archivo.size / 1024).toFixed(1)} KB</div>}
           <input id="dian-file" type="file" accept=".xlsx,.xlsm,.xls,.csv" style={{ display: 'none' }}
             onChange={e => {
               const f = e.target.files[0] || null;
@@ -395,7 +395,7 @@ export default function CruceDIAN() {
             }} />
         </div>
 
-        <div style={{ background: 'rgba(59,130,246,.08)', border: '1px solid rgba(59,130,246,.2)', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: '#94a3b8', marginBottom: 14 }}>
+        <div style={{ background: 'rgba(59,130,246,.08)', border: '1px solid rgba(59,130,246,.2)', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 14 }}>
           ℹ️ Compara la <strong style={{ color: '#60a5fa' }}>columna E (N° Factura)</strong> del reporte DIAN contra las facturas de <strong style={{ color: '#60a5fa' }}>{mesAppLabel} {añoApp}</strong> en la app. Si ya existe un archivo del mismo mes, será reemplazado por el más reciente.
         </div>
 
@@ -403,8 +403,8 @@ export default function CruceDIAN() {
           onClick={procesarArchivo}
           disabled={(!archivo && registrosDIAN.length === 0) || procesando}
           style={{
-            background: (archivo || registrosDIAN.length > 0) && !procesando ? '#3b82f6' : '#2a3348',
-            color: (archivo || registrosDIAN.length > 0) && !procesando ? '#fff' : '#64748b',
+            background: (archivo || registrosDIAN.length > 0) && !procesando ? '#3b82f6' : 'var(--t-border)',
+            color: (archivo || registrosDIAN.length > 0) && !procesando ? '#fff' : 'var(--t-text-muted)',
             border: 'none', borderRadius: 6, padding: '10px 20px', fontSize: 13, fontWeight: 600,
             cursor: (archivo || registrosDIAN.length > 0) && !procesando ? 'pointer' : 'not-allowed',
           }}>
@@ -412,8 +412,8 @@ export default function CruceDIAN() {
         </button>
 
         {registrosDIAN.length > 0 && !archivo && (
-          <span style={{ marginLeft: 12, fontSize: 12, color: '#64748b' }}>
-            Usando: <strong style={{ color: '#94a3b8' }}>{nombreArchivoActual}</strong> ({registrosDIAN.length} registros)
+          <span style={{ marginLeft: 12, fontSize: 12, color: 'var(--t-text-muted)' }}>
+            Usando: <strong style={{ color: 'var(--t-text-secondary)' }}>{nombreArchivoActual}</strong> ({registrosDIAN.length} registros)
           </span>
         )}
       </div>
@@ -428,14 +428,14 @@ export default function CruceDIAN() {
               { label: 'No encontradas', val: resultado.noCruzadas.length, color: '#f87171' },
               { label: '% Cobertura', val: resultado.total > 0 ? Math.round(resultado.cruzadas.length / resultado.total * 100) + '%' : '0%', color: '#fbbf24' },
             ].map(s => (
-              <div key={s.label} style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 8, padding: '12px 14px' }}>
-                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>{s.label}</div>
+              <div key={s.label} style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>{s.label}</div>
                 <div style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.val}</div>
               </div>
             ))}
           </div>
 
-          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
             Comparando contra facturas de <strong style={{ color: '#60a5fa' }}>{mesAppLabel} {añoApp}</strong>
             {filtroResponsable && <> · Responsable: <strong style={{ color: '#fbbf24' }}>{filtroResponsable}</strong></>}
           </div>
@@ -444,34 +444,34 @@ export default function CruceDIAN() {
             <button onClick={exportarCompleto} style={{ background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
               📥 Exportar reporte completo
             </button>
-            <button onClick={() => exportarReporte(resultado.cruzadas, 'cruzadas')} style={{ background: '#1e2535', color: '#4ade80', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+            <button onClick={() => exportarReporte(resultado.cruzadas, 'cruzadas')} style={{ background: 'var(--t-bg-card)', color: '#4ade80', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
               ✅ Encontradas ({resultado.cruzadas.length})
             </button>
-            <button onClick={() => exportarReporte(resultado.noCruzadas, 'no_cruzadas')} style={{ background: '#1e2535', color: '#f87171', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+            <button onClick={() => exportarReporte(resultado.noCruzadas, 'no_cruzadas')} style={{ background: 'var(--t-bg-card)', color: '#f87171', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
               ❌ No encontradas ({resultado.noCruzadas.length})
             </button>
           </div>
 
-          <div style={{ display: 'flex', gap: 2, background: '#0f1117', padding: 3, borderRadius: 8, marginBottom: 12, width: 'fit-content' }}>
+          <div style={{ display: 'flex', gap: 2, background: 'var(--t-bg-app)', padding: 3, borderRadius: 8, marginBottom: 12, width: 'fit-content' }}>
             {[
               { id: 'cruzadas', label: `✅ Encontradas (${resultado.cruzadas.length})` },
               { id: 'no_cruzadas', label: `❌ No encontradas (${resultado.noCruzadas.length})` },
             ].map(t => (
               <button key={t.id} onClick={() => setTabActiva(t.id)}
-                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 500, cursor: 'pointer', background: tabActiva === t.id ? '#1e2535' : 'transparent', color: tabActiva === t.id ? '#e2e8f0' : '#64748b' }}>
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 500, cursor: 'pointer', background: tabActiva === t.id ? 'var(--t-bg-card)' : 'transparent', color: tabActiva === t.id ? 'var(--t-text-primary)' : 'var(--t-text-muted)' }}>
                 {t.label}
               </button>
             ))}
           </div>
 
           {tabActiva === 'cruzadas' && (
-            <div style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, overflow: 'hidden' }}>
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
-                    <tr style={{ background: '#161b27' }}>
+                    <tr style={{ background: 'var(--t-bg-sidebar)' }}>
                       {['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso'].map(h => (
-                        <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: '#64748b', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid #2a3348' }}>{h}</th>
+                        <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -479,35 +479,35 @@ export default function CruceDIAN() {
                     {resultado.cruzadas.map(({ dian, factura }, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
                         <td style={{ padding: '8px 12px', color: '#4ade80', fontFamily: 'monospace' }}>{dian.numero}</td>
-                        <td style={{ padding: '8px 12px', color: '#e2e8f0', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
-                        <td style={{ padding: '8px 12px', color: '#e2e8f0', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#1e3a5f', color: '#60a5fa', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{dian.responsable}</span></td>
                         <td style={{ padding: '8px 12px', color: '#60a5fa', fontFamily: 'monospace' }}>{factura.numero}</td>
-                        <td style={{ padding: '8px 12px', color: '#e2e8f0', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{factura.proveedor_nombre}</td>
-                        <td style={{ padding: '8px 12px', color: '#e2e8f0', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmt(factura.total)}</td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8', fontSize: 11 }}>{factura.estado_contable || '—'}</td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{factura.documento_ingreso || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{factura.proveedor_nombre}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmt(factura.total)}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontSize: 11 }}>{factura.estado_contable || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{factura.documento_ingreso || '—'}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
                 {resultado.cruzadas.length === 0 && (
-                  <div style={{ textAlign: 'center', padding: 32, color: '#64748b' }}>No hay facturas cruzadas</div>
+                  <div style={{ textAlign: 'center', padding: 32, color: 'var(--t-text-muted)' }}>No hay facturas cruzadas</div>
                 )}
               </div>
             </div>
           )}
 
           {tabActiva === 'no_cruzadas' && (
-            <div style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, overflow: 'hidden' }}>
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
-                    <tr style={{ background: '#161b27' }}>
+                    <tr style={{ background: 'var(--t-bg-sidebar)' }}>
                       {['N° DIAN','Tipo','NIT Emisor','Nombre Emisor','Fecha Emisión','Valor DIAN','Estado','Notas','Responsable'].map(h => (
-                        <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: '#64748b', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid #2a3348' }}>{h}</th>
+                        <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -515,20 +515,20 @@ export default function CruceDIAN() {
                     {resultado.noCruzadas.map(({ dian }, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
                         <td style={{ padding: '8px 12px', color: '#f87171', fontFamily: 'monospace' }}>{dian.numero}</td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8', fontSize: 11 }}>{dian.tipo}</td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8', fontFamily: 'monospace' }}>{dian.nitEmisor}</td>
-                        <td style={{ padding: '8px 12px', color: '#e2e8f0', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{dian.fechaEmision}</td>
-                        <td style={{ padding: '8px 12px', color: '#e2e8f0', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontSize: 11 }}>{dian.tipo}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontFamily: 'monospace' }}>{dian.nitEmisor}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{dian.fechaEmision}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#2a1a1a', color: '#f87171', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{dian.responsable}</span></td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
                 {resultado.noCruzadas.length === 0 && (
-                  <div style={{ textAlign: 'center', padding: 32, color: '#64748b' }}>Todas las facturas DIAN están en la app ✅</div>
+                  <div style={{ textAlign: 'center', padding: 32, color: 'var(--t-text-muted)' }}>Todas las facturas DIAN están en la app ✅</div>
                 )}
               </div>
             </div>
@@ -538,5 +538,7 @@ export default function CruceDIAN() {
     </div>
   );
 }
+
+
 
 
