@@ -69,7 +69,7 @@ export default function CruceDIAN() {
 
   // ── Parser del Excel DIAN ───────────────────────────────────────────────────
   // Col E (índice 4) = FACT (número completo: Prefijo+Folio)
-  // Col P (índice 15) = VALOR (número, se formatea como COP)
+  // Col O (índice 14) = VALOR (número, se formatea como COP)
   // Col S (índice 18) = RESPONSABLE
   const parseArchivoExcel = (arrayBuffer) => {
     const wb = XLSX.read(arrayBuffer, { type: 'array' });
@@ -83,7 +83,7 @@ export default function CruceDIAN() {
       const numero = String(cols[4] || '').trim(); // Col E
       if (!numero) continue;
 
-      const valorNum = parseFloat(String(cols[15] || '0').replace(/[^0-9.-]/g, '')) || 0;
+      const valorNum = parseFloat(String(cols[14] || '0').replace(/[^0-9.-]/g, '')) || 0;
 
       registros.push({
         tipo:           String(cols[0]  || '').trim(),
