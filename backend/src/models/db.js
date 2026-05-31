@@ -91,6 +91,7 @@ const initDB = async () => {
       
       ALTER TABLE responsables_factura ADD COLUMN IF NOT EXISTS nombre VARCHAR(150);
       ALTER TABLE facturas ALTER COLUMN estado_contable SET DEFAULT 'por_gestionar';
+      ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS tema VARCHAR(50) DEFAULT 'oscuro';
       CREATE TABLE IF NOT EXISTS contactos (
         id SERIAL PRIMARY KEY,
         nombre VARCHAR(150) NOT NULL,
@@ -116,3 +117,4 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
