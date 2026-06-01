@@ -38,6 +38,11 @@ router.get('/', authMiddleware, async (req, res) => {
         OR f.proveedor_nit ILIKE $${i}
         OR f.notas ILIKE $${i}
         OR f.total::text ILIKE $${i}
+        OR EXISTS (
+          SELECT 1 FROM productos_factura p2
+          WHERE p2.factura_id = f.id
+          AND p2.descripcion ILIKE $${i}
+        )
       )`);
       valores.push(`%${search}%`);
       i++;
@@ -296,3 +301,4 @@ router.delete('/', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
