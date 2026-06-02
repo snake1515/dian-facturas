@@ -100,6 +100,60 @@ const initDB = async () => {
         created_at TIMESTAMP DEFAULT NOW()
       );
 
+      -- Migración: agregar rol prestamos
+      ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
+      ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check CHECK (rol IN ('admin', 'editor', 'lector', 'consulta', 'prestamos'));
+
+      -- ─── TABLAS PRÉSTAMOS ────────────────────────────────────────────────────
+      CREATE TABLE IF NOT EXISTS prestamo_clinicas (
+        id         SERIAL PRIMARY KEY,
+        nombre     VARCHAR(200) NOT NULL,
+        nit        VARCHAR(50),
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS prestamo_productos (
+        id               SERIAL PRIMARY KEY,
+        codigo           VARCHAR(20) UNIQUE NOT NULL,
+        nombre           TEXT NOT NULL,
+        unidad           VARCHAR(50),
+        precio_unitario  NUMERIC(14,2) DEFAULT 0,
+        categoria        VARCHAR(100),
+        cuenta_contable  VARCHAR(20),
+        created_at       TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS prestamos (
+        id                 SERIAL PRIMARY KEY,
+        tipo               VARCHAR(10) NOT NULL CHECK (tipo IN ('ingreso','egreso')),
+        clinica_id         INTEGER REFERENCES prestamo_clinicas(id),
+        clinica_nombre     VARCHAR(200),
+        bodega_codigo      VARCHAR(10) NOT NULL,
+        bodega_nombre      VARCHAR(100),
+        fecha              DATE NOT NULL,
+        documento_contable VARCHAR(100) NOT NULL,
+        observaciones      TEXT,
+        soporte_url        TEXT,
+        items              JSONB DEFAULT '[]',
+        estado             VARCHAR(20) NOT NULL DEFAULT 'abierto' CHECK (estado IN ('abierto','parcial','cerrado')),
+        created_at         TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS prestamo_devoluciones (
+        id                 SERIAL PRIMARY KEY,
+        prestamo_id        INTEGER NOT NULL REFERENCES prestamos(id) ON DELETE CASCADE,
+        fecha              DATE NOT NULL,
+        documento_contable VARCHAR(100) NOT NULL,
+        soporte_url        TEXT,
+        items              JSONB DEFAULT '[]',
+        created_at         TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_prestamos_estado       ON prestamos(estado);
+      CREATE INDEX IF NOT EXISTS idx_prestamos_tipo         ON prestamos(tipo);
+      CREATE INDEX IF NOT EXISTS idx_devoluciones_prestamo  ON prestamo_devoluciones(prestamo_id);
+      -- ─────────────────────────────────────────────────────────────────────────
+
       INSERT INTO configuracion (clave, valor) VALUES
         ('sync_interval_hours', '2'),
         ('gmail_connected', 'false'),
@@ -117,4 +171,5 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
 
