@@ -202,7 +202,7 @@ export default function Prestamos() {
           {activeTab === 'resumen'     && <TabResumen prestamos={prestamos} devoluciones={devoluciones} />}
           {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} />}
-          {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
+          {activeTab === 'productos'   && <TabProductos productos={productos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} />}
         </>
       )}
@@ -926,12 +926,20 @@ function TabNuevo({ clinicas, productos, onSaved }) {
 
 // ─── TAB PRODUCTOS ──────────────────────────────────────────────────────────────
 
-function TabProductos({ productos, onRefresh }) {
+function TabProductos({ productos: productosProp }) {
   const [busqueda, setBusqueda] = useState('');
   const [filtroCat, setFiltroCat] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState('');
+  const [productosLocales, setProductosLocales] = useState(productosProp);
+  const prevPropLen = React.useRef(productosProp.length);
+  useEffect(() => {
+    if (productosProp.length !== prevPropLen.current) {
+      setProductosLocales(productosProp);
+      prevPropLen.current = productosProp.length;
+    }
+  }, [productosProp]);
 
-  const filtrados = productos.filter(p => {
+  const filtrados = productosLocales.filter(p => {
     const q = busqueda.toLowerCase();
     const matchQ = !q || p.codigo?.toLowerCase().includes(q) || p.nombre?.toLowerCase().includes(q);
     const matchC = !filtroCat || (getCategoriaFromCodigo(p.codigo)?.categoria || '').includes(filtroCat);
@@ -941,32 +949,40 @@ function TabProductos({ productos, onRefresh }) {
   async function cargarExcel(e) {
     const file = e.target.files[0];
     if (!file) return;
-    setSaving(true);
+    setSaving('cargando');
     const reader = new FileReader();
     reader.onload = async ev => {
       try {
         const wb = XLSX.read(ev.target.result, { type: 'binary' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws);
-        for (const row of data) {
-          const codigo = String(row['Código'] || row['codigo'] || '');
-          if (!codigo) continue;
+        const rows = data.map(row => {
+          const codigo = String(row['Código'] || row['codigo'] || '').trim();
+          if (!codigo) return null;
           const grupo = getCategoriaFromCodigo(codigo);
+          return {
+            codigo,
+            nombre: row['Nombre'] || row['nombre'] || '',
+            unidad: row['Unidad'] || row['unidad'] || '',
+            precio_unitario: Number(row['Precio unitario'] || row['precio_unitario'] || 0),
+            categoria: grupo?.categoria || '',
+            cuenta_contable: grupo?.cuenta || '',
+          };
+        }).filter(Boolean);
+        if (rows.length > 0) {
           await sbFetch('prestamo_productos', {
             method: 'POST',
-            headers: { 'Prefer': 'resolution=merge-duplicates' },
-            body: JSON.stringify({
-              codigo, nombre: row['Nombre'] || row['nombre'] || '',
-              unidad: row['Unidad'] || row['unidad'] || '',
-              precio_unitario: Number(row['Precio unitario'] || row['precio_unitario'] || 0),
-              categoria: grupo?.categoria || '',
-              cuenta_contable: grupo?.cuenta || '',
-            }),
+            headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(rows),
           });
         }
-        onRefresh();
-      } catch (err) { console.error(err); }
-      setSaving(false);
+        const actualizados = await sbFetch('prestamo_productos?order=nombre.asc');
+        setProductosLocales(actualizados || []);
+        setSaving('listo');
+      } catch (err) {
+        console.error('Error cargando Excel:', err);
+        setSaving('error');
+      }
     };
     reader.readAsBinaryString(file);
   }
@@ -999,7 +1015,7 @@ function TabProductos({ productos, onRefresh }) {
           <option value='Gases'>Gases medicinales</option>
         </select>
         <label style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          ↑ {saving ? 'Cargando…' : 'Cargar Excel/CSV'}
+          ↑ {saving === 'cargando' ? 'Cargando…' : saving === 'listo' ? '✓ Cargado' : saving === 'error' ? 'Error' : 'Cargar Excel/CSV'}
           <input type='file' accept='.xlsx,.csv,.xlsm' style={{ display: 'none' }} onChange={cargarExcel} />
         </label>
         <button onClick={descargarPlantilla}
