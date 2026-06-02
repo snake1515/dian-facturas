@@ -23,7 +23,6 @@ const BODEGAS = [
   { codigo: 'UP', nombre: 'MANTENIMIENTO' },
 ];
 
-// Los primeros 6 dígitos del código de producto determinan el grupo contable
 const GRUPOS_CONTABLES = {
   '010101': { cuenta: '14150501', categoria: 'Medicamentos' },
   '010102': { cuenta: '14150501', categoria: 'Medicamentos' },
@@ -78,13 +77,51 @@ function fmt(n) {
   return '$' + Number(n || 0).toLocaleString('es-CO');
 }
 
+// ─── API helper — mismo patrón que Facturas.js ─────────────────────────────────
+
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+
+async function apiFetch(path, options = {}) {
+  const token = localStorage.getItem('token');
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      ...options.headers,
+    },
+    ...options,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || `Error ${res.status}`);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+// Para subir archivos con FormData (PDF)
+async function apiUpload(path, formData) {
+  const token = localStorage.getItem('token');
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || `Error ${res.status}`);
+  }
+  return res.json();
+}
+
+// ─── Badges ───────────────────────────────────────────────────────────────────
+
 function Badge({ tipo }) {
   const estilos = {
-    ingreso: { bg: '#E6F1FB', color: '#185FA5', label: 'Ingreso' },
-    egreso:  { bg: '#FBEAF0', color: '#993556', label: 'Egreso' },
-    abierto: { bg: '#FAEEDA', color: '#854F0B', label: 'Abierto' },
-    parcial: { bg: '#FAECE7', color: '#993C1D', label: 'Parcial' },
-    cerrado: { bg: '#EAF3DE', color: '#3B6D11', label: 'Cerrado' },
+    ingreso:    { bg: '#E6F1FB', color: '#185FA5', label: 'Ingreso' },
+    egreso:     { bg: '#FBEAF0', color: '#993556', label: 'Egreso' },
+    abierto:    { bg: '#FAEEDA', color: '#854F0B', label: 'Abierto' },
+    parcial:    { bg: '#FAECE7', color: '#993C1D', label: 'Parcial' },
+    cerrado:    { bg: '#EAF3DE', color: '#3B6D11', label: 'Cerrado' },
     devolucion: { bg: '#F1EFE8', color: '#444441', label: 'Devolución' },
   };
   const e = estilos[tipo] || estilos.abierto;
@@ -106,42 +143,17 @@ function CatTag({ categoria }) {
   );
 }
 
-// ─── Supabase helpers ───────────────────────────────────────────────────────────
-
-const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL;
-const SUPABASE_KEY = process.env.REACT_APP_SUPABASE_ANON_KEY;
-
-async function sbFetch(path, options = {}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=representation',
-      ...options.headers,
-    },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err);
-  }
-  const text = await res.text();
-  return text ? JSON.parse(text) : null;
-}
-
 // ─── Componente principal ───────────────────────────────────────────────────────
 
 export default function Prestamos() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('resumen');
 
-  // Datos globales
-  const [prestamos, setPrestamos] = useState([]);
+  const [prestamos,   setPrestamos]   = useState([]);
   const [devoluciones, setDevoluciones] = useState([]);
-  const [productos, setProductos] = useState([]);
-  const [clinicas, setClinicas] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [productos,   setProductos]   = useState([]);
+  const [clinicas,    setClinicas]    = useState([]);
+  const [loading,     setLoading]     = useState(true);
 
   useEffect(() => { cargarDatos(); }, []);
 
@@ -149,15 +161,15 @@ export default function Prestamos() {
     setLoading(true);
     try {
       const [p, d, prod, cl] = await Promise.all([
-        sbFetch('prestamos?order=created_at.desc'),
-        sbFetch('prestamo_devoluciones?order=fecha.desc'),
-        sbFetch('prestamo_productos?order=nombre.asc'),
-        sbFetch('prestamo_clinicas?order=nombre.asc'),
+        apiFetch('/prestamos'),
+        apiFetch('/prestamos/devoluciones'),
+        apiFetch('/prestamos/productos'),
+        apiFetch('/prestamos/clinicas'),
       ]);
-      setPrestamos(p || []);
+      setPrestamos(p   || []);
       setDevoluciones(d || []);
       setProductos(prod || []);
-      setClinicas(cl || []);
+      setClinicas(cl    || []);
     } catch (e) {
       console.error('Error cargando datos de préstamos:', e);
     }
@@ -201,8 +213,8 @@ export default function Prestamos() {
         <>
           {activeTab === 'resumen'     && <TabResumen prestamos={prestamos} devoluciones={devoluciones} />}
           {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} onRefresh={cargarDatos} />}
-          {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} />}
-          {activeTab === 'productos'   && <TabProductos productos={productos} />}
+          {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
+          {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} />}
         </>
       )}
@@ -222,14 +234,12 @@ function TabResumen({ prestamos, devoluciones }) {
     return Math.max(0, totalPrestado - totalDevuelto);
   }
 
-  const abiertos = prestamos.filter(p => p.estado !== 'cerrado');
-  const egresos  = abiertos.filter(p => p.tipo === 'egreso');
-  const ingresos = abiertos.filter(p => p.tipo === 'ingreso');
-
+  const abiertos     = prestamos.filter(p => p.estado !== 'cerrado');
+  const egresos      = abiertos.filter(p => p.tipo === 'egreso');
+  const ingresos     = abiertos.filter(p => p.tipo === 'ingreso');
   const totalEgreso  = egresos.reduce((s, p) => s + saldoPendiente(p), 0);
   const totalIngreso = ingresos.reduce((s, p) => s + saldoPendiente(p), 0);
 
-  // Agrupar egresos abiertos por categoría
   const porCategoria = {};
   egresos.forEach(p => {
     (p.items || []).forEach(item => {
@@ -322,30 +332,30 @@ function TabResumen({ prestamos, devoluciones }) {
 // ─── TAB MOVIMIENTOS ────────────────────────────────────────────────────────────
 
 function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
-  const [busqueda, setBusqueda] = useState('');
-  const [filtroTipo, setFiltroTipo] = useState('');
-  const [filtroEstado, setFiltroEstado] = useState('');
-  const [filtroBodega, setFiltroBodega] = useState('');
-  const [detalle, setDetalle] = useState(null);         // préstamo seleccionado para ver detalle
-  const [devModal, setDevModal] = useState(null);       // préstamo seleccionado para registrar devolución
+  const [busqueda,    setBusqueda]    = useState('');
+  const [filtroTipo,  setFiltroTipo]  = useState('');
+  const [filtroEstado,setFiltroEstado]= useState('');
+  const [filtroBodega,setFiltroBodega]= useState('');
+  const [detalle,     setDetalle]     = useState(null);
+  const [devModal,    setDevModal]    = useState(null);
 
   const filtrados = prestamos.filter(p => {
     const q = busqueda.toLowerCase();
-    const matchQ = !q || p.documento_contable?.toLowerCase().includes(q) || p.clinica_nombre?.toLowerCase().includes(q);
-    const matchTipo   = !filtroTipo   || p.tipo   === filtroTipo;
-    const matchEstado = !filtroEstado || p.estado === filtroEstado;
-    const matchBodega = !filtroBodega || p.bodega_codigo === filtroBodega;
+    const matchQ      = !q           || p.documento_contable?.toLowerCase().includes(q) || p.clinica_nombre?.toLowerCase().includes(q);
+    const matchTipo   = !filtroTipo   || p.tipo          === filtroTipo;
+    const matchEstado = !filtroEstado || p.estado         === filtroEstado;
+    const matchBodega = !filtroBodega || p.bodega_codigo  === filtroBodega;
     return matchQ && matchTipo && matchEstado && matchBodega;
   });
 
   async function exportar() {
     const rows = filtrados.map(p => ({
       Documento: p.documento_contable,
-      Fecha: p.fecha,
-      Clínica: p.clinica_nombre,
-      Bodega: p.bodega_nombre,
-      Tipo: p.tipo,
-      Estado: p.estado,
+      Fecha:     p.fecha,
+      Clínica:   p.clinica_nombre,
+      Bodega:    p.bodega_nombre,
+      Tipo:      p.tipo,
+      Estado:    p.estado,
       'Valor total': (p.items || []).reduce((s, i) => s + i.cantidad * i.precio_unitario, 0),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
@@ -359,7 +369,6 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
 
   return (
     <div>
-      {/* Filtros */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
         <input value={busqueda} onChange={e => setBusqueda(e.target.value)}
           placeholder="Buscar por documento o clínica…"
@@ -437,14 +446,12 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
         </table>
       </div>
 
-      {/* Modal detalle */}
       {detalle && (
         <Modal onClose={() => setDetalle(null)} titulo={`Préstamo ${detalle.documento_contable}`}>
           <DetallePrestamoModal prestamo={detalle} devoluciones={devoluciones.filter(d => d.prestamo_id === detalle.id)} />
         </Modal>
       )}
 
-      {/* Modal devolución */}
       {devModal && (
         <Modal onClose={() => setDevModal(null)} titulo={`Registrar devolución — ${devModal.documento_contable}`}>
           <FormDevolucion
@@ -498,19 +505,18 @@ function DetallePrestamoModal({ prestamo, devoluciones }) {
           {devoluciones.map((d, idx) => (
             <div key={d.id} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden' }}>
               <div style={{ background: 'var(--t-bg-card)', padding: '8px 12px', display: 'flex', gap: 12, alignItems: 'center', fontSize: 13 }}>
-                <span style={{ fontWeight: 500 }}>Dev. {idx + 1}</span>
+                <span style={{ fontWeight: 500 }}>Dev. #{idx + 1}</span>
                 <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>{d.fecha}</span>
-                <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>Doc: {d.documento_contable}</span>
-                {d.soporte_url && <a href={d.soporte_url} target='_blank' rel='noreferrer' style={{ color: 'var(--t-accent)', fontSize: 12 }}>PDF</a>}
+                <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>{d.documento_contable}</span>
+                {d.soporte_url && <a href={d.soporte_url} target='_blank' rel='noreferrer' style={{ color: 'var(--t-accent)', fontSize: 12, marginLeft: 'auto' }}>PDF</a>}
               </div>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr>{['Nombre','Cant. devuelta','Valor'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {(d.items || []).map((item, i) => (
-                    <tr key={i}>
-                      <td style={tdS}>{item.nombre}</td>
-                      <td style={tdS}>{item.cantidad}</td>
-                      <td style={{ ...tdS, fontWeight: 500 }}>{fmt(item.cantidad * item.precio_unitario)}</td>
+                  {(d.items || []).map((item, j) => (
+                    <tr key={j}>
+                      <td style={{ padding: '6px 12px', fontSize: 12, fontFamily: 'monospace', color: 'var(--t-text-muted)' }}>{item.codigo}</td>
+                      <td style={{ padding: '6px 12px', fontSize: 13 }}>{item.nombre}</td>
+                      <td style={{ padding: '6px 12px', fontSize: 13 }}>{item.cantidad} unid.</td>
                     </tr>
                   ))}
                 </tbody>
@@ -526,14 +532,13 @@ function DetallePrestamoModal({ prestamo, devoluciones }) {
 // ─── FORM DEVOLUCIÓN ────────────────────────────────────────────────────────────
 
 function FormDevolucion({ prestamo, devoluciones, onSaved }) {
-  const [fecha, setFecha]   = useState(new Date().toISOString().split('T')[0]);
+  const [fecha,       setFecha]       = useState(new Date().toISOString().split('T')[0]);
   const [docContable, setDocContable] = useState('');
   const [soporteFile, setSoporteFile] = useState(null);
-  const [cantidades, setCantidades]   = useState({});
-  const [saving, setSaving] = useState(false);
-  const [error, setError]   = useState('');
+  const [cantidades,  setCantidades]  = useState({});
+  const [saving,      setSaving]      = useState(false);
+  const [error,       setError]       = useState('');
 
-  // Calcular saldo pendiente por ítem
   const saldos = (prestamo.items || []).map(item => {
     const devuelto = devoluciones.flatMap(d => d.items || [])
       .filter(i => i.codigo === item.codigo)
@@ -543,7 +548,7 @@ function FormDevolucion({ prestamo, devoluciones, onSaved }) {
 
   async function guardar() {
     setError('');
-    if (!fecha) return setError('La fecha es requerida');
+    if (!fecha)       return setError('La fecha es requerida');
     if (!docContable) return setError('El documento contable es requerido');
     const items = saldos.filter(i => cantidades[i.codigo] > 0).map(i => ({
       codigo: i.codigo, nombre: i.nombre, cantidad: Number(cantidades[i.codigo]),
@@ -553,32 +558,14 @@ function FormDevolucion({ prestamo, devoluciones, onSaved }) {
 
     setSaving(true);
     try {
-      // Subir PDF si hay
-      let soporte_url = null;
-      if (soporteFile) {
-        soporte_url = await subirPDF(soporteFile, `dev_${prestamo.id}_${Date.now()}`);
-      }
+      const fd = new FormData();
+      fd.append('prestamo_id',       prestamo.id);
+      fd.append('fecha',             fecha);
+      fd.append('documento_contable', docContable);
+      fd.append('items',             JSON.stringify(items));
+      if (soporteFile) fd.append('soporte', soporteFile);
 
-      await sbFetch('prestamo_devoluciones', {
-        method: 'POST',
-        body: JSON.stringify({
-          prestamo_id: prestamo.id,
-          fecha, documento_contable: docContable,
-          soporte_url, items,
-        }),
-      });
-
-      // Recalcular estado del préstamo
-      const totalPrestado = (prestamo.items || []).reduce((s, i) => s + i.cantidad, 0);
-      const totalDevueltoAntes = devoluciones.flatMap(d => d.items || []).reduce((s, i) => s + i.cantidad, 0);
-      const totalDevueltoNow = totalDevueltoAntes + items.reduce((s, i) => s + i.cantidad, 0);
-      const nuevoEstado = totalDevueltoNow >= totalPrestado ? 'cerrado' : 'parcial';
-
-      await sbFetch(`prestamos?id=eq.${prestamo.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ estado: nuevoEstado }),
-      });
-
+      await apiUpload('/prestamos/devoluciones', fd);
       onSaved();
     } catch (e) {
       setError('Error guardando: ' + e.message);
@@ -656,21 +643,39 @@ function FormDevolucion({ prestamo, devoluciones, onSaved }) {
 
 // ─── TAB NUEVO PRÉSTAMO ─────────────────────────────────────────────────────────
 
-function TabNuevo({ clinicas, productos, onSaved }) {
-  const [tipo, setTipo]           = useState('ingreso');
-  const [clinicaId, setClinicaId] = useState('');
-  const [bodega, setBodega]       = useState('');
-  const [fecha, setFecha]         = useState(new Date().toISOString().split('T')[0]);
+function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
+  const [tipo,        setTipo]        = useState('ingreso');
+  const [clinicaId,   setClinicaId]   = useState('');
+  const [bodega,      setBodega]      = useState('');
+  const [fecha,       setFecha]       = useState(new Date().toISOString().split('T')[0]);
   const [docContable, setDocContable] = useState('');
-  const [observaciones, setObs]   = useState('');
-  const [items, setItems]         = useState([]);
+  const [observaciones, setObs]       = useState('');
+  const [items,       setItems]       = useState([]);
   const [soporteFile, setSoporteFile] = useState(null);
-  const [busqProd, setBusqProd]   = useState('');
-  const [excelData, setExcelData] = useState(null); // datos del Excel maestro cargado
-  const [saving, setSaving]       = useState(false);
-  const [error, setError]         = useState('');
+  const [busqProd,    setBusqProd]    = useState('');
+  const [excelData,   setExcelData]   = useState(null);
+  const [saving,      setSaving]      = useState(false);
+  const [error,       setError]       = useState('');
 
-  // Buscar en excel por documento contable
+  // Nueva clínica rápida
+  const [nuevaClinica, setNuevaClinica] = useState('');
+  const [guardandoCl,  setGuardandoCl]  = useState(false);
+
+  async function crearClinica() {
+    if (!nuevaClinica.trim()) return;
+    setGuardandoCl(true);
+    try {
+      await apiFetch('/prestamos/clinicas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre: nuevaClinica.trim() }),
+      });
+      setNuevaClinica('');
+      onRefreshClinicas();
+    } catch (e) { alert('Error creando clínica: ' + e.message); }
+    setGuardandoCl(false);
+  }
+
   async function buscarEnExcel() {
     if (!excelData || !docContable) return;
     const filas = excelData.filter(r => String(r['Documento'] || '').trim() === docContable.trim());
@@ -681,10 +686,10 @@ function TabNuevo({ clinicas, productos, onSaved }) {
       const grupo  = getCategoriaFromCodigo(codigo);
       return {
         codigo,
-        nombre: r['Nombre producto'] || '',
-        cantidad: Number(r['Cantidad'] || 0),
+        nombre:          r['Nombre producto'] || '',
+        cantidad:        Number(r['Cantidad'] || 0),
         precio_unitario: Number(r['Precio unitario'] || 0),
-        categoria: grupo?.categoria || '',
+        categoria:       grupo?.categoria || '',
         cuenta_contable: grupo?.cuenta || '',
       };
     });
@@ -696,8 +701,8 @@ function TabNuevo({ clinicas, productos, onSaved }) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = ev => {
-      const wb = XLSX.read(ev.target.result, { type: 'binary' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
+      const wb   = XLSX.read(ev.target.result, { type: 'binary' });
+      const ws   = wb.Sheets[wb.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json(ws);
       setExcelData(data);
     };
@@ -715,7 +720,7 @@ function TabNuevo({ clinicas, productos, onSaved }) {
     setItems(prev => [...prev, {
       codigo: prod.codigo, nombre: prod.nombre,
       cantidad: 1, precio_unitario: prod.precio_unitario,
-      categoria: grupo?.categoria || prod.categoria || '',
+      categoria:       grupo?.categoria || prod.categoria || '',
       cuenta_contable: grupo?.cuenta || '',
     }]);
     setBusqProd('');
@@ -733,28 +738,30 @@ function TabNuevo({ clinicas, productos, onSaved }) {
 
   async function guardar() {
     setError('');
-    if (!clinicaId) return setError('Selecciona una clínica');
-    if (!bodega)    return setError('Selecciona una bodega');
-    if (!fecha)     return setError('Ingresa la fecha');
-    if (!docContable) return setError('Ingresa el documento contable');
+    if (!clinicaId)    return setError('Selecciona una clínica');
+    if (!bodega)       return setError('Selecciona una bodega');
+    if (!fecha)        return setError('Ingresa la fecha');
+    if (!docContable)  return setError('Ingresa el documento contable');
     if (items.length === 0) return setError('Agrega al menos un producto');
+
     setSaving(true);
     try {
-      let soporte_url = null;
-      if (soporteFile) {
-        soporte_url = await subirPDF(soporteFile, `prestamo_${Date.now()}`);
-      }
-      const clinica = clinicas.find(c => c.id === clinicaId);
+      const clinica = clinicas.find(c => c.id === clinicaId || String(c.id) === String(clinicaId));
       const bod     = BODEGAS.find(b => b.codigo === bodega);
-      await sbFetch('prestamos', {
-        method: 'POST',
-        body: JSON.stringify({
-          tipo, clinica_id: clinicaId, clinica_nombre: clinica?.nombre,
-          bodega_codigo: bodega, bodega_nombre: bod?.nombre,
-          fecha, documento_contable: docContable,
-          observaciones, soporte_url, items, estado: 'abierto',
-        }),
-      });
+
+      const fd = new FormData();
+      fd.append('tipo',               tipo);
+      fd.append('clinica_id',         clinicaId);
+      fd.append('clinica_nombre',     clinica?.nombre || '');
+      fd.append('bodega_codigo',      bodega);
+      fd.append('bodega_nombre',      bod?.nombre || '');
+      fd.append('fecha',              fecha);
+      fd.append('documento_contable', docContable);
+      fd.append('observaciones',      observaciones);
+      fd.append('items',              JSON.stringify(items));
+      if (soporteFile) fd.append('soporte', soporteFile);
+
+      await apiUpload('/prestamos', fd);
       onSaved();
     } catch (e) {
       setError('Error guardando: ' + e.message);
@@ -785,7 +792,7 @@ function TabNuevo({ clinicas, productos, onSaved }) {
         ))}
       </div>
 
-      {/* Autocomplete por documento */}
+      {/* Autocomplete por Excel */}
       <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 9, padding: '12px 16px', marginBottom: 16 }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
           Cargar productos desde Excel maestro
@@ -816,6 +823,16 @@ function TabNuevo({ clinicas, productos, onSaved }) {
             <option value=''>— seleccionar —</option>
             {clinicas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
           </select>
+          {/* Crear clínica rápida */}
+          <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+            <input value={nuevaClinica} onChange={e => setNuevaClinica(e.target.value)}
+              placeholder='Nueva clínica…'
+              style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+            <button onClick={crearClinica} disabled={guardandoCl || !nuevaClinica.trim()}
+              style={{ padding: '5px 9px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+              {guardandoCl ? '…' : '+ Agregar'}
+            </button>
+          </div>
         </div>
         <div>
           <label style={labelS}>Bodega</label>
@@ -926,12 +943,13 @@ function TabNuevo({ clinicas, productos, onSaved }) {
 
 // ─── TAB PRODUCTOS ──────────────────────────────────────────────────────────────
 
-function TabProductos({ productos: productosProp }) {
-  const [busqueda, setBusqueda] = useState('');
-  const [filtroCat, setFiltroCat] = useState('');
-  const [saving, setSaving] = useState('');
+function TabProductos({ productos: productosProp, onRefresh }) {
+  const [busqueda,        setBusqueda]        = useState('');
+  const [filtroCat,       setFiltroCat]        = useState('');
+  const [saving,          setSaving]          = useState('');
   const [productosLocales, setProductosLocales] = useState(productosProp);
-  const prevPropLen = React.useRef(productosProp.length);
+
+  const prevPropLen = useRef(productosProp.length);
   useEffect(() => {
     if (productosProp.length !== prevPropLen.current) {
       setProductosLocales(productosProp);
@@ -940,8 +958,8 @@ function TabProductos({ productos: productosProp }) {
   }, [productosProp]);
 
   const filtrados = productosLocales.filter(p => {
-    const q = busqueda.toLowerCase();
-    const matchQ = !q || p.codigo?.toLowerCase().includes(q) || p.nombre?.toLowerCase().includes(q);
+    const q      = busqueda.toLowerCase();
+    const matchQ = !q       || p.codigo?.toLowerCase().includes(q) || p.nombre?.toLowerCase().includes(q);
     const matchC = !filtroCat || (getCategoriaFromCodigo(p.codigo)?.categoria || '').includes(filtroCat);
     return matchQ && matchC;
   });
@@ -953,8 +971,8 @@ function TabProductos({ productos: productosProp }) {
     const reader = new FileReader();
     reader.onload = async ev => {
       try {
-        const wb = XLSX.read(ev.target.result, { type: 'binary' });
-        const ws = wb.Sheets[wb.SheetNames[0]];
+        const wb   = XLSX.read(ev.target.result, { type: 'binary' });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws);
         const rows = data.map(row => {
           const codigo = String(row['Código'] || row['codigo'] || '').trim();
@@ -962,22 +980,22 @@ function TabProductos({ productos: productosProp }) {
           const grupo = getCategoriaFromCodigo(codigo);
           return {
             codigo,
-            nombre: row['Nombre'] || row['nombre'] || '',
-            unidad: row['Unidad'] || row['unidad'] || '',
+            nombre:          row['Nombre']         || row['nombre']         || '',
+            unidad:          row['Unidad']          || row['unidad']         || '',
             precio_unitario: Number(row['Precio unitario'] || row['precio_unitario'] || 0),
-            categoria: grupo?.categoria || '',
-            cuenta_contable: grupo?.cuenta || '',
+            categoria:       grupo?.categoria || '',
+            cuenta_contable: grupo?.cuenta    || '',
           };
         }).filter(Boolean);
+
         if (rows.length > 0) {
-          await sbFetch('prestamo_productos', {
+          const actualizados = await apiFetch('/prestamos/productos/bulk', {
             method: 'POST',
-            headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-            body: JSON.stringify(rows),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rows }),
           });
+          setProductosLocales(actualizados || []);
         }
-        const actualizados = await sbFetch('prestamo_productos?order=nombre.asc');
-        setProductosLocales(actualizados || []);
         setSaving('listo');
       } catch (err) {
         console.error('Error cargando Excel:', err);
@@ -987,7 +1005,7 @@ function TabProductos({ productos: productosProp }) {
     reader.readAsBinaryString(file);
   }
 
-  async function descargarPlantilla() {
+  function descargarPlantilla() {
     const ws = XLSX.utils.json_to_sheet([{ Código: '0101050001', Nombre: 'Ejemplo producto', Unidad: 'Tab', 'Precio unitario': 8500 }]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Productos');
@@ -999,57 +1017,63 @@ function TabProductos({ productos: productosProp }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         <input value={busqueda} onChange={e => setBusqueda(e.target.value)}
           placeholder='Buscar por código o nombre…'
           style={{ flex: 1, minWidth: 200, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
         <select value={filtroCat} onChange={e => setFiltroCat(e.target.value)}
           style={{ padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
           <option value=''>Todas las categorías</option>
-          <option value='Medicamentos'>Medicamentos</option>
-          <option value='Dispositivos'>Dispositivos médicos</option>
-          <option value='rojos'>Glóbulos rojos</option>
-          <option value='Plasma'>Plasma</option>
-          <option value='Plaquetas'>Plaquetas</option>
-          <option value='nutricionales'>Complementos nutricionales</option>
-          <option value='Gases'>Gases medicinales</option>
+          {Object.values(GRUPOS_CONTABLES).map(g => g.categoria).filter((v, i, a) => a.indexOf(v) === i).map(c => (
+            <option key={c} value={c}>{c}</option>
+          ))}
         </select>
-        <label style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          ↑ {saving === 'cargando' ? 'Cargando…' : saving === 'listo' ? '✓ Cargado' : saving === 'error' ? 'Error' : 'Cargar Excel/CSV'}
-          <input type='file' accept='.xlsx,.csv,.xlsm' style={{ display: 'none' }} onChange={cargarExcel} />
+        <label style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: saving === 'cargando' ? 'var(--t-bg-card)' : 'var(--t-bg-inner)', color: 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>
+          {saving === 'cargando' ? 'Cargando…' : saving === 'listo' ? '✓ Cargado' : saving === 'error' ? '✗ Error' : '↑ Cargar Excel'}
+          <input type='file' accept='.xlsx,.csv,.xlsm' onChange={cargarExcel} style={{ display: 'none' }} />
         </label>
-        <button onClick={descargarPlantilla}
-          style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+        <button onClick={descargarPlantilla} style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>
           ↓ Plantilla
         </button>
       </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <thead>
-          <tr>{['Código (10 díg.)','Grupo (6 díg.)','Cuenta contable','Categoría','Nombre','Unidad','Precio unitario'].map(h => (
-            <th key={h} style={thS}>{h}</th>
-          ))}</tr>
-        </thead>
-        <tbody>
-          {filtrados.map(p => {
-            const grupo = getCategoriaFromCodigo(p.codigo);
-            return (
-              <tr key={p.id}>
-                <td style={{ ...tdS, fontFamily: 'monospace', fontSize: 12 }}>{p.codigo}</td>
-                <td style={{ ...tdS, fontFamily: 'monospace', fontSize: 12, color: 'var(--t-text-muted)' }}>{String(p.codigo).substring(0, 6)}</td>
-                <td style={{ ...tdS, fontSize: 12, color: 'var(--t-text-muted)' }}>{grupo?.cuenta || '—'}</td>
-                <td style={tdS}><CatTag categoria={grupo?.categoria || p.categoria} /></td>
-                <td style={tdS}>{p.nombre}</td>
-                <td style={tdS}>{p.unidad}</td>
-                <td style={{ ...tdS, fontWeight: 500 }}>{fmt(p.precio_unitario)}</td>
+      {productosLocales.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '50px 20px', color: 'var(--t-text-muted)', fontSize: 13 }}>
+          Sin productos — carga un Excel con la plantilla
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={thS}>Código (10 díg.)</th>
+                <th style={thS}>Grupo (6 díg.)</th>
+                <th style={thS}>Cuenta contable</th>
+                <th style={thS}>Categoría</th>
+                <th style={thS}>Nombre</th>
+                <th style={thS}>Unidad</th>
+                <th style={thS}>Precio unitario</th>
               </tr>
-            );
-          })}
-          {filtrados.length === 0 && (
-            <tr><td colSpan={7} style={{ padding: '30px 10px', textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 13 }}>Sin productos — carga un Excel con la plantilla</td></tr>
-          )}
-        </tbody>
-      </table>
+            </thead>
+            <tbody>
+              {filtrados.map(p => {
+                const g = getCategoriaFromCodigo(p.codigo);
+                return (
+                  <tr key={p.codigo}>
+                    <td style={{ ...tdS, fontFamily: 'monospace', fontSize: 12 }}>{p.codigo}</td>
+                    <td style={{ ...tdS, fontFamily: 'monospace', fontSize: 12, color: 'var(--t-text-muted)' }}>{String(p.codigo).substring(0, 6)}</td>
+                    <td style={{ ...tdS, fontSize: 12, color: 'var(--t-text-muted)' }}>{g?.cuenta || p.cuenta_contable || '—'}</td>
+                    <td style={tdS}><CatTag categoria={g?.categoria || p.categoria} /></td>
+                    <td style={tdS}>{p.nombre}</td>
+                    <td style={{ ...tdS, color: 'var(--t-text-muted)' }}>{p.unidad || '—'}</td>
+                    <td style={{ ...tdS, fontWeight: 500 }}>{fmt(p.precio_unitario)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -1059,12 +1083,12 @@ function TabProductos({ productos: productosProp }) {
 function TabReportes({ prestamos, devoluciones }) {
   function exportar(filtro, nombre) {
     const datos = prestamos.filter(filtro).map(p => ({
-      Documento: p.documento_contable,
-      Fecha: p.fecha,
-      Clínica: p.clinica_nombre,
-      Bodega: `${p.bodega_nombre} (${p.bodega_codigo})`,
-      Tipo: p.tipo,
-      Estado: p.estado,
+      Documento:   p.documento_contable,
+      Fecha:       p.fecha,
+      Clínica:     p.clinica_nombre,
+      Bodega:      `${p.bodega_nombre} (${p.bodega_codigo})`,
+      Tipo:        p.tipo,
+      Estado:      p.estado,
       'Valor total': (p.items || []).reduce((s, i) => s + i.cantidad * i.precio_unitario, 0),
       'Devoluciones': devoluciones.filter(d => d.prestamo_id === p.id).length,
     }));
@@ -1129,21 +1153,4 @@ function Modal({ onClose, titulo, children }) {
       </div>
     </div>
   );
-}
-
-// ─── Helpers Supabase Storage ───────────────────────────────────────────────────
-
-async function subirPDF(file, nombre) {
-  const path = `prestamos/${nombre}.pdf`;
-  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/documentos/${path}`, {
-    method: 'POST',
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/pdf',
-    },
-    body: file,
-  });
-  if (!res.ok) throw new Error('Error subiendo PDF');
-  return `${SUPABASE_URL}/storage/v1/object/public/documentos/${path}`;
 }
