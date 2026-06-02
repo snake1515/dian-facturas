@@ -13,6 +13,7 @@ const facturasRoutes = require('./routes/facturas');
 const gmailRoutes = require('./routes/gmail');
 const configuracionRoutes = require('./routes/configuracion');
 const crucesDianRoutes = require('./routes/cruces-dian');
+const prestamosRoutes = require('./routes/prestamosRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -49,6 +50,7 @@ app.use('/api/facturas', facturasRoutes);
 app.use('/api/gmail', gmailRoutes);
 app.use('/api/configuracion', configuracionRoutes);
 app.use('/api/cruces-dian', crucesDianRoutes);
+app.use('/api/prestamos', prestamosRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -86,3 +88,4 @@ const arrancar = async () => {
 };
 
 arrancar();
+
