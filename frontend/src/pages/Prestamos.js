@@ -68,8 +68,9 @@ const CATEGORIAS_COLORES = {
 };
 
 function getCategoriaFromCodigo(codigo) {
-  if (!codigo || codigo.length < 6) return null;
-  const grupo = String(codigo).substring(0, 6);
+  if (!codigo) return null;
+  const cod10 = String(codigo).padStart(10, '0');
+  const grupo = cod10.substring(0, 6);
   return GRUPOS_CONTABLES[grupo] || null;
 }
 
@@ -682,7 +683,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
     if (filas.length === 0) { setError('Documento no encontrado en el Excel'); return; }
     setError('');
     const nuevosItems = filas.map(r => {
-      const codigo = String(r['Código producto'] || '');
+      const codigo = String(r['Código producto'] || '').trim().padStart(10, '0');
       const grupo  = getCategoriaFromCodigo(codigo);
       return {
         codigo,
@@ -975,7 +976,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         const ws   = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws);
         const rows = data.map(row => {
-          const codigo = String(row['Código'] || row['codigo'] || '').trim();
+          const codigo = String(row['Código'] || row['codigo'] || '').trim().padStart(10, '0');
           if (!codigo) return null;
           const grupo = getCategoriaFromCodigo(codigo);
           return {
@@ -1154,3 +1155,4 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
