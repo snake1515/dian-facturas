@@ -984,17 +984,18 @@ function TabProductos({ productos: productosProp, onRefresh }) {
           if (!codigo || codigo === '0000000000') return null;
           if (seen.has(codigo)) return null; // ignorar duplicados
           seen.add(codigo);
-          const grupo = getCategoriaFromCodigo(codigo);
-          const catExcel   = row['Categoría'] || row['Categoria'] || '';
-          const cuentaExcel = String(row['Cuenta contable'] || row['cuenta_contable'] || '');
+          const catExcel    = String(row['Categoría'] || row['Categoria'] || '').trim();
+          const cuentaExcel = String(row['Cuenta contable'] || row['cuenta_contable'] || '').trim();
+          const precio = Number(String(row['Precio unitario'] || row['precio_unitario'] || '0').replace(/[^0-9.]/g, ''));
+          if (!row['Nombre'] && !row['nombre']) return null; // fila sin nombre se ignora
+          if (!precio) return null; // fila sin precio se ignora
           return {
             codigo,
-            nombre:          row['Nombre']  || row['nombre'] || '',
-            unidad:          row['Unidad']  || row['unidad'] || '',
-            precio_unitario: Number(row['Precio unitario'] || row['precio_unitario'] || 0),
-            // Del Excel si viene y no es "NO APLICA"; sino auto-detectar por código
-            categoria:       (catExcel    && catExcel    !== 'NO APLICA') ? catExcel    : (grupo?.categoria || ''),
-            cuenta_contable: (cuentaExcel && cuentaExcel !== 'NO APLICA') ? cuentaExcel : (grupo?.cuenta    || ''),
+            nombre:          String(row['Nombre'] || row['nombre']).trim(),
+            unidad:          String(row['Unidad'] || row['unidad'] || '').trim(),
+            precio_unitario: precio,
+            categoria:       catExcel    === 'NO APLICA' ? '' : catExcel,
+            cuenta_contable: cuentaExcel === 'NO APLICA' ? '' : cuentaExcel,
           };
         }).filter(Boolean);
 
@@ -1171,4 +1172,5 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
