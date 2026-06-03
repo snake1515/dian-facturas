@@ -691,7 +691,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
         cantidad:        Number(r['Cantidad'] || 0),
         precio_unitario: Number(r['Precio unitario'] || 0),
         categoria:       grupo?.categoria || '',
-        cuenta_contable: grupo?.cuenta || '',
+        cuenta_contable: String(row['Cuenta contable'] || row['cuenta_contable'] || grupo?.cuenta || ''),
       };
     });
     setItems(prev => [...prev, ...nuevosItems]);
@@ -986,7 +986,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
             unidad:          row['Unidad']          || row['unidad']         || '',
             precio_unitario: Number(row['Precio unitario'] || row['precio_unitario'] || 0),
             categoria:       row['Categoría']       || row['Categoria']      || grupo?.categoria || '',
-            cuenta_contable: row['Cuenta contable'] || row['cuenta_contable']|| grupo?.cuenta    || '',
+            cuenta_contable: String(row['Cuenta contable'] || row['cuenta_contable'] || grupo?.cuenta || ''),
           };
         }).filter(Boolean);
 
