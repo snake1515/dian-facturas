@@ -702,12 +702,12 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = ev => {
-      const wb   = XLSX.read(ev.target.result, { type: 'binary' });
+      const wb   = XLSX.read(ev.target.result, { type: 'array' });
       const ws   = wb.Sheets[wb.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json(ws);
       setExcelData(data);
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   }
 
   const prodsFiltrados = productos.filter(p => {
@@ -972,7 +972,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
     const reader = new FileReader();
     reader.onload = async ev => {
       try {
-        const wb   = XLSX.read(ev.target.result, { type: 'binary' });
+        const wb   = XLSX.read(ev.target.result, { type: 'array' });
         const ws   = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws);
         const rows = data.map(row => {
@@ -1004,7 +1004,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         setSaving('error');
       }
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   }
 
   function descargarPlantilla() {
@@ -1163,4 +1163,5 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
