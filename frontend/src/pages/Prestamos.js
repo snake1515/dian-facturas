@@ -1050,7 +1050,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         </select>
         <label style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: saving === 'cargando' ? 'var(--t-bg-card)' : 'var(--t-bg-inner)', color: 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>
           {saving === 'cargando' ? 'Cargando…' : saving === 'listo' ? '✓ Cargado' : saving === 'error' ? '✗ Error' : '↑ Cargar Excel'}
-          <input type='file' accept='.xlsx,.csv,.xlsm' onChange={cargarExcel} style={{ display: 'none' }} />
+          <input type='file' accept='.xlsx,.csv,.xlsm' onClick={e => { e.target.value = null; }} onChange={cargarExcel} style={{ display: 'none' }} />
         </label>
         <button onClick={descargarPlantilla} style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>
           ↓ Plantilla
@@ -1174,6 +1174,7 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
 
 
