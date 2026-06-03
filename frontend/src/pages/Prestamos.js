@@ -977,15 +977,16 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         const data = XLSX.utils.sheet_to_json(ws);
         const rows = data.map(row => {
           const codigo = String(row['Código'] || row['codigo'] || '').trim().padStart(10, '0');
-          if (!codigo) return null;
+          if (!codigo || codigo === '0000000000') return null;
           const grupo = getCategoriaFromCodigo(codigo);
+          // Columnas del Excel tienen prioridad; si no vienen, se auto-detectan por código
           return {
             codigo,
             nombre:          row['Nombre']         || row['nombre']         || '',
             unidad:          row['Unidad']          || row['unidad']         || '',
             precio_unitario: Number(row['Precio unitario'] || row['precio_unitario'] || 0),
-            categoria:       grupo?.categoria || '',
-            cuenta_contable: grupo?.cuenta    || '',
+            categoria:       row['Categoría']       || row['Categoria']      || grupo?.categoria || '',
+            cuenta_contable: row['Cuenta contable'] || row['cuenta_contable']|| grupo?.cuenta    || '',
           };
         }).filter(Boolean);
 
@@ -1007,7 +1008,14 @@ function TabProductos({ productos: productosProp, onRefresh }) {
   }
 
   function descargarPlantilla() {
-    const ws = XLSX.utils.json_to_sheet([{ Código: '0101050001', Nombre: 'Ejemplo producto', Unidad: 'Tab', 'Precio unitario': 8500 }]);
+    const ws = XLSX.utils.json_to_sheet([{
+      'Código': '0101050001',
+      'Nombre': 'Ejemplo producto',
+      'Unidad': 'Tab',
+      'Precio unitario': 8500,
+      'Categoría': 'Medicamentos',
+      'Cuenta contable': '14150501',
+    }]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Productos');
     XLSX.writeFile(wb, 'plantilla_productos.xlsx');
