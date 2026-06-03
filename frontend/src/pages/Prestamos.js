@@ -1009,7 +1009,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
           });
           setProductosLocales(actualizados || []);
         }
-        setSaving('listo');
+        setSaving('listo'); setTimeout(() => setSaving(''), 3000);
       } catch (err) {
         console.error('Error cargando Excel:', err);
         setSaving('error');
@@ -1044,7 +1044,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         <select value={filtroCat} onChange={e => setFiltroCat(e.target.value)}
           style={{ padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
           <option value=''>Todas las categorías</option>
-          {Object.values(GRUPOS_CONTABLES).map(g => g.categoria).filter((v, i, a) => a.indexOf(v) === i).map(c => (
+          {[...new Set(productosLocales.map(p => p.categoria).filter(Boolean))].sort().map(c => (
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
@@ -1174,6 +1174,8 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
 
 
 
