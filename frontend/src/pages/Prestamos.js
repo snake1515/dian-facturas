@@ -986,9 +986,10 @@ function TabProductos({ productos: productosProp, onRefresh }) {
           seen.add(codigo);
           const catExcel    = String(row['Categoría'] || row['Categoria'] || '').trim();
           const cuentaExcel = String(row['Cuenta contable'] || row['cuenta_contable'] || '').trim();
-          const precio = Number(String(row['Precio unitario'] || row['precio_unitario'] || '0').replace(/[^0-9.]/g, ''));
+          const precioRaw = row['Precio unitario'] ?? row['precio_unitario'] ?? 0;
+          const precio = Number(String(precioRaw).replace(/[^0-9.]/g, '')) || 0;
           if (!row['Nombre'] && !row['nombre']) return null; // fila sin nombre se ignora
-          if (!precio) return null; // fila sin precio se ignora
+          // precio 0 se permite — no descartar filas por precio
           return {
             codigo,
             nombre:          String(row['Nombre'] || row['nombre']).trim(),
@@ -1174,6 +1175,7 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
 
 
