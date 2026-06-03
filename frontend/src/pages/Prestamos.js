@@ -1000,6 +1000,8 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         }).filter(Boolean);
 
         if (rows.length > 0) {
+          // Limpiar tabla antes de recargar para evitar duplicados con distintos códigos
+          await apiFetch('/prestamos/productos/clear', { method: 'DELETE' });
           const actualizados = await apiFetch('/prestamos/productos/bulk', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1172,5 +1174,7 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
 
 
