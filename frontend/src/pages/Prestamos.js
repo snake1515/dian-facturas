@@ -975,18 +975,26 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         const wb   = XLSX.read(ev.target.result, { type: 'array' });
         const ws   = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws);
+        // Deduplicar por código
+        const seen = new Set();
         const rows = data.map(row => {
-          const codigo = String(row['Código'] || row['codigo'] || '').trim().padStart(10, '0');
+          // Forzar código a string antes del padStart (puede venir como número desde Excel)
+          const codigoRaw = row['Código'] || row['codigo'] || '';
+          const codigo = String(codigoRaw).trim().padStart(10, '0');
           if (!codigo || codigo === '0000000000') return null;
+          if (seen.has(codigo)) return null; // ignorar duplicados
+          seen.add(codigo);
           const grupo = getCategoriaFromCodigo(codigo);
-          // Columnas del Excel tienen prioridad; si no vienen, se auto-detectan por código
+          const catExcel   = row['Categoría'] || row['Categoria'] || '';
+          const cuentaExcel = String(row['Cuenta contable'] || row['cuenta_contable'] || '');
           return {
             codigo,
-            nombre:          row['Nombre']         || row['nombre']         || '',
-            unidad:          row['Unidad']          || row['unidad']         || '',
+            nombre:          row['Nombre']  || row['nombre'] || '',
+            unidad:          row['Unidad']  || row['unidad'] || '',
             precio_unitario: Number(row['Precio unitario'] || row['precio_unitario'] || 0),
-            categoria:       row['Categoría']       || row['Categoria']      || grupo?.categoria || '',
-            cuenta_contable: String(row['Cuenta contable'] || row['cuenta_contable'] || grupo?.cuenta || ''),
+            // Del Excel si viene y no es "NO APLICA"; sino auto-detectar por código
+            categoria:       (catExcel    && catExcel    !== 'NO APLICA') ? catExcel    : (grupo?.categoria || ''),
+            cuenta_contable: (cuentaExcel && cuentaExcel !== 'NO APLICA') ? cuentaExcel : (grupo?.cuenta    || ''),
           };
         }).filter(Boolean);
 
@@ -1163,5 +1171,4 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
-
 
