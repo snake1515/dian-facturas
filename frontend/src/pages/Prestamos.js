@@ -976,6 +976,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         const wb   = XLSX.read(ev.target.result, { type: 'array' });
         const ws   = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws);
+        if (data.length > 0) console.log('HEADERS REALES:', Object.keys(data[0]), 'PRIMERA FILA:', data[0]);
         // Deduplicar por código
         const seen = new Set();
         const rows = data.map(row => {
@@ -1196,6 +1197,14 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
