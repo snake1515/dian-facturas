@@ -993,11 +993,11 @@ function TabProductos({ productos: productosProp, onRefresh }) {
           // precio 0 se permite — no descartar filas por precio
           return {
             codigo,
-            nombre:          String(row['Nombre'] || row['nombre']).trim(),
-            unidad:          String(row['Unidad'] || row['unidad'] || '').trim(),
+            nombre:          String(row['Nombre'] || row['nombre']).trim().substring(0, 255),
+            unidad:          String(row['Unidad'] || row['unidad'] || '').trim().substring(0, 20),
             precio_unitario: precio,
-            categoria:       catExcel    === 'NO APLICA' ? '' : catExcel,
-            cuenta_contable: cuentaExcel === 'NO APLICA' ? '' : cuentaExcel,
+            categoria:       (catExcel    === 'NO APLICA' ? '' : catExcel).substring(0, 100),
+            cuenta_contable: (cuentaExcel === 'NO APLICA' ? '' : cuentaExcel).substring(0, 20),
           };
         }).filter(Boolean);
 
@@ -1005,7 +1005,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
           // Limpiar tabla antes de recargar para evitar duplicados con distintos códigos
           await apiFetch('/prestamos/productos/clear', { method: 'DELETE' });
           // Enviar en lotes de 100 para evitar ERR_HTTP2_PROTOCOL_ERROR en Render
-          const CHUNK = 100;
+          const CHUNK = 50;
           const totalLotes = Math.ceil(rows.length / CHUNK);
           let actualizados = [];
           setProgreso(0);
@@ -1192,6 +1192,14 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
