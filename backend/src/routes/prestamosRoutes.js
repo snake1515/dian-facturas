@@ -72,14 +72,6 @@ router.get('/productos', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Limpiar tabla antes de recargar desde Excel
-router.delete("/productos/clear", async (req, res) => {
-  try {
-    await pool.query("DELETE FROM prestamo_productos");
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // Carga masiva desde Excel
 router.post('/productos/bulk', async (req, res) => {
   try {
@@ -219,4 +211,5 @@ router.post('/devoluciones', upload.single('soporte'), async (req, res) => {
 });
 
 module.exports = router;
+
 
