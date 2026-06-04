@@ -149,6 +149,10 @@ const initDB = async () => {
         created_at         TIMESTAMP DEFAULT NOW()
       );
 
+      -- Migraciones prestamo_productos
+      ALTER TABLE prestamo_productos ALTER COLUMN cuenta_contable TYPE VARCHAR(30);
+      ALTER TABLE prestamo_productos ALTER COLUMN categoria TYPE VARCHAR(200);
+
       CREATE INDEX IF NOT EXISTS idx_prestamos_estado       ON prestamos(estado);
       CREATE INDEX IF NOT EXISTS idx_prestamos_tipo         ON prestamos(tipo);
       CREATE INDEX IF NOT EXISTS idx_devoluciones_prestamo  ON prestamo_devoluciones(prestamo_id);
@@ -171,5 +175,8 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
 
 
