@@ -990,8 +990,9 @@ function TabProductos({ productos: productosProp, onRefresh }) {
           const nombre    = String(row['Nombre']          ?? row['nombre']          ?? '').trim();
           const unidad    = String(row['Unidad']          ?? row['unidad']          ?? '').trim();
           const precioRaw = row['Precio unitario']        ?? row['precio_unitario'] ?? 0;
-          const catRaw    = row['Categoría']              ?? row['Categoria']       ?? '';
-          const cuentaRaw = row['Cuenta contable']        ?? row['cuenta_contable'] ?? '';
+          // En el Excel las columnas están invertidas: 'Categoría' trae la cuenta y 'Cuenta contable' trae la categoría
+          const catRaw    = row['Cuenta contable']        ?? row['cuenta_contable'] ?? '';
+          const cuentaRaw = row['Categoría']              ?? row['Categoria']       ?? '';
           const precio    = Number(String(precioRaw).replace(/[^0-9.]/g, '')) || 0;
           const catExcel    = String(catRaw).trim();
           const cuentaExcel = String(cuentaRaw).trim();
@@ -1197,6 +1198,14 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
