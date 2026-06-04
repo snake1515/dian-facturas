@@ -153,6 +153,30 @@ const initDB = async () => {
       ALTER TABLE prestamo_productos ALTER COLUMN cuenta_contable TYPE VARCHAR(30);
       ALTER TABLE prestamo_productos ALTER COLUMN categoria TYPE VARCHAR(200);
 
+      -- Tabla de cruces entre préstamos y devoluciones
+      CREATE TABLE IF NOT EXISTS prestamo_cruces (
+        id             SERIAL PRIMARY KEY,
+        prestamo_id    INTEGER NOT NULL REFERENCES prestamos(id) ON DELETE CASCADE,
+        devolucion_id  INTEGER NOT NULL REFERENCES prestamos(id) ON DELETE CASCADE,
+        tipo_cruce     VARCHAR(10) NOT NULL DEFAULT 'total' CHECK (tipo_cruce IN ('total','parcial')),
+        observaciones  TEXT,
+        soporte_url    TEXT,
+        soporte_items  JSONB DEFAULT '{}',
+        created_at     TIMESTAMP DEFAULT NOW(),
+        UNIQUE(prestamo_id, devolucion_id)
+      );
+
+      -- Migración: tipo de préstamo ahora incluye devoluciones (IDP, ED)
+      ALTER TABLE prestamos DROP CONSTRAINT IF EXISTS prestamos_tipo_check;
+      ALTER TABLE prestamos ADD CONSTRAINT prestamos_tipo_check
+        CHECK (tipo IN ('ingreso','egreso','devolucion_ingreso','devolucion_egreso'));
+
+      -- Migración: bodega_codigo puede ser null
+      ALTER TABLE prestamos ALTER COLUMN bodega_codigo DROP NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_cruces_prestamo    ON prestamo_cruces(prestamo_id);
+      CREATE INDEX IF NOT EXISTS idx_cruces_devolucion  ON prestamo_cruces(devolucion_id);
+
       CREATE INDEX IF NOT EXISTS idx_prestamos_estado       ON prestamos(estado);
       CREATE INDEX IF NOT EXISTS idx_prestamos_tipo         ON prestamos(tipo);
       CREATE INDEX IF NOT EXISTS idx_devoluciones_prestamo  ON prestamo_devoluciones(prestamo_id);
@@ -175,6 +199,11 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
 
 
 
