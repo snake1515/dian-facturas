@@ -1003,14 +1003,24 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         if (rows.length > 0) {
           // Limpiar tabla antes de recargar para evitar duplicados con distintos códigos
           await apiFetch('/prestamos/productos/clear', { method: 'DELETE' });
-          const actualizados = await apiFetch('/prestamos/productos/bulk', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rows }),
-          });
+          // Enviar en lotes de 100 para evitar ERR_HTTP2_PROTOCOL_ERROR en Render
+          const CHUNK = 100;
+          const totalLotes = Math.ceil(rows.length / CHUNK);
+          let actualizados = [];
+          setProgreso(0);
+          for (let i = 0; i < rows.length; i += CHUNK) {
+            const chunk = rows.slice(i, i + CHUNK);
+            actualizados = await apiFetch('/prestamos/productos/bulk', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rows: chunk }),
+            });
+            setProgreso(Math.round(((i + CHUNK) / rows.length) * 100));
+          }
+          setProgreso(100);
           setProductosLocales(actualizados || []);
         }
-        setSaving('listo'); setTimeout(() => setSaving(''), 3000);
+        setSaving('listo'); setTimeout(() => { setSaving(''); setProgreso(0); }, 3000);
       } catch (err) {
         console.error('Error cargando Excel:', err);
         alert('ERROR: ' + err.message);
@@ -1050,8 +1060,13 @@ function TabProductos({ productos: productosProp, onRefresh }) {
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
-        <label style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: saving === 'cargando' ? 'var(--t-bg-card)' : 'var(--t-bg-inner)', color: 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>
-          {saving === 'cargando' ? 'Cargando…' : saving === 'listo' ? '✓ Cargado' : saving === 'error' ? '✗ Error' : '↑ Cargar Excel'}
+        <label style={{ position: 'relative', padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: saving === 'cargando' ? 'var(--t-bg-card)' : 'var(--t-bg-inner)', color: 'var(--t-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', minWidth: 130, display: 'inline-block', textAlign: 'center' }}>
+          {saving === 'cargando' && progreso > 0 && (
+            <span style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${progreso}%`, background: 'var(--t-accent)', opacity: 0.25, transition: 'width 0.3s' }} />
+          )}
+          <span style={{ position: 'relative', zIndex: 1 }}>
+            {saving === 'cargando' ? (progreso > 0 ? `Cargando… ${progreso}%` : 'Leyendo…') : saving === 'listo' ? '✓ Cargado' : saving === 'error' ? '✗ Error' : '↑ Cargar Excel'}
+          </span>
           <input type='file' accept='.xlsx,.csv,.xlsm' onClick={e => { e.target.value = null; }} onChange={cargarExcel} style={{ display: 'none' }} />
         </label>
         <button onClick={descargarPlantilla} style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>
@@ -1176,6 +1191,14 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
