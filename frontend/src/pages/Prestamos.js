@@ -985,19 +985,23 @@ function TabProductos({ productos: productosProp, onRefresh }) {
           if (!codigo || codigo === '0000000000') return null;
           if (seen.has(codigo)) return null; // ignorar duplicados
           seen.add(codigo);
-          const catExcel    = String(row['Categoría'] || row['Categoria'] || '').trim();
-          const cuentaExcel = String(row['Cuenta contable'] || row['cuenta_contable'] || '').trim();
-          const precioRaw = row['Precio unitario'] ?? row['precio_unitario'] ?? 0;
-          const precio = Number(String(precioRaw).replace(/[^0-9.]/g, '')) || 0;
-          if (!row['Nombre'] && !row['nombre']) return null; // fila sin nombre se ignora
-          // precio 0 se permite — no descartar filas por precio
+          // Leer cada columna de forma explícita sin fallback cruzado
+          const nombre    = String(row['Nombre']          ?? row['nombre']          ?? '').trim();
+          const unidad    = String(row['Unidad']          ?? row['unidad']          ?? '').trim();
+          const precioRaw = row['Precio unitario']        ?? row['precio_unitario'] ?? 0;
+          const catRaw    = row['Categoría']              ?? row['Categoria']       ?? '';
+          const cuentaRaw = row['Cuenta contable']        ?? row['cuenta_contable'] ?? '';
+          const precio    = Number(String(precioRaw).replace(/[^0-9.]/g, '')) || 0;
+          const catExcel    = String(catRaw).trim();
+          const cuentaExcel = String(cuentaRaw).trim();
+          if (!nombre) return null; // fila sin nombre se ignora
           return {
             codigo,
-            nombre:          String(row['Nombre'] || row['nombre']).trim().substring(0, 255),
-            unidad:          String(row['Unidad'] || row['unidad'] || '').trim().substring(0, 20),
+            nombre:          nombre.substring(0, 255),
+            unidad:          unidad.substring(0, 50),
             precio_unitario: precio,
-            categoria:       (catExcel    === 'NO APLICA' ? '' : catExcel).substring(0, 100),
-            cuenta_contable: (cuentaExcel === 'NO APLICA' ? '' : cuentaExcel).substring(0, 20),
+            categoria:       (catExcel    === 'NO APLICA' ? '' : catExcel).substring(0, 200),
+            cuenta_contable: (cuentaExcel === 'NO APLICA' ? '' : cuentaExcel).substring(0, 50),
           };
         }).filter(Boolean);
 
@@ -1192,6 +1196,14 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
