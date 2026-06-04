@@ -704,6 +704,8 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       return `${prefijo}${numero}` === docBuscar;
     });
 
+    console.log('Filas encontradas:', filas.length, 'Doc buscado:', docBuscar);
+    if (filas.length > 0) console.log('Primera fila:', filas[0]);
     if (filas.length === 0) { setError('Documento no encontrado (ej: EPO958, IPE958, ED550, IDP467)'); return; }
     setError('');
 
@@ -715,7 +717,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
     const primeraFila = filas[0];
     const fechaRaw = String(primeraFila[1] || '').substring(0, 10);
     if (fechaRaw) setFecha(fechaRaw);
-    setObservaciones(String(primeraFila[3] || '').trim());
+    setObs(String(primeraFila[3] || '').trim());
 
     // Auto-llenar clínica
     const terceroNombre = String(primeraFila[4] || '').trim();
@@ -747,6 +749,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
     const vistos = new Set();
     const nuevosItems = [];
 
+    console.log('Procesando', filas.length, 'filas para productos');
     for (const r of filas) {
       const codigoRaw = String(r[5] || '').trim();
       if (!codigoRaw) continue;
@@ -1284,6 +1287,71 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
