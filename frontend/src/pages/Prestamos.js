@@ -154,6 +154,7 @@ export default function Prestamos() {
   const [devoluciones, setDevoluciones] = useState([]);
   const [productos,   setProductos]   = useState([]);
   const [clinicas,    setClinicas]    = useState([]);
+  const [cruces,      setCruces]      = useState([]);
   const [loading,     setLoading]     = useState(true);
 
   useEffect(() => { cargarDatos(); }, []);
@@ -161,16 +162,18 @@ export default function Prestamos() {
   async function cargarDatos() {
     setLoading(true);
     try {
-      const [p, d, prod, cl] = await Promise.all([
+      const [p, d, prod, cl, cr] = await Promise.all([
         apiFetch('/prestamos'),
         apiFetch('/prestamos/devoluciones'),
         apiFetch('/prestamos/productos'),
         apiFetch('/prestamos/clinicas'),
+        apiFetch('/prestamos/cruces'),
       ]);
       setPrestamos(p   || []);
       setDevoluciones(d || []);
       setProductos(prod || []);
       setClinicas(cl    || []);
+      setCruces(cr      || []);
     } catch (e) {
       console.error('Error cargando datos de préstamos:', e);
     }
@@ -181,6 +184,7 @@ export default function Prestamos() {
     { id: 'resumen',     label: 'Resumen' },
     { id: 'movimientos', label: 'Movimientos' },
     { id: 'nuevo',       label: 'Nuevo préstamo' },
+    { id: 'cruces',      label: 'Cruces' },
     { id: 'productos',   label: 'Productos' },
     { id: 'reportes',    label: 'Reportes' },
   ];
@@ -216,6 +220,7 @@ export default function Prestamos() {
           {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
+          {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} />}
         </>
       )}
@@ -657,6 +662,8 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
   const [excelData,   setExcelData]   = useState(null);
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState('');
+  const [importando,  setImportando]  = useState(false);
+  const [importResult,setImportResult]= useState(null);
 
   // Nueva clínica rápida
   const [nuevaClinica, setNuevaClinica] = useState('');
@@ -688,6 +695,69 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       setExcelData(data);
     };
     reader.readAsArrayBuffer(file);
+  }
+
+  function procesarExcelMasivo(data) {
+    const documentos = {};
+    const codigosNuevos = new Set();
+    for (const r of data.slice(1)) {
+      const prefijo = String(r[0] || '').trim().toUpperCase();
+      const numero  = String(r[2] || '').trim();
+      if (!prefijo || !numero) continue;
+      const docKey = `${prefijo}${numero}`;
+      const tipoMap = { IPE: 'ingreso', EPO: 'egreso', IDP: 'devolucion_ingreso', ED: 'devolucion_egreso' };
+      const tipo = tipoMap[prefijo];
+      if (!tipo) continue;
+      if (!documentos[docKey]) {
+        const fechaVal = r[1] ? String(r[1]).substring(0, 10) : '';
+        const bodegaExcel = String(r[12] || '').trim().toUpperCase();
+        const bodegaMatch = BODEGAS.find(b => bodegaExcel.includes(b.nombre.toUpperCase()) || bodegaExcel.includes(b.codigo));
+        documentos[docKey] = {
+          documento_contable: docKey, tipo, fecha: fechaVal,
+          observaciones: String(r[3] || '').trim(),
+          clinica_nombre: String(r[4] || '').trim(),
+          bodega_codigo: bodegaMatch?.codigo || '',
+          bodega_nombre: bodegaMatch?.nombre || String(r[12] || '').trim(),
+          items: [],
+        };
+      }
+      const codigoRaw = String(r[5] || '').trim();
+      if (!codigoRaw) continue;
+      const codigo    = codigoRaw.padStart(10, '0');
+      const cantidad  = Number(r[6]) || 0;
+      const totalCosto = Math.abs(Number(String(r[7]).replace(/[^0-9.-]/g, '')) || 0);
+      const precioUnit = cantidad > 0 ? totalCosto / cantidad : 0;
+      const nombre    = String(r[11] || '').trim();
+      const lote      = String(r[19] || '').trim();
+      const fechaVenc = r[20] ? String(r[20]).substring(0, 10) : '';
+      const prodMaestro = productos.find(p => p.codigo === codigo);
+      if (!prodMaestro) codigosNuevos.add(codigo);
+      if (!documentos[docKey].items.find(i => i.codigo === codigo)) {
+        documentos[docKey].items.push({
+          codigo, nombre: nombre || prodMaestro?.nombre || '',
+          cantidad, precio_unitario: precioUnit || prodMaestro?.precio_unitario || 0,
+          categoria: prodMaestro?.categoria || '', cuenta_contable: prodMaestro?.cuenta_contable || '',
+          lote, fecha_vencimiento: fechaVenc,
+        });
+      }
+    }
+    return { documentos: Object.values(documentos), codigosNuevos: [...codigosNuevos] };
+  }
+
+  async function importarMasivo() {
+    if (!excelData) return;
+    setImportando(true); setError('');
+    try {
+      const { documentos, codigosNuevos } = procesarExcelMasivo(excelData);
+      if (documentos.length === 0) { setError('No se encontraron documentos válidos'); setImportando(false); return; }
+      const result = await apiFetch('/prestamos/importar-masivo', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentos }),
+      });
+      setImportResult({ creados: result.creados, omitidos: result.omitidos, omitidos_docs: result.omitidos_docs || [], codigosNuevos });
+      onSaved();
+    } catch (e) { setError('Error importando: ' + e.message); }
+    setImportando(false);
   }
 
   async function buscarEnExcel() {
@@ -902,7 +972,24 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
             🔍 Buscar y cargar
           </button>
         </div>
-        {excelData && <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 6 }}>✓ Excel cargado — {excelData.length} filas</div>}
+        {excelData && (
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>✓ Excel cargado — {excelData.length - 1} filas</span>
+            <button onClick={importarMasivo} disabled={importando} style={{
+              padding: '5px 14px', fontSize: 12, cursor: 'pointer', borderRadius: 6,
+              background: 'var(--t-accent)', color: '#fff', border: 'none', fontWeight: 600,
+            }}>
+              {importando ? 'Importando…' : '⚡ Importar todo'}
+            </button>
+          </div>
+        )}
+        {importResult && (
+          <div style={{ marginTop: 8, fontSize: 12, padding: '8px 12px', borderRadius: 6, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)' }}>
+            ✅ <b>{importResult.creados}</b> documentos creados
+            {importResult.omitidos > 0 && <span style={{ color: 'var(--t-text-muted)' }}> · {importResult.omitidos} ya existían ({importResult.omitidos_docs.join(', ')})</span>}
+            {importResult.codigosNuevos?.length > 0 && <div style={{ color: '#f59e0b', marginTop: 4 }}>⚠️ Códigos sin categoría: {importResult.codigosNuevos.join(', ')}</div>}
+          </div>
+        )}
       </div>
 
       {/* Datos generales */}
@@ -1027,6 +1114,285 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
           {saving ? 'Guardando…' : 'Guardar préstamo'}
         </button>
       </div>
+    </div>
+  );
+}
+
+
+// ─── TAB CRUCES ──────────────────────────────────────────────────────────────
+
+function TabCruces({ prestamos, cruces, onRefresh }) {
+  const [selPrestamo,  setSelPrestamo]  = React.useState(null);
+  const [selDevolucion,setSelDevolucion]= React.useState(null);
+  const [tipoCruce,    setTipoCruce]    = React.useState('total');
+  const [obs,          setObs]          = React.useState('');
+  const [saving,       setSaving]       = React.useState(false);
+  const [error,        setError]        = React.useState('');
+  const [soporteFile,  setSoporteFile]  = React.useState(null);
+  const [soporteItemFiles, setSoporteItemFiles] = React.useState({});
+  const [filtroPrest,  setFiltroPrest]  = React.useState('');
+  const [filtroDevol,  setFiltroDevol]  = React.useState('');
+  const [detalleCruce, setDetalleCruce] = React.useState(null);
+
+  // Separar por tipo
+  const prestamosBase  = prestamos.filter(p => ['ingreso','egreso'].includes(p.tipo));
+  const devoluciones   = prestamos.filter(p => ['devolucion_ingreso','devolucion_egreso'].includes(p.tipo));
+
+  // Cruces ya realizados por prestamo_id
+  const crucesPorPrestamo = React.useMemo(() => {
+    const m = {};
+    cruces.forEach(c => {
+      if (!m[c.prestamo_id]) m[c.prestamo_id] = [];
+      m[c.prestamo_id].push(c);
+    });
+    return m;
+  }, [cruces]);
+
+  const prestFiltrados = prestamosBase.filter(p => {
+    const q = filtroPrest.toLowerCase();
+    return !q || p.documento_contable?.toLowerCase().includes(q) || p.clinica_nombre?.toLowerCase().includes(q);
+  });
+
+  const devolFiltradas = devoluciones.filter(p => {
+    const q = filtroDevol.toLowerCase();
+    // Solo mostrar devoluciones compatibles con el préstamo seleccionado
+    if (selPrestamo) {
+      const compatible =
+        (selPrestamo.tipo === 'egreso'   && p.tipo === 'devolucion_ingreso') ||
+        (selPrestamo.tipo === 'ingreso'  && p.tipo === 'devolucion_egreso');
+      if (!compatible) return false;
+    }
+    return !q || p.documento_contable?.toLowerCase().includes(q) || p.clinica_nombre?.toLowerCase().includes(q);
+  });
+
+  function totalItems(p) {
+    return (p.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
+  }
+
+  function estadoColor(e) {
+    return e === 'cerrado' ? '#22c55e' : e === 'parcial' ? '#f59e0b' : 'var(--t-text-muted)';
+  }
+
+  async function cruzar() {
+    if (!selPrestamo || !selDevolucion) { setError('Selecciona préstamo y devolución'); return; }
+    setSaving(true); setError('');
+    try {
+      await apiFetch('/prestamos/cruces', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prestamo_id: selPrestamo.id,
+          devolucion_id: selDevolucion.id,
+          tipo_cruce: tipoCruce,
+          observaciones: obs,
+        }),
+      });
+
+      // Subir PDF si hay
+      if (tipoCruce === 'total' && soporteFile) {
+        const fd = new FormData();
+        fd.append('soporte', soporteFile);
+        // Obtener el cruce recién creado
+        const crucesActuales = await apiFetch('/prestamos/cruces');
+        const cruceNuevo = crucesActuales.find(c =>
+          c.prestamo_id === selPrestamo.id && c.devolucion_id === selDevolucion.id
+        );
+        if (cruceNuevo) {
+          await apiUpload(`/prestamos/cruces/${cruceNuevo.id}/soporte`, fd);
+        }
+      } else if (tipoCruce === 'parcial') {
+        const crucesActuales = await apiFetch('/prestamos/cruces');
+        const cruceNuevo = crucesActuales.find(c =>
+          c.prestamo_id === selPrestamo.id && c.devolucion_id === selDevolucion.id
+        );
+        if (cruceNuevo) {
+          for (const [codigo, file] of Object.entries(soporteItemFiles)) {
+            if (file) {
+              const fd = new FormData();
+              fd.append('soporte', file);
+              fd.append('item_codigo', codigo);
+              await apiUpload(`/prestamos/cruces/${cruceNuevo.id}/soporte`, fd);
+            }
+          }
+        }
+      }
+
+      onRefresh();
+      setSelPrestamo(null); setSelDevolucion(null);
+      setObs(''); setSoporteFile(null); setSoporteItemFiles({});
+    } catch (e) { setError('Error: ' + e.message); }
+    setSaving(false);
+  }
+
+  const cardS  = { background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 12, cursor: 'pointer', marginBottom: 8 };
+  const selS   = { ...cardS, border: '2px solid var(--t-accent)', background: 'var(--t-bg-inner)' };
+  const inputS = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', fontSize: 13, boxSizing: 'border-box' };
+
+  return (
+    <div>
+      {/* Panel de cruce */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 24 }}>
+        {/* Izquierda — préstamos */}
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
+            Préstamos (EPO / IPE)
+          </div>
+          <input value={filtroPrest} onChange={e => setFiltroPrest(e.target.value)}
+            placeholder="Buscar documento o clínica…" style={{ ...inputS, marginBottom: 10 }} />
+          <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+            {prestFiltrados.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)', textAlign: 'center', padding: 20 }}>Sin préstamos</div>}
+            {prestFiltrados.map(p => (
+              <div key={p.id} onClick={() => setSelPrestamo(selPrestamo?.id === p.id ? null : p)}
+                style={selPrestamo?.id === p.id ? selS : cardS}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-primary)' }}>{p.documento_contable}</span>
+                    <span style={{ marginLeft: 8, fontSize: 11, padding: '2px 7px', borderRadius: 10, background: p.tipo === 'egreso' ? '#ef4444' : '#3b82f6', color: '#fff' }}>
+                      {p.tipo === 'egreso' ? 'EPO' : 'IPE'}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 11, color: estadoColor(p.estado), fontWeight: 600 }}>{p.estado}</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 4 }}>
+                  {p.clinica_nombre} · {p.fecha} · {totalItems(p)} uds
+                </div>
+                {crucesPorPrestamo[p.id]?.length > 0 && (
+                  <div style={{ fontSize: 10, color: 'var(--t-accent)', marginTop: 3 }}>
+                    {crucesPorPrestamo[p.id].length} cruce(s) registrado(s)
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Derecha — devoluciones */}
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
+            Devoluciones (IDP / ED) {selPrestamo && <span style={{ color: 'var(--t-accent)' }}>— compatibles con {selPrestamo.documento_contable}</span>}
+          </div>
+          <input value={filtroDevol} onChange={e => setFiltroDevol(e.target.value)}
+            placeholder="Buscar documento o clínica…" style={{ ...inputS, marginBottom: 10 }} />
+          <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+            {devolFiltradas.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)', textAlign: 'center', padding: 20 }}>
+              {selPrestamo ? 'Sin devoluciones compatibles' : 'Selecciona un préstamo para filtrar'}
+            </div>}
+            {devolFiltradas.map(d => (
+              <div key={d.id} onClick={() => setSelDevolucion(selDevolucion?.id === d.id ? null : d)}
+                style={selDevolucion?.id === d.id ? selS : cardS}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-primary)' }}>{d.documento_contable}</span>
+                    <span style={{ marginLeft: 8, fontSize: 11, padding: '2px 7px', borderRadius: 10, background: d.tipo === 'devolucion_ingreso' ? '#3b82f6' : '#ef4444', color: '#fff' }}>
+                      {d.tipo === 'devolucion_ingreso' ? 'IDP' : 'ED'}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 11, color: estadoColor(d.estado), fontWeight: 600 }}>{d.estado}</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 4 }}>
+                  {d.clinica_nombre} · {d.fecha} · {totalItems(d)} uds
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Panel de acción cuando ambos seleccionados */}
+      {selPrestamo && selDevolucion && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 24 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: 'var(--t-text-primary)' }}>
+            Cruzar <b>{selPrestamo.documento_contable}</b> con <b>{selDevolucion.documento_contable}</b>
+          </div>
+
+          {/* Tipo de cruce */}
+          <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+            {['total','parcial'].map(t => (
+              <button key={t} onClick={() => setTipoCruce(t)} style={{
+                padding: '6px 16px', borderRadius: 6, fontSize: 13, cursor: 'pointer',
+                background: tipoCruce === t ? 'var(--t-accent)' : 'var(--t-bg-inner)',
+                color: tipoCruce === t ? '#fff' : 'var(--t-text-primary)',
+                border: '1px solid var(--t-border)', fontWeight: tipoCruce === t ? 600 : 400,
+              }}>{t.charAt(0).toUpperCase() + t.slice(1)}</button>
+            ))}
+          </div>
+
+          {/* PDF total */}
+          {tipoCruce === 'total' && (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', display: 'block', marginBottom: 4 }}>PDF soporte (opcional)</label>
+              <input type="file" accept=".pdf" onChange={e => setSoporteFile(e.target.files[0])}
+                style={{ fontSize: 12, color: 'var(--t-text-primary)' }} />
+            </div>
+          )}
+
+          {/* PDF por producto (parcial) */}
+          {tipoCruce === 'parcial' && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 8 }}>PDF por producto devuelto:</div>
+              {(selDevolucion.items || []).map(item => (
+                <div key={item.codigo} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, fontSize: 12 }}>
+                  <span style={{ color: 'var(--t-text-primary)', minWidth: 120 }}>{item.codigo}</span>
+                  <span style={{ color: 'var(--t-text-muted)', flex: 1 }}>{item.nombre}</span>
+                  <span style={{ color: 'var(--t-text-muted)' }}>x{item.cantidad}</span>
+                  <input type="file" accept=".pdf"
+                    onChange={e => setSoporteItemFiles(prev => ({ ...prev, [item.codigo]: e.target.files[0] }))}
+                    style={{ fontSize: 11 }} />
+                </div>
+              ))}
+            </div>
+          )}
+
+          <input value={obs} onChange={e => setObs(e.target.value)} placeholder="Observaciones (opcional)" style={{ ...inputS, marginBottom: 12 }} />
+
+          {error && <div style={{ color: '#ef4444', fontSize: 12, marginBottom: 8 }}>{error}</div>}
+
+          <button onClick={cruzar} disabled={saving} style={{
+            padding: '8px 20px', background: 'var(--t-accent)', color: '#fff',
+            border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          }}>
+            {saving ? 'Guardando…' : '🔗 Registrar cruce'}
+          </button>
+        </div>
+      )}
+
+      {/* Historial de cruces */}
+      {cruces.length > 0 && (
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)', marginBottom: 10 }}>Cruces registrados</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: 'var(--t-bg-card)' }}>
+                {['Préstamo','Devolución','Tipo','Clínica','Fecha','Estado','Soporte'].map(h => (
+                  <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {cruces.map(c => (
+                <tr key={c.id} style={{ borderBottom: '1px solid var(--t-border)' }}>
+                  <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)', fontWeight: 600 }}>{c.prestamo_doc}</td>
+                  <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)' }}>{c.devolucion_doc}</td>
+                  <td style={{ padding: '8px 10px' }}>
+                    <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, background: c.tipo_cruce === 'total' ? '#22c55e22' : '#f59e0b22', color: c.tipo_cruce === 'total' ? '#22c55e' : '#f59e0b' }}>
+                      {c.tipo_cruce}
+                    </span>
+                  </td>
+                  <td style={{ padding: '8px 10px', color: 'var(--t-text-muted)' }}>{c.clinica_nombre}</td>
+                  <td style={{ padding: '8px 10px', color: 'var(--t-text-muted)' }}>{c.created_at?.substring(0,10)}</td>
+                  <td style={{ padding: '8px 10px' }}>
+                    <span style={{ color: estadoColor(c.estado_prestamo), fontWeight: 600 }}>{c.estado_prestamo || '—'}</span>
+                  </td>
+                  <td style={{ padding: '8px 10px' }}>
+                    {c.soporte_url
+                      ? <a href={c.soporte_url} target="_blank" rel="noreferrer" style={{ color: 'var(--t-accent)', fontSize: 11 }}>📄 Ver</a>
+                      : <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -1287,6 +1653,202 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
