@@ -677,26 +677,6 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
     setGuardandoCl(false);
   }
 
-  async function buscarEnExcel() {
-    if (!excelData || !docContable) return;
-    const filas = excelData.filter(r => String(r['Documento'] || '').trim() === docContable.trim());
-    if (filas.length === 0) { setError('Documento no encontrado en el Excel'); return; }
-    setError('');
-    const nuevosItems = filas.map(r => {
-      const codigo = String(r['Código producto'] || '').trim().padStart(10, '0');
-      const grupo  = getCategoriaFromCodigo(codigo);
-      return {
-        codigo,
-        nombre:          r['Nombre producto'] || '',
-        cantidad:        Number(r['Cantidad'] || 0),
-        precio_unitario: Number(r['Precio unitario'] || 0),
-        categoria:       grupo?.categoria || '',
-        cuenta_contable: String(row['Cuenta contable'] || row['cuenta_contable'] || grupo?.cuenta || ''),
-      };
-    });
-    setItems(prev => [...prev, ...nuevosItems]);
-  }
-
   function cargarExcel(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -704,10 +684,116 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
     reader.onload = ev => {
       const wb   = XLSX.read(ev.target.result, { type: 'array' });
       const ws   = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(ws);
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
       setExcelData(data);
     };
     reader.readAsArrayBuffer(file);
+  }
+
+  async function buscarEnExcel() {
+    if (!excelData || !docContable) return;
+    const docBuscar = docContable.trim().toUpperCase();
+
+    // Columnas (0-indexed): A=0 Prefijo, B=1 Fecha, C=2 Número, D=3 Descripción,
+    // E=4 Tercero, F=5 Código, G=6 Cantidad, H=7 Total costo,
+    // L=11 Producto, M=12 Bodega, T=19 Lote, U=20 Fecha venc,
+    // AA=26 NIT préstamo, AD=29 NIT devolución
+    const filas = excelData.slice(1).filter(r => {
+      const prefijo = String(r[0] || '').trim().toUpperCase();
+      const numero  = String(r[2] || '').trim();
+      return `${prefijo}${numero}` === docBuscar;
+    });
+
+    if (filas.length === 0) { setError('Documento no encontrado (ej: EPO958, IPE958, ED550, IDP467)'); return; }
+    setError('');
+
+    const prefijo = String(filas[0][0] || '').trim().toUpperCase();
+    if (prefijo === 'IPE') setTipo('ingreso');
+    if (prefijo === 'EPO') setTipo('egreso');
+
+    // Auto-llenar fecha y observaciones
+    const primeraFila = filas[0];
+    const fechaRaw = String(primeraFila[1] || '').substring(0, 10);
+    if (fechaRaw) setFecha(fechaRaw);
+    setObservaciones(String(primeraFila[3] || '').trim());
+
+    // Auto-llenar clínica
+    const terceroNombre = String(primeraFila[4] || '').trim();
+    const terceroNit    = String(primeraFila[26] || primeraFila[29] || '').trim();
+    const clinicaExist  = clinicas.find(c => c.nombre.toUpperCase() === terceroNombre.toUpperCase());
+    if (clinicaExist) {
+      setClinicaId(String(clinicaExist.id));
+    } else if (terceroNombre) {
+      try {
+        const nueva = await apiFetch('/prestamos/clinicas', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nombre: terceroNombre }),
+        });
+        onRefreshClinicas();
+        setClinicaId(String(nueva.id));
+      } catch(e) { /* silenciar */ }
+    }
+
+    // Auto-llenar bodega
+    const bodegaExcel = String(primeraFila[12] || '').trim().toUpperCase();
+    const bodegaMatch = BODEGAS.find(b =>
+      bodegaExcel.includes(b.nombre.toUpperCase()) || bodegaExcel.includes(b.codigo)
+    );
+    if (bodegaMatch) setBodega(bodegaMatch.codigo);
+
+    // Procesar productos
+    const codigosNuevos = [];
+    const vistos = new Set();
+    const nuevosItems = [];
+
+    for (const r of filas) {
+      const codigoRaw = String(r[5] || '').trim();
+      if (!codigoRaw) continue;
+      const codigo    = codigoRaw.padStart(10, '0');
+      if (vistos.has(codigo)) continue;
+      vistos.add(codigo);
+
+      const cantidad   = Number(r[6]) || 0;
+      const totalCosto = Math.abs(Number(String(r[7]).replace(/[^0-9.-]/g, '')) || 0);
+      const precioUnit = cantidad > 0 ? totalCosto / cantidad : 0;
+      const nombre     = String(r[11] || '').trim();
+      const lote       = String(r[19] || '').trim();
+      const fechaVenc  = r[20] ? String(r[20]).substring(0, 10) : '';
+
+      const prodMaestro = productos.find(p => p.codigo === codigo);
+      if (!prodMaestro) codigosNuevos.push(codigo);
+
+      // Actualizar precio en maestro si difiere
+      if (prodMaestro && precioUnit > 0 &&
+          Math.abs(prodMaestro.precio_unitario - precioUnit) > 1) {
+        apiFetch(`/prestamos/productos/${prodMaestro.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ precio_unitario: precioUnit }),
+        }).catch(() => {});
+      }
+
+      nuevosItems.push({
+        codigo,
+        nombre:            nombre || prodMaestro?.nombre || '',
+        cantidad,
+        precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
+        categoria:         prodMaestro?.categoria || '',
+        cuenta_contable:   prodMaestro?.cuenta_contable || '',
+        lote,
+        fecha_vencimiento: fechaVenc,
+      });
+    }
+
+    if (codigosNuevos.length > 0) {
+      setError(`⚠️ Códigos no registrados en maestro (asignar categoría/cuenta): ${codigosNuevos.join(', ')}`);
+    }
+
+    setItems(prev => {
+      const existentes = new Set(prev.map(i => i.codigo));
+      return [...prev, ...nuevosItems.filter(i => !existentes.has(i.codigo))];
+    });
   }
 
   const prodsFiltrados = productos.filter(p => {
@@ -1198,6 +1284,71 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
