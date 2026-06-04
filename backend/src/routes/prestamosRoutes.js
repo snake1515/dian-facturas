@@ -309,7 +309,7 @@ router.post('/importar-masivo', async (req, res) => {
     }
 
     res.json({ creados: creados.length, omitidos: omitidos.length, omitidos_docs: omitidos, documentos: creados });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.error('importar-masivo ERROR:', e.message); res.status(500).json({ error: e.message }); }
 });
 
 
@@ -423,6 +423,11 @@ router.patch('/:id/soporte', upload.single('soporte'), async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
 
 
 
