@@ -1013,6 +1013,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         setSaving('listo'); setTimeout(() => setSaving(''), 3000);
       } catch (err) {
         console.error('Error cargando Excel:', err);
+        alert('ERROR: ' + err.message);
         setSaving('error');
       }
     };
@@ -1175,6 +1176,15 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
 
 
 
