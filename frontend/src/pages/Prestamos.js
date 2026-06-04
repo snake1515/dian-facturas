@@ -948,6 +948,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
   const [busqueda,        setBusqueda]        = useState('');
   const [filtroCat,       setFiltroCat]        = useState('');
   const [saving,          setSaving]          = useState('');
+  const [progreso,        setProgreso]        = React.useState(0);
   const [productosLocales, setProductosLocales] = useState(productosProp);
 
   const prevPropLen = useRef(productosProp.length);
@@ -1191,6 +1192,14 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
