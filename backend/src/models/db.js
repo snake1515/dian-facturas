@@ -153,6 +153,11 @@ const initDB = async () => {
       ALTER TABLE prestamo_productos ALTER COLUMN cuenta_contable TYPE VARCHAR(30);
       ALTER TABLE prestamo_productos ALTER COLUMN categoria TYPE VARCHAR(200);
 
+      -- Migraciones prestamos
+      ALTER TABLE prestamos ALTER COLUMN tipo TYPE VARCHAR(30);
+      ALTER TABLE prestamos ALTER COLUMN bodega_codigo TYPE VARCHAR(100);
+      ALTER TABLE prestamos ALTER COLUMN bodega_nombre TYPE VARCHAR(200);
+
       -- Tabla de cruces entre préstamos y devoluciones
       CREATE TABLE IF NOT EXISTS prestamo_cruces (
         id             SERIAL PRIMARY KEY,
@@ -199,6 +204,11 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
 
 
 
