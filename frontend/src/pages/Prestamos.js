@@ -343,6 +343,26 @@ function TabResumen({ prestamos, devoluciones }) {
 // ─── TAB MOVIMIENTOS ────────────────────────────────────────────────────────────
 
 function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
+  function saldoPend(p) {
+    const totalPrestado = (p.items || []).reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
+    const totalDevuelto = devoluciones
+      .filter(d => d.prestamo_id === p.id)
+      .flatMap(d => d.items || [])
+      .reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
+    return Math.max(0, totalPrestado - totalDevuelto);
+  }
+
+  async function borrarMovimiento(p, e) {
+    e.stopPropagation();
+    if (!window.confirm(`¿Borrar el movimiento ${p.documento_contable}? Esta acción es irreversible.`)) return;
+    try {
+      await apiFetch(\`/prestamos/\${p.id}\`, { method: 'DELETE' });
+      onRefresh();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  }
+
   const [busqueda,    setBusqueda]    = useState('');
   const [filtroTipo,  setFiltroTipo]  = useState('');
   const [filtroEstado,setFiltroEstado]= useState('');
@@ -411,7 +431,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr>
-              {['Documento','Fecha','Clínica','Bodega','Tipo','Valor total','Soporte','Estado',''].map(h => (
+              {['Documento','Fecha','Clínica','Bodega','Tipo','Valor total','Saldo pend.','Soporte','Estado',''].map(h => (
                 <th key={h} style={thStyle}>{h}</th>
               ))}
             </tr>
@@ -428,6 +448,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
                   <td style={{ ...tdStyle, fontSize: 12, color: 'var(--t-text-muted)' }}>{p.bodega_nombre} ({p.bodega_codigo})</td>
                   <td style={tdStyle}><Badge tipo={p.tipo} /></td>
                   <td style={{ ...tdStyle, fontWeight: 500 }}>{fmt(total)}</td>
+                  <td style={{ ...tdStyle, fontWeight: 500, color: saldoPend(p) > 0 ? '#BA7517' : '#22c55e' }}>{fmt(saldoPend(p))}</td>
                   <td style={{ ...tdStyle, textAlign: 'center' }}>
                     {p.soporte_url ? (
                       <a href={p.soporte_url} target='_blank' rel='noreferrer' onClick={e => e.stopPropagation()}
@@ -446,6 +467,11 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
                     {devs.length > 0 && (
                       <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--t-text-muted)' }}>{devs.length} dev.</span>
                     )}
+                    <button onClick={e => borrarMovimiento(p, e)}
+                      title='Borrar movimiento'
+                      style={{ marginLeft: 6, padding: '4px 8px', fontSize: 12, border: '1px solid #ef444455', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#ef4444' }}>
+                      🗑
+                    </button>
                   </td>
                 </tr>
               );
@@ -742,6 +768,15 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       const fechaVenc = r[20] ? String(r[20]).substring(0, 10) : '';
       const prodMaestro = productos.find(p => p.codigo === codigo);
       if (!prodMaestro) codigosNuevos.add(codigo);
+      // Actualizar precio en maestro si difiere (igual que en buscarEnExcel)
+      if (prodMaestro && precioUnit > 0 &&
+          Math.abs(prodMaestro.precio_unitario - precioUnit) > 1) {
+        apiFetch(`/prestamos/productos/${prodMaestro.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ precio_unitario: precioUnit }),
+        }).catch(() => {});
+      }
       if (!documentos[docKey].items.find(i => i.codigo === codigo)) {
         documentos[docKey].items.push({
           codigo, nombre: nombre || prodMaestro?.nombre || '',
@@ -1134,6 +1169,17 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
 // ─── TAB CRUCES ──────────────────────────────────────────────────────────────
 
 function TabCruces({ prestamos, cruces, onRefresh }) {
+  async function revertirCruce(cruce, e) {
+    e.stopPropagation();
+    if (!window.confirm(`¿Revertir el cruce entre ${cruce.prestamo_doc} y ${cruce.devolucion_doc}? El préstamo volverá a estado abierto.`)) return;
+    try {
+      await apiFetch(`/prestamos/cruces/${cruce.id}`, { method: 'DELETE' });
+      onRefresh();
+    } catch (err) {
+      alert('Error revirtiendo cruce: ' + err.message);
+    }
+  }
+
   const [selPrestamo,  setSelPrestamo]  = React.useState(null);
   const [selDevolucion,setSelDevolucion]= React.useState(null);
   const [tipoCruce,    setTipoCruce]    = React.useState('total');
@@ -1393,7 +1439,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-card)' }}>
-                {['Préstamo','Devolución','Tipo','Clínica','Fecha','Estado','Soporte'].map(h => (
+                {['Préstamo','Devolución','Tipo','Clínica','Fecha','Estado','Soporte',''].map(h => (
                   <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                 ))}
               </tr>
@@ -1417,6 +1463,13 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                     {c.soporte_url
                       ? <a href={c.soporte_url} target="_blank" rel="noreferrer" style={{ color: 'var(--t-accent)', fontSize: 11 }}>📄 Ver</a>
                       : <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>}
+                  </td>
+                  <td style={{ padding: '8px 10px' }}>
+                    <button onClick={e => revertirCruce(c, e)}
+                      title="Revertir cruce"
+                      style={{ padding: '3px 8px', fontSize: 11, border: '1px solid #ef444455', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: '#ef4444' }}>
+                      ↺ Revertir
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -1689,6 +1742,7 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
 
 
