@@ -7,28 +7,27 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 const { pool } = require('../models/db');
+const storageService = require('../services/storageService');
 
-// ─── Multer para PDFs ────────────────────────────────────────────────────────
-const uploadDir = path.join(__dirname, '../../uploads/prestamos');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+// ─── Multer en memoria → Supabase Storage ───────────────────────────────────
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename:    (req, file, cb) => cb(null, `${Date.now()}_${file.originalname}`),
-});
-const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
-
-function buildSoporteUrl(req, filename) {
-  if (!filename) return null;
-  const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-  return `${base}/uploads/prestamos/${filename}`;
+async function subirPDF(file, carpeta) {
+  if (!file) return null;
+  const filename = `prestamos/${carpeta}/${Date.now()}_${file.originalname}`;
+  await storageService.subirArchivo(file.buffer, filename, file.mimetype);
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  return `${SUPABASE_URL}/storage/v1/object/public/facturas/${filename}`;
 }
 
-// Servir PDFs estáticos
-router.get('/soporte/:filename', (req, res) => {
-  const filePath = path.join(uploadDir, req.params.filename);
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Archivo no encontrado' });
-  res.sendFile(filePath);
+// Servir PDFs desde Supabase Storage
+router.get('/soporte/:carpeta/:filename', async (req, res) => {
+  try {
+    const filepath = `prestamos/${req.params.carpeta}/${req.params.filename}`;
+    const buffer = await storageService.descargarArchivo(filepath);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.send(buffer);
+  } catch (e) { res.status(404).json({ error: 'Archivo no encontrado' }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -129,7 +128,7 @@ router.post('/', upload.single('soporte'), async (req, res) => {
     if (!tipo || !fecha || !documento_contable)
       return res.status(400).json({ error: 'tipo, fecha y documento_contable son requeridos' });
 
-    const soporte_url = req.file ? buildSoporteUrl(req, req.file.filename) : null;
+    const soporte_url = req.file ? await subirPDF(req.file, 'documentos') : null;
     const itemsParsed = typeof items === 'string' ? JSON.parse(items) : (items || []);
 
     const { rows } = await pool.query(`
@@ -205,7 +204,7 @@ router.post('/devoluciones', upload.single('soporte'), async (req, res) => {
     if (!prestamo_id || !fecha || !documento_contable)
       return res.status(400).json({ error: 'prestamo_id, fecha y documento_contable requeridos' });
 
-    const soporte_url  = req.file ? buildSoporteUrl(req, req.file.filename) : null;
+    const soporte_url  = req.file ? await subirPDF(req.file, 'devoluciones') : null;
     const itemsParsed  = typeof items === 'string' ? JSON.parse(items) : (items || []);
 
     const { rows } = await pool.query(`
@@ -385,7 +384,7 @@ router.post('/cruces', async (req, res) => {
 router.patch('/cruces/:id/soporte', upload.single('soporte'), async (req, res) => {
   try {
     const { item_codigo } = req.body;
-    const soporte_url = req.file ? buildSoporteUrl(req, req.file.filename) : null;
+    const soporte_url = req.file ? await subirPDF(req.file, 'cruces') : null;
 
     if (item_codigo) {
       // PDF por producto — guardar en soporte_items JSONB
@@ -413,7 +412,7 @@ router.patch('/cruces/:id/soporte', upload.single('soporte'), async (req, res) =
 // Adjuntar PDF directamente a un préstamo/devolución
 router.patch('/:id/soporte', upload.single('soporte'), async (req, res) => {
   try {
-    const soporte_url = req.file ? buildSoporteUrl(req, req.file.filename) : null;
+    const soporte_url = req.file ? await subirPDF(req.file, 'documentos') : null;
     const { rows } = await pool.query(
       'UPDATE prestamos SET soporte_url = $1 WHERE id = $2 RETURNING *',
       [soporte_url, req.params.id]
@@ -423,6 +422,11 @@ router.patch('/:id/soporte', upload.single('soporte'), async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
 
 
 
