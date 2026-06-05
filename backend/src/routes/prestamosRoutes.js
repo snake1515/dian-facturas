@@ -421,7 +421,78 @@ router.patch('/:id/soporte', upload.single('soporte'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  BORRAR MOVIMIENTO (préstamo individual)
+// ═══════════════════════════════════════════════════════════════════════════
+router.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Verificar que no tenga cruces activos
+    const { rows: cruceCheck } = await pool.query(
+      'SELECT id FROM prestamo_cruces WHERE prestamo_id = $1 OR devolucion_id = $1 LIMIT 1', [id]
+    );
+    if (cruceCheck.length > 0)
+      return res.status(400).json({ error: 'No se puede borrar: tiene cruces asociados. Revierta los cruces primero.' });
+    await pool.query('DELETE FROM prestamo_devoluciones WHERE prestamo_id = $1', [id]);
+    await pool.query('DELETE FROM prestamos WHERE id = $1', [id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  REVERTIR CRUCE
+// ═══════════════════════════════════════════════════════════════════════════
+router.delete('/cruces/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Obtener el cruce antes de borrarlo
+      const { rows: [cruce] } = await client.query(
+        'SELECT * FROM prestamo_cruces WHERE id = $1', [id]
+      );
+      if (!cruce) return res.status(404).json({ error: 'Cruce no encontrado' });
+
+      await client.query('DELETE FROM prestamo_cruces WHERE id = $1', [id]);
+
+      // Recalcular estado del préstamo (¿quedan otros cruces?)
+      const { rows: crucesPendientes } = await client.query(
+        'SELECT id FROM prestamo_cruces WHERE prestamo_id = $1', [cruce.prestamo_id]
+      );
+      const nuevoEstado = crucesPendientes.length === 0 ? 'abierto' : 'parcial';
+      await client.query('UPDATE prestamos SET estado = $1 WHERE id = $2', [nuevoEstado, cruce.prestamo_id]);
+
+      await client.query('COMMIT');
+      res.json({ ok: true, estado: nuevoEstado });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
