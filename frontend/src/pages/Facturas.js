@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   listarFacturas, obtenerFactura, actualizarResponsables, reenviarFactura,
-  eliminarFactura, eliminarPorFechas, gmailSync, actualizarEstadoContable,
+  eliminarFactura, eliminarPorFechas, gmailSync, actualizarEstadoContable, actualizarContrato,
   actualizarDocumentoIngreso, listarContactos, crearContacto, eliminarContacto
 } from '../services/api';
 import api from '../services/api';
@@ -207,6 +207,18 @@ export default function Facturas({ tipo = 'FE' }) {
   facturas.forEach(f => { if (f.documento_ingreso) { docIngresoCount[f.documento_ingreso] = (docIngresoCount[f.documento_ingreso] || 0) + 1; } });
   const docIngresoDuplicado = (doc) => doc && docIngresoCount[doc] > 1;
 
+  // Detectar facturas cruzadas con nota crédito
+  // Si tipo=FE, buscar si alguna NC tiene documento_ingreso = numero de esta factura
+  // Si tipo=NC, buscar en facturas FE
+  const ncPorFactura = {};
+  if (tipo === 'FE') {
+    // Necesitamos las NC — las buscamos de la lista si están cargadas, sino marcamos vacío
+    facturas.forEach(f => {
+      // Las NC se identifican por tipo NC en otra pestaña; aquí usamos una prop del backend
+      if (f.nc_referencia) ncPorFactura[f.nc_referencia] = true;
+    });
+  }
+
   // Meses disponibles para filtro
   const mesesDisponibles = [...new Set(facturas.map(f => String(f.fecha_emision || '').substring(0, 7)).filter(Boolean))].sort().reverse();
 
@@ -324,7 +336,7 @@ export default function Facturas({ tipo = 'FE' }) {
                       {filaRoja && <span style={{ fontSize: 10, color: '#f87171', display: 'block', marginTop: 2 }}>⚠ duplicado</span>}
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
-                      <EstadoContableSelect factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} />
+                      <BarraProgreso factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} esCruzada={tipo === 'FE' && facturas.some(nc => nc.tipo === 'NC' && nc.documento_ingreso === f.numero)} />
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <NotasInput factura={f} onUpdate={cargar} canEdit={puede.editarNotas} />
@@ -394,6 +406,29 @@ export default function Facturas({ tipo = 'FE' }) {
             <Section title="Notas">
               <div style={{ fontSize: 13, color: 'var(--t-text-secondary)', whiteSpace: 'pre-wrap' }}>{activeF.notas}</div>
             </Section>
+          )}
+          {/* Toggle contrato */}
+          {activeF.tipo === 'FE' && puede.editarEstadoContable && (
+            <div style={{ marginTop: 16, padding: '12px 14px', background: 'var(--t-bg-card)', borderRadius: 8, border: '0.5px solid var(--t-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 16 }}>📄</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>Es un contrato</div>
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Omite el flujo de aprobación</div>
+                </div>
+              </div>
+              <div
+                onClick={async () => {
+                  try {
+                    await actualizarContrato(activeF.id, !activeF.es_contrato);
+                    setActiveF(prev => ({ ...prev, es_contrato: !prev.es_contrato }));
+                    await cargar();
+                  } catch { alert('Error al actualizar'); }
+                }}
+                style={{ width: 38, height: 22, background: activeF.es_contrato ? 'var(--t-text-secondary)' : 'var(--t-border)', borderRadius: 11, cursor: 'pointer', position: 'relative', transition: 'background .2s', flexShrink: 0 }}>
+                <div style={{ position: 'absolute', top: 3, left: activeF.es_contrato ? 19 : 3, width: 16, height: 16, background: '#fff', borderRadius: '50%', transition: 'left .2s' }} />
+              </div>
+            </div>
           )}
         </Modal>
       )}
@@ -596,7 +631,102 @@ function ResponsableSelect({ factura, contactos, onUpdate, canEdit }) {
   );
 }
 
-// ── Estado Contable Select ────────────────────────────────────────────────────
+// ── Barra de Progreso Estado Contable ────────────────────────────────────────
+const FLUJO_OC = [
+  { value: 'por_gestionar', label: 'Por gestionar' },
+  { value: 'ingresado_orden_compra', label: 'Ing. OC' },
+  { value: 'recibio_inventarios', label: 'Rec. inventarios' },
+  { value: 'recibio_contabilidad', label: 'Rec. contabilidad' },
+  { value: 'aprobado', label: 'Aprobado' },
+];
+const FLUJO_CM = [
+  { value: 'por_gestionar', label: 'Por gestionar' },
+  { value: 'ingresado_caja_menor', label: 'Ing. caja menor' },
+  { value: 'aprobado', label: 'Aprobado' },
+];
+
+function BarraProgreso({ factura, onUpdate, canEdit, esCruzada }) {
+  const [saving, setSaving] = React.useState(false);
+  const estado = factura.estado_contable || 'por_gestionar';
+  const esContrato = factura.es_contrato;
+
+  // Si es contrato → badge gris
+  if (esContrato) {
+    return (
+      <span style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, fontWeight:500, padding:'3px 10px', borderRadius:20, background:'var(--t-bg-card)', color:'var(--t-text-secondary)', border:'0.5px solid var(--t-border)' }}>
+        📄 Contrato
+      </span>
+    );
+  }
+
+  // Si está cruzada con NC → badge naranja
+  if (esCruzada) {
+    return (
+      <span style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, fontWeight:500, padding:'3px 10px', borderRadius:20, background:'#FAEEDA', color:'#854F0B' }}>
+        🔄 Cruzado con nota crédito
+      </span>
+    );
+  }
+
+  // Determinar flujo según estado actual
+  const esCM = estado === 'ingresado_caja_menor' || (estado === 'aprobado' && factura.flujo_tipo === 'caja_menor');
+  const flujo = esCM ? FLUJO_CM : FLUJO_OC;
+
+  // Si es por_gestionar y no tiene flujo, mostrar selector de tipo
+  const sinFlujo = estado === 'por_gestionar' && !factura.flujo_tipo;
+
+  const stepIdx = flujo.findIndex(s => s.value === estado);
+  const current = stepIdx >= 0 ? stepIdx : 0;
+  const pct = flujo.length > 1 ? (current / (flujo.length - 1)) * 100 : 0;
+  const completo = estado === 'aprobado';
+
+  const avanzar = async (val) => {
+    if (!canEdit || saving) return;
+    setSaving(true);
+    try {
+      const flujoTipo = FLUJO_CM.some(s => s.value === val) && val !== 'aprobado' ? 'caja_menor' : (val === 'ingresado_orden_compra' ? 'orden_compra' : factura.flujo_tipo);
+      await actualizarEstadoContable(factura.id, val, flujoTipo);
+      await onUpdate();
+    } catch { alert('Error al actualizar'); }
+    finally { setSaving(false); }
+  };
+
+  const trackColor = esCM ? '#a78bfa' : '#185FA5';
+  const doneColor = completo ? '#3B6D11' : trackColor;
+
+  return (
+    <div style={{ minWidth: 180, opacity: saving ? 0.6 : 1 }} onClick={e => e.stopPropagation()}>
+      {sinFlujo && canEdit && (
+        <div style={{ marginBottom: 5 }}>
+          <div style={{ fontSize: 10, color:'var(--t-text-muted)', marginBottom: 3 }}>¿Cómo ingresa?</div>
+          <div style={{ display:'flex', gap:4 }}>
+            <button onClick={() => avanzar('ingresado_orden_compra')} style={{ fontSize:10, padding:'2px 7px', borderRadius:5, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'var(--t-text-secondary)', cursor:'pointer' }}>📋 OC</button>
+            <button onClick={() => avanzar('ingresado_caja_menor')} style={{ fontSize:10, padding:'2px 7px', borderRadius:5, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'#a78bfa', cursor:'pointer' }}>💵 Caja menor</button>
+          </div>
+        </div>
+      )}
+      <div style={{ height:4, background:'var(--t-border)', borderRadius:2, marginBottom:5, position:'relative' }}>
+        <div style={{ position:'absolute', top:0, left:0, height:'100%', width:`${pct}%`, background: completo ? '#3B6D11' : trackColor, borderRadius:2, transition:'width .3s' }} />
+      </div>
+      <div style={{ display:'flex', justifyContent:'space-between' }}>
+        {flujo.map((s, i) => {
+          const done = i < current;
+          const active = i === current;
+          const color = completo ? '#3B6D11' : (done || active ? trackColor : 'var(--t-border)');
+          return (
+            <div key={s.value} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2, flex:1, cursor: canEdit && i === current + 1 ? 'pointer' : 'default' }}
+              onClick={() => canEdit && i === current + 1 && avanzar(s.value)}>
+              <div style={{ width:9, height:9, borderRadius:'50%', background: done || active ? color : 'var(--t-bg-card)', border:`1.5px solid ${color}`, boxShadow: active ? `0 0 0 3px ${color}33` : 'none', transition:'all .2s' }} />
+              <span style={{ fontSize:9, color: active ? color : 'var(--t-text-muted)', fontWeight: active ? 600 : 400, textAlign:'center', lineHeight:1.2, maxWidth:55, wordBreak:'break-word' }}>{s.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// EstadoContableSelect legacy (usado en modal de ver)
 function EstadoContableSelect({ factura, onUpdate, canEdit }) {
   const [saving, setSaving] = React.useState(false);
   const current = factura.estado_contable || 'por_gestionar';
@@ -719,4 +849,6 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
 
