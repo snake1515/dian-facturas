@@ -116,7 +116,7 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
 };
 
 const procesarMensaje = async (gmail, messageId) => {
-  // Deduplicación: si ya existe, no procesamos
+  // Deduplicación por gmail_message_id
   const existe = await pool.query(
     'SELECT id FROM facturas WHERE gmail_message_id = $1', [messageId]
   );
@@ -204,6 +204,16 @@ const procesarMensaje = async (gmail, messageId) => {
 
   const datos = await parsearXMLDIAN(xmlContent);
 
+  // Deduplicación adicional por número + NIT (mismo proveedor envió varias veces)
+  const existePorNumero = await pool.query(
+    'SELECT id FROM facturas WHERE numero = $1 AND proveedor_nit = $2',
+    [datos.numero, datos.proveedorNit]
+  );
+  if (existePorNumero.rows.length > 0) {
+    console.log(`⚠️ Factura ${datos.numero} de NIT ${datos.proveedorNit} ya existe — omitida`);
+    throw new Error('ya procesado');
+  }
+
   const facturaRes = await pool.query(
     `INSERT INTO facturas
       (numero, tipo, cufe, proveedor_nombre, proveedor_nit, fecha_emision, fecha_vencimiento,
@@ -258,4 +268,6 @@ const obtenerPartes = (payload, partes = []) => {
 };
 
 module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos };
+
+
 
