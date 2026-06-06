@@ -1,4 +1,5 @@
 const express = require('express');
+const { reenviarFactura } = require('../services/emailService');
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
 const { descargarArchivo } = require('../services/storageService');
@@ -38,11 +39,6 @@ router.get('/', authMiddleware, async (req, res) => {
         OR f.proveedor_nit ILIKE $${i}
         OR f.notas ILIKE $${i}
         OR f.total::text ILIKE $${i}
-        OR EXISTS (
-          SELECT 1 FROM productos_factura p2
-          WHERE p2.factura_id = f.id
-          AND p2.descripcion ILIKE $${i}
-        )
       )`);
       valores.push(`%${search}%`);
       i++;
@@ -219,8 +215,11 @@ router.put('/:id/responsables', authMiddleware, async (req, res) => {
 router.put('/:id/estado-contable', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { estado_contable } = req.body;
-    await pool.query('UPDATE facturas SET estado_contable = $1 WHERE id = $2', [estado_contable, id]);
+    const { estado_contable, flujo_tipo } = req.body;
+    await pool.query(
+      'UPDATE facturas SET estado_contable = $1, flujo_tipo = COALESCE($2, flujo_tipo) WHERE id = $3',
+      [estado_contable, flujo_tipo || null, id]
+    );
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -258,16 +257,32 @@ router.put('/:id/notas', authMiddleware, async (req, res) => {
 router.post('/:id/reenviar', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { destinatarios } = req.body;
-    const emailsStr = destinatarios.map(d => d.email || d).join(', ');
-    await pool.query(
-      `UPDATE facturas SET estado = 'reenviado', reenviado_a = $1 WHERE id = $2`,
-      [emailsStr, id]
-    );
+    const { destinatarios, mensaje } = req.body;
+    if (!destinatarios?.length) return res.status(400).json({ error: 'Se requiere al menos un destinatario' });
+
+    // Enviar correo con Gmail API
+    await reenviarFactura({
+      facturaId: parseInt(id),
+      destinatarios,
+      mensaje: mensaje || '',
+      usuarioId: req.user.id,
+    });
+
     res.json({ ok: true });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al reenviar factura' });
+    console.error('Error al reenviar:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PUT /api/facturas/:id/contrato ───────────────────────────────────────────
+router.put('/:id/contrato', authMiddleware, async (req, res) => {
+  try {
+    const { es_contrato } = req.body;
+    await pool.query('UPDATE facturas SET es_contrato = $1 WHERE id = $2', [es_contrato, req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -301,4 +316,5 @@ router.delete('/', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
 
