@@ -61,13 +61,19 @@ router.get('/', authMiddleware, async (req, res) => {
         f.total,
         f.estado,
         f.estado_contable,
+        f.flujo_tipo,
         f.documento_ingreso,
         f.reenviado_a,
         f.pdf_path,
         f.xml_path,
         f.gmail_message_id,
         f.notas,
+        f.es_contrato,
         f.created_at,
+        EXISTS(
+          SELECT 1 FROM facturas nc
+          WHERE nc.tipo = 'NC' AND nc.documento_ingreso = f.numero
+        ) AS tiene_nc,
         COALESCE(
           json_agg(
             json_build_object('email', r.email, 'nombre', r.nombre)
@@ -216,10 +222,13 @@ router.put('/:id/estado-contable', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { estado_contable, flujo_tipo } = req.body;
-    await pool.query(
-      'UPDATE facturas SET estado_contable = $1, flujo_tipo = COALESCE($2, flujo_tipo) WHERE id = $3',
-      [estado_contable, flujo_tipo || null, id]
-    );
+    // flujo_tipo === '' significa reset explícito a NULL
+    const flujoFinal = flujo_tipo === '' ? null : (flujo_tipo || null);
+    const query = flujo_tipo !== undefined
+      ? 'UPDATE facturas SET estado_contable = $1, flujo_tipo = $2 WHERE id = $3'
+      : 'UPDATE facturas SET estado_contable = $1 WHERE id = $2';
+    const params = flujo_tipo !== undefined ? [estado_contable, flujoFinal, id] : [estado_contable, id];
+    await pool.query(query, params);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -232,7 +241,24 @@ router.put('/:id/documento-ingreso', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { documento_ingreso } = req.body;
+
+    // Obtener tipo de la factura actual
+    const self = await pool.query('SELECT tipo, numero FROM facturas WHERE id = $1', [id]);
+    if (!self.rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
+
     await pool.query('UPDATE facturas SET documento_ingreso = $1 WHERE id = $2', [documento_ingreso, id]);
+
+    // Si es una NC, sincronizar estado de cruce en la FE referenciada
+    if (self.rows[0].tipo === 'NC') {
+      const numAnterior = self.rows[0].documento_ingreso;
+
+      // Si había una FE anterior referenciada, verificar si sigue cruzada con alguna otra NC
+      if (numAnterior && numAnterior !== documento_ingreso) {
+        // No hay nada que actualizar en la FE — el campo tiene_nc es calculado en tiempo real
+      }
+      // No se requiere UPDATE extra — el subquery EXISTS en GET calcula tiene_nc dinámicamente
+    }
+
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -316,5 +342,8 @@ router.delete('/', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
 
 
