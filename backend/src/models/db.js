@@ -90,6 +90,10 @@ const initDB = async () => {
       ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check CHECK (rol IN ('admin', 'editor', 'lector', 'consulta'));
       
       ALTER TABLE responsables_factura ADD COLUMN IF NOT EXISTS nombre VARCHAR(150);
+      ALTER TABLE facturas ADD COLUMN IF NOT EXISTS es_contrato BOOLEAN DEFAULT false;
+      ALTER TABLE facturas ADD COLUMN IF NOT EXISTS flujo_tipo VARCHAR(30);
+      INSERT INTO configuracion (clave, valor) VALUES ('sync_desde', '') ON CONFLICT (clave) DO NOTHING;
+      INSERT INTO configuracion (clave, valor) VALUES ('sync_interval_hours', '0') ON CONFLICT (clave) DO NOTHING;
       ALTER TABLE facturas ALTER COLUMN estado_contable SET DEFAULT 'por_gestionar';
       ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS tema VARCHAR(50) DEFAULT 'oscuro';
       CREATE TABLE IF NOT EXISTS contactos (
@@ -100,92 +104,58 @@ const initDB = async () => {
         created_at TIMESTAMP DEFAULT NOW()
       );
 
-      -- Migración: agregar rol prestamos
-      ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
-      ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check CHECK (rol IN ('admin', 'editor', 'lector', 'consulta', 'prestamos'));
-
-      -- ─── TABLAS PRÉSTAMOS ────────────────────────────────────────────────────
-      CREATE TABLE IF NOT EXISTS prestamo_clinicas (
-        id         SERIAL PRIMARY KEY,
-        nombre     VARCHAR(200) NOT NULL,
-        nit        VARCHAR(50),
+      -- Tablas de préstamos
+      CREATE TABLE IF NOT EXISTS clinicas_prestamo (
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(200) NOT NULL,
+        ciudad VARCHAR(100),
+        contacto VARCHAR(150),
+        telefono VARCHAR(50),
         created_at TIMESTAMP DEFAULT NOW()
       );
 
-      CREATE TABLE IF NOT EXISTS prestamo_productos (
-        id               SERIAL PRIMARY KEY,
-        codigo           VARCHAR(20) UNIQUE NOT NULL,
-        nombre           TEXT NOT NULL,
-        unidad           VARCHAR(50),
-        precio_unitario  NUMERIC(14,2) DEFAULT 0,
-        categoria        VARCHAR(100),
-        cuenta_contable  VARCHAR(20),
-        created_at       TIMESTAMP DEFAULT NOW()
+      CREATE TABLE IF NOT EXISTS productos_prestamo (
+        id SERIAL PRIMARY KEY,
+        codigo VARCHAR(100) UNIQUE NOT NULL,
+        nombre VARCHAR(200) NOT NULL,
+        unidad VARCHAR(50) DEFAULT 'Unidad',
+        precio_unitario NUMERIC(18,2) DEFAULT 0,
+        categoria VARCHAR(50) DEFAULT 'medicamento',
+        activo BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
       );
 
       CREATE TABLE IF NOT EXISTS prestamos (
-        id                 SERIAL PRIMARY KEY,
-        tipo               VARCHAR(10) NOT NULL CHECK (tipo IN ('ingreso','egreso')),
-        clinica_id         INTEGER REFERENCES prestamo_clinicas(id),
-        clinica_nombre     VARCHAR(200),
-        bodega_codigo      VARCHAR(10) NOT NULL,
-        bodega_nombre      VARCHAR(100),
-        fecha              DATE NOT NULL,
-        documento_contable VARCHAR(100) NOT NULL,
-        observaciones      TEXT,
-        soporte_url        TEXT,
-        items              JSONB DEFAULT '[]',
-        estado             VARCHAR(20) NOT NULL DEFAULT 'abierto' CHECK (estado IN ('abierto','parcial','cerrado')),
-        created_at         TIMESTAMP DEFAULT NOW()
+        id SERIAL PRIMARY KEY,
+        tipo VARCHAR(10) NOT NULL CHECK (tipo IN ('dado', 'recibido')),
+        clinica_id INTEGER REFERENCES clinicas_prestamo(id),
+        clinica_nombre VARCHAR(200),
+        fecha DATE NOT NULL,
+        documento_contable VARCHAR(100),
+        pdf_path VARCHAR(500),
+        estado VARCHAR(30) DEFAULT 'abierto' CHECK (estado IN ('abierto', 'parcial', 'cerrado')),
+        fecha_cierre DATE,
+        notas TEXT,
+        creado_por INTEGER REFERENCES usuarios(id),
+        created_at TIMESTAMP DEFAULT NOW()
       );
 
-      CREATE TABLE IF NOT EXISTS prestamo_devoluciones (
-        id                 SERIAL PRIMARY KEY,
-        prestamo_id        INTEGER NOT NULL REFERENCES prestamos(id) ON DELETE CASCADE,
-        fecha              DATE NOT NULL,
-        documento_contable VARCHAR(100) NOT NULL,
-        soporte_url        TEXT,
-        items              JSONB DEFAULT '[]',
-        created_at         TIMESTAMP DEFAULT NOW()
+      CREATE TABLE IF NOT EXISTS items_prestamo (
+        id SERIAL PRIMARY KEY,
+        prestamo_id INTEGER REFERENCES prestamos(id) ON DELETE CASCADE,
+        producto_id INTEGER REFERENCES productos_prestamo(id),
+        codigo VARCHAR(100),
+        nombre VARCHAR(200) NOT NULL,
+        unidad VARCHAR(50),
+        cantidad NUMERIC(10,3) NOT NULL,
+        precio_unitario NUMERIC(18,2) DEFAULT 0,
+        cantidad_devuelta NUMERIC(10,3) DEFAULT 0
       );
 
-      -- Migraciones prestamo_productos
-      ALTER TABLE prestamo_productos ALTER COLUMN cuenta_contable TYPE VARCHAR(30);
-      ALTER TABLE prestamo_productos ALTER COLUMN categoria TYPE VARCHAR(200);
-
-      -- Migraciones prestamos
-      ALTER TABLE prestamos ALTER COLUMN tipo TYPE VARCHAR(30);
-      ALTER TABLE prestamos ALTER COLUMN bodega_codigo TYPE VARCHAR(100);
-      ALTER TABLE prestamos ALTER COLUMN bodega_nombre TYPE VARCHAR(200);
-
-      -- Tabla de cruces entre préstamos y devoluciones
-      CREATE TABLE IF NOT EXISTS prestamo_cruces (
-        id             SERIAL PRIMARY KEY,
-        prestamo_id    INTEGER NOT NULL REFERENCES prestamos(id) ON DELETE CASCADE,
-        devolucion_id  INTEGER NOT NULL REFERENCES prestamos(id) ON DELETE CASCADE,
-        tipo_cruce     VARCHAR(10) NOT NULL DEFAULT 'total' CHECK (tipo_cruce IN ('total','parcial')),
-        observaciones  TEXT,
-        soporte_url    TEXT,
-        soporte_items  JSONB DEFAULT '{}',
-        created_at     TIMESTAMP DEFAULT NOW(),
-        UNIQUE(prestamo_id, devolucion_id)
-      );
-
-      -- Migración: tipo de préstamo ahora incluye devoluciones (IDP, ED)
-      ALTER TABLE prestamos DROP CONSTRAINT IF EXISTS prestamos_tipo_check;
-      ALTER TABLE prestamos ADD CONSTRAINT prestamos_tipo_check
-        CHECK (tipo IN ('ingreso','egreso','devolucion_ingreso','devolucion_egreso'));
-
-      -- Migración: bodega_codigo puede ser null
-      ALTER TABLE prestamos ALTER COLUMN bodega_codigo DROP NOT NULL;
-
-      CREATE INDEX IF NOT EXISTS idx_cruces_prestamo    ON prestamo_cruces(prestamo_id);
-      CREATE INDEX IF NOT EXISTS idx_cruces_devolucion  ON prestamo_cruces(devolucion_id);
-
-      CREATE INDEX IF NOT EXISTS idx_prestamos_estado       ON prestamos(estado);
-      CREATE INDEX IF NOT EXISTS idx_prestamos_tipo         ON prestamos(tipo);
-      CREATE INDEX IF NOT EXISTS idx_devoluciones_prestamo  ON prestamo_devoluciones(prestamo_id);
-      -- ─────────────────────────────────────────────────────────────────────────
+      -- Actualizar constraint de rol para incluir prestamos
+      ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
+      ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check 
+        CHECK (rol IN ('admin', 'editor', 'lector', 'consulta', 'prestamos'));
 
       INSERT INTO configuracion (clave, valor) VALUES
         ('sync_interval_hours', '2'),
@@ -204,6 +174,7 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
 
 
 
