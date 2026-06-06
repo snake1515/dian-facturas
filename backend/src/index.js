@@ -57,13 +57,54 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Cron desactivado — importación solo por rango de fechas manual
+// Cron automático con rango guardado en BD
 let cronJob = null;
 
 const iniciarCron = async () => {
   try {
     if (cronJob) cronJob.stop();
-    console.log(`ℹ️ Sincronización automática desactivada. Usar importación por rango de fechas.`);
+
+    // Leer configuración
+    const cfgRes = await pool.query(
+      "SELECT clave, valor FROM configuracion WHERE clave IN ('sync_interval_hours', 'gmail_connected', 'sync_desde', 'sync_hasta')"
+    );
+    const cfg = {};
+    cfgRes.rows.forEach(r => { cfg[r.clave] = r.valor; });
+
+    if (cfg.gmail_connected !== 'true') {
+      console.log('ℹ️ Gmail no conectado — cron desactivado');
+      return;
+    }
+
+    const horas = parseInt(cfg.sync_interval_hours || '4');
+    if (!horas || horas <= 0) {
+      console.log('ℹ️ Frecuencia no configurada — cron desactivado');
+      return;
+    }
+
+    const expresion = `0 */${horas} * * *`;
+    cronJob = cron.schedule(expresion, async () => {
+      console.log(`⏰ Cron: sincronizando Gmail (cada ${horas}h)...`);
+      try {
+        // Leer rango guardado
+        const rangoRes = await pool.query(
+          "SELECT clave, valor FROM configuracion WHERE clave IN ('sync_desde', 'sync_hasta')"
+        );
+        const rango = {};
+        rangoRes.rows.forEach(r => { rango[r.clave] = r.valor; });
+
+        const desde = rango.sync_desde || null;
+        // sync_hasta = siempre fecha de hoy
+        const hasta = new Date().toISOString().split('T')[0];
+
+        console.log(`📅 Rango: ${desde} → ${hasta}`);
+        await sincronizarCorreos(desde, hasta);
+      } catch (err) {
+        console.error('❌ Error en cron:', err.message);
+      }
+    });
+
+    console.log(`✅ Cron activo: cada ${horas} hora(s)`);
   } catch (err) {
     console.error('Error iniciando cron:', err.message);
   }
@@ -88,4 +129,5 @@ const arrancar = async () => {
 };
 
 arrancar();
+
 
