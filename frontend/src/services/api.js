@@ -39,7 +39,8 @@ export const eliminarPorFechas = (data) => api.delete('/facturas', { data });
 export const urlPDF = (id) => `${api.defaults.baseURL}/facturas/${id}/pdf`;
 export const urlXML = (id) => `${api.defaults.baseURL}/facturas/${id}/xml`;
 
-export const actualizarEstadoContable = (id, estado_contable) => api.put(`/facturas/${id}/estado-contable`, { estado_contable });
+export const actualizarEstadoContable = (id, estado_contable, flujo_tipo) => api.put(`/facturas/${id}/estado-contable`, { estado_contable, flujo_tipo });
+export const actualizarContrato = (id, es_contrato) => api.put(`/facturas/${id}/contrato`, { es_contrato });
 export const actualizarDocumentoIngreso = (id, documento_ingreso) => api.put(`/facturas/${id}/documento-ingreso`, { documento_ingreso });
 export const listarContactos = () => api.get('/facturas/contactos/lista');
 export const crearContacto = (data) => api.post('/facturas/contactos', data);
@@ -57,3 +58,4 @@ export const guardarConfig = (data) => api.put('/configuracion', data);
 export const reiniciarCron = () => api.post('/configuracion/restart-cron');
 
 export default api;
+
