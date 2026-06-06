@@ -95,6 +95,7 @@ export default function Configuracion() {
     }
   };
 
+  // Guardar rango y frecuencia cuando se importa
   const sincronizarAhora = async (desde, hasta) => {
     setSyncing(true);
     setSyncResult(null);
@@ -104,6 +105,9 @@ export default function Configuracion() {
       if (hasta) body.hasta = hasta;
       const res = await gmailSync(body);
       setSyncResult(res.data.nuevas || 0);
+      // Guardar rango usado para el cron
+      if (desde) await guardarConfig({ ...cfg, sync_desde: desde, sync_hasta: hasta || new Date().toISOString().split('T')[0] });
+      await reiniciarCron();
       await cargar();
     } catch (err) {
       alert('Error: ' + (err.response?.data?.error || err.message));
@@ -166,11 +170,11 @@ export default function Configuracion() {
                 <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
                   <div style={{ flex: 1, minWidth: 140 }}>
                     <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Desde</label>
-                    <input style={inputSt} type="date" value={syncDesde} onChange={e => setSyncDesde(e.target.value)} />
+                    <input style={inputSt} type="date" value={syncDesde || cfg.sync_desde || ''} onChange={e => setSyncDesde(e.target.value)} />
                   </div>
                   <div style={{ flex: 1, minWidth: 140 }}>
                     <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4 }}>Hasta</label>
-                    <input style={inputSt} type="date" value={syncHasta} onChange={e => setSyncHasta(e.target.value)} />
+                    <input style={inputSt} type="date" value={syncHasta || new Date().toISOString().split('T')[0]} onChange={e => setSyncHasta(e.target.value)} />
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -198,8 +202,24 @@ export default function Configuracion() {
           <div>
             <h3 style={sectionTitle}>Importación de facturas</h3>
             <div style={{ background: 'rgba(59,130,246,.08)', border: '1px solid rgba(59,130,246,.2)', borderRadius: 8, padding: '14px 16px', fontSize: 13, color: '#94a3b8', marginBottom: 16 }}>
-              ℹ️ La sincronización automática está <strong style={{ color: '#e2e8f0' }}>desactivada</strong>. Las facturas se importan únicamente cuando solicitas un rango de fechas desde la pestaña <strong style={{ color: '#e2e8f0' }}>Correo Gmail</strong>. Esto evita consumo innecesario de ancho de banda.
+              ℹ️ El cron usa el rango guardado al hacer "Importar rango" en la pestaña Correo Gmail. El "Hasta" siempre será la fecha de hoy al correr automáticamente.
             </div>
+            <FormGroup label="¿Cada cuánto tiempo revisar el correo automáticamente?">
+              <select style={inputSt} value={cfg.sync_interval_hours || '0'} onChange={e => set('sync_interval_hours', e.target.value)}>
+                <option value="0">Desactivado (solo manual)</option>
+                <option value="1">Cada 1 hora</option>
+                <option value="2">Cada 2 horas</option>
+                <option value="4">Cada 4 horas</option>
+                <option value="6">Cada 6 horas</option>
+                <option value="12">Cada 12 horas</option>
+                <option value="24">Cada 24 horas</option>
+              </select>
+            </FormGroup>
+            {cfg.sync_desde && (
+              <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>
+                📅 Rango guardado: <strong style={{ color: '#e2e8f0' }}>{cfg.sync_desde}</strong> → <strong style={{ color: '#e2e8f0' }}>hoy</strong>
+              </div>
+            )}
             <ToggleRow label="Procesar XML automáticamente" desc="Extrae datos del XML DIAN al importar"
               value={cfg.auto_process_xml === 'true'} onChange={v => set('auto_process_xml', v ? 'true' : 'false')} />
             <ToggleRow label="Guardar PDF y XML adjunto" desc="Almacena los archivos adjuntos de cada factura en Supabase"
@@ -346,3 +366,4 @@ const inputSt = { width: '100%', background: '#0f1117', border: '1px solid #2a33
 const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' };
 const btnGhost = { background: '#1e2535', color: '#94a3b8', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 16px', fontSize: 13, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' };
+
