@@ -153,9 +153,12 @@ const initDB = async () => {
       );
 
       -- Actualizar constraint de rol para todos los perfiles
+      -- Primero migrar roles viejos a nuevos equivalentes
+      UPDATE usuarios SET rol = 'consulta' WHERE rol = 'lector';
+      UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos');
       ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
       ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check
-        CHECK (rol IN ('admin', 'editor', 'lector', 'consulta', 'obra', 'regente', 'prestamos'));
+        CHECK (rol IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos'));
       ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS alias VARCHAR(50);
 
       -- Tabla estado de productos por factura (pendientes)
@@ -188,6 +191,23 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
