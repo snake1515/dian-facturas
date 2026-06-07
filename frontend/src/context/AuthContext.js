@@ -62,7 +62,8 @@ export function AuthProvider({ children }) {
   // Permisos por rol
   const isAdmin  = rol === 'admin';
   const isEditor = rol === 'editor' || rol === 'admin';
-  const isLector = rol === 'lector' || rol === 'editor' || rol === 'admin';
+  const isObra   = rol === 'obra'   || rol === 'editor' || rol === 'admin';
+  const isLector = rol === 'lector' || rol === 'obra'   || rol === 'editor' || rol === 'admin';
 
   // Capacidades específicas
   const puede = {
@@ -79,10 +80,12 @@ export function AuthProvider({ children }) {
     verUsuarios:        isAdmin,
     verConfiguracion:   isAdmin,
     gestionarUsuarios:  isAdmin,
+    editarPendientes:   isObra,
+    verPendientes:      isLector,
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isLector, puede, doLogin, doLogout, updateUser }}>
+    <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isObra, isLector, puede, doLogin, doLogout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
