@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(() => localStorage.getItem('last_login') || '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -16,6 +16,7 @@ export default function Login() {
     setLoading(true);
     try {
       await doLogin(email, password);
+      localStorage.setItem('last_login', email);
       navigate('/');
     } catch (err) {
       setError(err.response?.data?.error || 'Error al iniciar sesión');
@@ -36,8 +37,8 @@ export default function Login() {
         </div>
         <form onSubmit={handleSubmit}>
           <div style={s.group}>
-            <label style={s.label}>Correo electrónico</label>
-            <input style={s.input} type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="admin@empresa.com" />
+            <label style={s.label}>Correo o alias</label>
+            <input style={s.input} type="text" value={email} onChange={e => setEmail(e.target.value)} required placeholder="correo o alias" autoComplete="username" />
           </div>
           <div style={s.group}>
             <label style={s.label}>Contraseña</label>
