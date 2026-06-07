@@ -152,10 +152,23 @@ const initDB = async () => {
         cantidad_devuelta NUMERIC(10,3) DEFAULT 0
       );
 
-      -- Actualizar constraint de rol para incluir prestamos
+      -- Actualizar constraint de rol para incluir prestamos y obra
       ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
       ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check 
-        CHECK (rol IN ('admin', 'editor', 'lector', 'consulta', 'prestamos'));
+        CHECK (rol IN ('admin', 'editor', 'lector', 'consulta', 'prestamos', 'obra'));
+
+      -- Tabla estado de productos por factura (pendientes)
+      CREATE TABLE IF NOT EXISTS productos_factura_estado (
+        id                SERIAL PRIMARY KEY,
+        factura_id        INTEGER NOT NULL REFERENCES facturas(id) ON DELETE CASCADE,
+        producto_id       INTEGER NOT NULL REFERENCES productos_factura(id) ON DELETE CASCADE,
+        cantidad_recibida NUMERIC,
+        nota              TEXT,
+        revisado_por      INTEGER REFERENCES usuarios(id),
+        updated_at        TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(factura_id, producto_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pfe_factura ON productos_factura_estado(factura_id);
 
       INSERT INTO configuracion (clave, valor) VALUES
         ('sync_interval_hours', '2'),
@@ -174,6 +187,23 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
