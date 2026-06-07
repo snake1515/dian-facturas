@@ -74,6 +74,12 @@ router.get('/', authMiddleware, async (req, res) => {
           SELECT 1 FROM facturas nc
           WHERE nc.tipo = 'NC' AND nc.documento_ingreso = f.numero
         ) AS tiene_nc,
+        EXISTS(
+          SELECT 1 FROM productos_factura_estado pfe
+          JOIN productos_factura p ON p.id = pfe.producto_id
+          WHERE pfe.factura_id = f.id
+            AND (pfe.nota IS NOT NULL OR (pfe.cantidad_recibida IS NOT NULL AND pfe.cantidad_recibida < p.cantidad))
+        ) AS tiene_pendientes,
         COALESCE(
           json_agg(
             json_build_object('email', r.email, 'nombre', r.nombre)
@@ -342,6 +348,9 @@ router.delete('/', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
 
 
 
