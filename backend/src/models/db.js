@@ -14,7 +14,7 @@ const initDB = async () => {
         nombre VARCHAR(100) NOT NULL,
         email VARCHAR(150) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
-        rol VARCHAR(20) NOT NULL DEFAULT 'consulta' CHECK (rol IN ('admin', 'consulta')),
+        rol VARCHAR(20) NOT NULL DEFAULT 'consulta',
         activo BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT NOW()
       );
@@ -190,6 +190,72 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
