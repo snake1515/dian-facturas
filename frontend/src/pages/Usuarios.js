@@ -8,7 +8,7 @@ export default function Usuarios() {
   const [usuarios, setUsuarios] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // 'form' | 'perfil'
-  const [form, setForm] = useState({ nombre: '', email: '', password: '', rol: 'lector', activo: true });
+  const [form, setForm] = useState({ nombre: '', email: '', password: '', rol: 'consulta', activo: true, alias: '' });
   const [perfilForm, setPerfilForm] = useState({ nombre: '', email: '', password: '', passwordActual: '' });
   const [editId, setEditId] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -30,7 +30,7 @@ export default function Usuarios() {
   };
 
   const abrirEditar = (u) => {
-    setForm({ nombre: u.nombre, email: u.email, password: '', rol: u.rol, activo: u.activo });
+    setForm({ nombre: u.nombre, email: u.email, password: '', rol: u.rol, activo: u.activo, alias: u.alias || '' });
     setEditId(u.id); setError(''); setModal('form');
   };
 
@@ -45,7 +45,7 @@ export default function Usuarios() {
     setActionLoading(true); setError('');
     try {
       if (editId) {
-        const data = { nombre: form.nombre, rol: form.rol, activo: form.activo };
+        const data = { nombre: form.nombre, rol: form.rol, activo: form.activo, alias: form.alias || null };
         if (form.password) data.password = form.password;
         await actualizarUsuario(editId, data);
       } else {
@@ -85,8 +85,8 @@ export default function Usuarios() {
     catch (err) { alert(err.response?.data?.error || 'Error'); }
   };
 
-  const rolLabel = (r) => ({ admin: 'Administrador', editor: 'Editor', lector: 'Lector' }[r] || r);
-  const rolColor = (r) => ({ admin: badgeBlue, editor: badgePurple, lector: badgeGray }[r] || badgeGray);
+  const rolLabel = (r) => ({ admin: 'Administrador', editor: 'Editor', lector: 'Lector', consulta: 'Consulta', obra: 'Obra', regente: 'Regente' }[r] || r);
+  const rolColor = (r) => ({ admin: badgeBlue, editor: badgePurple, lector: badgeGray, consulta: badgeGray, obra: badgeOrange, regente: badgeTeal }[r] || badgeGray);
 
   return (
     <div style={{ padding: '16px 8px' }}>
@@ -120,7 +120,10 @@ export default function Usuarios() {
                         <span style={{ fontWeight: 500 }}>{u.nombre}</span>
                       </div>
                     </td>
-                    <td style={{ ...td, color: '#94a3b8', fontSize: 12 }}>{u.email}</td>
+                    <td style={{ ...td, color: '#94a3b8', fontSize: 12 }}>
+                      <div>{u.email}</div>
+                      {u.alias && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>@{u.alias}</div>}
+                    </td>
                     <td style={td}><span style={{ ...badge, ...rolColor(u.rol) }}>{rolLabel(u.rol)}</span></td>
                     <td style={td}><span style={{ ...badge, ...(u.activo ? badgeGreen : badgeRed) }}>{u.activo ? 'Activo' : 'Inactivo'}</span></td>
                     <td style={td}>
@@ -143,7 +146,10 @@ export default function Usuarios() {
         {[
           { rol: 'Administrador', color: '#60a5fa', permisos: ['Acceso total', 'Gestiona usuarios y configuración', 'Elimina facturas', 'Sincroniza Gmail'] },
           { rol: 'Editor', color: '#a78bfa', permisos: ['Ver y descargar facturas', 'Editar estado contable, doc. ingreso y notas', 'Asignar responsables y reenviar', 'Borrar por fechas y sincronizar'] },
-          { rol: 'Lector', color: '#4ade80', permisos: ['Ver y descargar facturas', 'Asignar responsables', 'Reenviar facturas', 'Sin acceso a edición ni configuración'] },
+          { rol: 'Consulta', color: '#94a3b8', permisos: ['Ver facturas y notas crédito', 'Descargar PDF/XML', 'Reenviar facturas', 'Sin edición'] },
+        { rol: 'Obra', color: '#fb923c', permisos: ['Ver facturas y NC', 'Notas y doc. ingreso', 'Elegir OC / Caja menor', 'Descargar y reenviar', 'Módulo pendientes'] },
+        { rol: 'Regente', color: '#2dd4bf', permisos: ['Solo módulo préstamos', 'Ver, editar, subir PDF', 'Realizar cruces'] },
+        { rol: 'Editor', color: '#a78bfa', permisos: ['Todo excepto configuración', 'Avanzar estado contable', 'Sincronizar Gmail', 'Sin eliminar facturas'] },
         ].map(r => (
           <div key={r.rol} style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 8, padding: '12px 14px' }}>
             <div style={{ fontWeight: 600, color: r.color, marginBottom: 8, fontSize: 13 }}>{r.rol}</div>
@@ -172,10 +178,15 @@ export default function Usuarios() {
               </FG>
               <FG label="Rol">
                 <select style={inputSt} value={form.rol} onChange={e => setForm({ ...form, rol: e.target.value })}>
-                  <option value="lector">Lector — solo consulta y reenvío</option>
-                  <option value="editor">Editor — puede editar estados y sincronizar</option>
+                  <option value="consulta">Consulta — ver, descargar y reenviar</option>
+                  <option value="obra">Obra — facturas + notas + pendientes</option>
+                  <option value="regente">Regente — solo módulo préstamos</option>
+                  <option value="editor">Editor — edición completa sin configuración</option>
                   <option value="admin">Administrador — acceso total</option>
                 </select>
+              </FG>
+              <FG label="Alias (opcional)">
+                <input style={inputSt} value={form.alias} onChange={e => setForm({ ...form, alias: e.target.value })} placeholder="Ej: cmoros, jcarvajal..." />
               </FG>
               {editId && (
                 <FG label="Estado">
@@ -263,7 +274,9 @@ const badgeBlue = { background: 'rgba(59,130,246,.12)', color: '#60a5fa' };
 const badgePurple = { background: 'rgba(139,92,246,.12)', color: '#a78bfa' };
 const badgeGray = { background: 'rgba(100,116,139,.15)', color: '#94a3b8' };
 const badgeGreen = { background: 'rgba(34,197,94,.12)', color: '#4ade80' };
-const badgeRed = { background: 'rgba(239,68,68,.12)', color: '#f87171' };
+const badgeRed    = { background: 'rgba(239,68,68,.12)', color: '#f87171' };
+const badgeOrange = { background: 'rgba(251,146,60,.12)', color: '#fb923c' };
+const badgeTeal   = { background: 'rgba(45,212,191,.12)', color: '#2dd4bf' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 15 };
 const inputSt = { width: '100%', background: '#0f1117', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 12px', color: '#e2e8f0', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' };
@@ -273,3 +286,4 @@ const overlay = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', dis
 const modalBox = { background: '#161b27', border: '1px solid #374460', borderRadius: 14, width: 480, maxWidth: '100%', maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' };
 const modalHeader = { padding: '18px 20px', borderBottom: '1px solid #2a3348', display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
 const closeBtn = { background: '#1e2535', border: 'none', color: '#94a3b8', borderRadius: 6, width: 28, height: 28, cursor: 'pointer', fontSize: 18, lineHeight: 1 };
+
