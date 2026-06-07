@@ -91,13 +91,13 @@ export default function Facturas({ tipo = 'FE' }) {
 
   useEffect(() => { cargar(); cargarContactos(); }, [cargar, cargarContactos]);
 
-  // Auto-seleccionar mes más reciente al cargar
+  // Auto-seleccionar mes más reciente al cargar (solo la primera vez)
+  const autoMesSeleccionado = React.useRef(false);
   useEffect(() => {
-    if (facturas.length > 0 && !filterMes) {
+    if (facturas.length > 0 && !autoMesSeleccionado.current) {
       const meses = [...new Set(facturas.map(f => String(f.fecha_emision || '').substring(0, 7)).filter(Boolean))].sort().reverse();
-      if (meses.length > 0) setFilterMes(meses[0]);
+      if (meses.length > 0) { setFilterMes(meses[0]); autoMesSeleccionado.current = true; }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [facturas]);
 
   // Sort logic (client-side)
@@ -920,6 +920,20 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
