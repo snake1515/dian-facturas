@@ -195,6 +195,10 @@ export default function Facturas({ tipo = 'FE' }) {
   const toggleAll = () => { if (selected.size === facturas.length) setSelected(new Set()); else setSelected(new Set(facturas.map(f => f.id))); };
 
   const estadoBadge = (f) => {
+    // Productos pendientes tiene prioridad sobre el estado normal
+    if (f.tiene_pendientes) {
+      return <span style={{ background: 'rgba(239,68,68,.15)', color: '#f87171', padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>⚠ Prod. pendientes</span>;
+    }
     const map = { pendiente: ['#fbbf24', '#451a03', 'Pendiente'], procesado: ['#60a5fa', '#1e3a5f', 'Procesado'], reenviado: ['#4ade80', '#052e16', 'Reenviado'] };
     const [c, bg, label] = map[f.estado] || ['var(--t-text-secondary)', 'var(--t-bg-card)', f.estado];
     return <span style={{ background: bg, color: c, padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{label}</span>;
@@ -890,6 +894,10 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
 
 
 
