@@ -50,7 +50,8 @@ router.post('/usuarios', async (req, res) => {
     }
 
     const hash = await bcrypt.hash(password, 10);
-    const rolFinal = esPrimero ? 'admin' : (rol || 'consulta');
+    const rolesValidos = ['admin', 'editor', 'lector', 'obra'];
+    const rolFinal = esPrimero ? 'admin' : (rolesValidos.includes(rol) ? rol : 'lector');
 
     const result = await pool.query(
       'INSERT INTO usuarios (nombre, email, password_hash, rol) VALUES ($1,$2,$3,$4) RETURNING id, nombre, email, rol',
@@ -124,4 +125,5 @@ router.put('/tema', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
 
