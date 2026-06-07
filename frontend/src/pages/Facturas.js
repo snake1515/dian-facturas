@@ -58,6 +58,8 @@ export default function Facturas({ tipo = 'FE' }) {
   const [syncModal, setSyncModal] = useState(false);
   const [syncRange, setSyncRange] = useState({ desde: '', hasta: '' });
 
+  const [hoveredRow, setHoveredRow] = useState(null);
+
   // Sort
   const [sortCol, setSortCol] = useState('fecha_emision');
   const [sortDir, setSortDir] = useState('desc');
@@ -195,7 +197,6 @@ export default function Facturas({ tipo = 'FE' }) {
   const toggleAll = () => { if (selected.size === facturas.length) setSelected(new Set()); else setSelected(new Set(facturas.map(f => f.id))); };
 
   const estadoBadge = (f) => {
-    // Productos pendientes tiene prioridad sobre el estado normal
     if (f.tiene_pendientes) {
       return <span style={{ background: 'rgba(239,68,68,.15)', color: '#f87171', padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>⚠ Prod. pendientes</span>;
     }
@@ -319,8 +320,19 @@ export default function Facturas({ tipo = 'FE' }) {
               <tbody>
                 {sortedFacturas.map(f => {
                   const filaRoja = docIngresoDuplicado(f.documento_ingreso);
+                  const isHovered = hoveredRow === f.id;
+                  const rowBg = filaRoja
+                    ? 'rgba(239,68,68,.10)'
+                    : selected.has(f.id)
+                      ? 'rgba(59,130,246,.08)'
+                      : isHovered
+                        ? 'rgba(var(--t-accent-rgb, 59,130,246),.06)'
+                        : 'transparent';
                   return (
-                  <tr key={f.id} style={{ borderBottom: '1px solid rgba(42,51,72,.7)', cursor: 'pointer', background: filaRoja ? 'rgba(239,68,68,.10)' : selected.has(f.id) ? 'rgba(59,130,246,.08)' : 'transparent' }}
+                  <tr key={f.id}
+                    style={{ borderBottom: '1px solid rgba(42,51,72,.7)', cursor: 'pointer', background: rowBg, transition: 'background .15s' }}
+                    onMouseEnter={() => setHoveredRow(f.id)}
+                    onMouseLeave={() => setHoveredRow(null)}
                     onClick={() => openModal('ver', f)}>
                     <td style={td} onClick={e => e.stopPropagation()}><input type="checkbox" checked={selected.has(f.id)} onChange={() => toggleSelect(f.id)} /></td>
                     <td style={td}><span style={{ background: f.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: f.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{f.tipo}</span></td>
@@ -340,7 +352,7 @@ export default function Facturas({ tipo = 'FE' }) {
                       {filaRoja && <span style={{ fontSize: 10, color: '#f87171', display: 'block', marginTop: 2 }}>⚠ duplicado</span>}
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
-                      <BarraProgreso factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} esCruzada={tipo === 'FE' && !!f.tiene_nc} />
+                      <BarraProgreso factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} esCruzada={tipo === 'FE' && facturas.some(nc => nc.tipo === 'NC' && nc.documento_ingreso === f.numero)} />
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <NotasInput factura={f} onUpdate={cargar} canEdit={puede.editarNotas} />
@@ -654,19 +666,6 @@ function BarraProgreso({ factura, onUpdate, canEdit, esCruzada }) {
   const estado = factura.estado_contable || 'por_gestionar';
   const esContrato = factura.es_contrato;
 
-  // ── Nota crédito: solo "Por cruzar" / "Cruzado" ──────────────────────────
-  if (factura.tipo === 'NC') {
-    const cruzado = !!factura.documento_ingreso;
-    return (
-      <span style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, padding:'3px 10px', borderRadius:20,
-        background: cruzado ? '#FAEEDA' : 'var(--t-bg-card)',
-        color: cruzado ? '#854F0B' : 'var(--t-text-muted)',
-        border: cruzado ? 'none' : '0.5px solid var(--t-border)' }}>
-        {cruzado ? '🔄 Cruzado' : '⏳ Por cruzar'}
-      </span>
-    );
-  }
-
   // Si es contrato → badge gris
   if (esContrato) {
     return (
@@ -685,8 +684,8 @@ function BarraProgreso({ factura, onUpdate, canEdit, esCruzada }) {
     );
   }
 
-  // Determinar flujo según estado actual o flujo_tipo guardado
-  const esCM = factura.flujo_tipo === 'caja_menor' || estado === 'ingresado_caja_menor';
+  // Determinar flujo según estado actual
+  const esCM = estado === 'ingresado_caja_menor' || (estado === 'aprobado' && factura.flujo_tipo === 'caja_menor');
   const flujo = esCM ? FLUJO_CM : FLUJO_OC;
 
   // Si es por_gestionar y no tiene flujo, mostrar selector de tipo
@@ -697,21 +696,11 @@ function BarraProgreso({ factura, onUpdate, canEdit, esCruzada }) {
   const pct = flujo.length > 1 ? (current / (flujo.length - 1)) * 100 : 0;
   const completo = estado === 'aprobado';
 
-  const avanzar = async (val, nuevoFlujoTipo) => {
+  const avanzar = async (val) => {
     if (!canEdit || saving) return;
     setSaving(true);
     try {
-      // nuevoFlujoTipo === '' significa reset explícito (volver al selector)
-      let flujoTipo;
-      if (nuevoFlujoTipo === '') {
-        flujoTipo = ''; // reset
-      } else if (nuevoFlujoTipo) {
-        flujoTipo = nuevoFlujoTipo;
-      } else {
-        flujoTipo = FLUJO_CM.some(s => s.value === val) && val !== 'aprobado' ? 'caja_menor'
-          : val === 'ingresado_orden_compra' ? 'orden_compra'
-          : factura.flujo_tipo;
-      }
+      const flujoTipo = FLUJO_CM.some(s => s.value === val) && val !== 'aprobado' ? 'caja_menor' : (val === 'ingresado_orden_compra' ? 'orden_compra' : factura.flujo_tipo);
       await actualizarEstadoContable(factura.id, val, flujoTipo);
       await onUpdate();
     } catch { alert('Error al actualizar'); }
@@ -723,50 +712,32 @@ function BarraProgreso({ factura, onUpdate, canEdit, esCruzada }) {
 
   return (
     <div style={{ minWidth: 180, opacity: saving ? 0.6 : 1 }} onClick={e => e.stopPropagation()}>
-      {sinFlujo && canEdit ? (
-        /* Selector inicial — sin texto "¿Cómo ingresa?", botones más grandes */
-        <div style={{ display:'flex', gap:5 }}>
-          <button onClick={() => avanzar('ingresado_orden_compra', 'orden_compra')}
-            style={{ fontSize:12, padding:'5px 11px', borderRadius:6, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'var(--t-text-secondary)', cursor:'pointer', fontWeight:500 }}>
-            📋 OC
-          </button>
-          <button onClick={() => avanzar('ingresado_caja_menor', 'caja_menor')}
-            style={{ fontSize:12, padding:'5px 11px', borderRadius:6, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'#a78bfa', cursor:'pointer', fontWeight:500 }}>
-            💵 Caja menor
-          </button>
+      {sinFlujo && canEdit && (
+        <div style={{ marginBottom: 5 }}>
+          <div style={{ fontSize: 10, color:'var(--t-text-muted)', marginBottom: 3 }}>¿Cómo ingresa?</div>
+          <div style={{ display:'flex', gap:4 }}>
+            <button onClick={() => avanzar('ingresado_orden_compra')} style={{ fontSize:10, padding:'2px 7px', borderRadius:5, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'var(--t-text-secondary)', cursor:'pointer' }}>📋 OC</button>
+            <button onClick={() => avanzar('ingresado_caja_menor')} style={{ fontSize:10, padding:'2px 7px', borderRadius:5, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'#a78bfa', cursor:'pointer' }}>💵 Caja menor</button>
+          </div>
         </div>
-      ) : (
-        <>
-          {/* Botón para cambiar flujo si está en primer paso */}
-          {canEdit && current <= 1 && !completo && (
-            <div style={{ display:'flex', gap:4, marginBottom:4 }}>
-              <button
-                onClick={() => avanzar('por_gestionar', '')}
-                title="Cambiar tipo de flujo"
-                style={{ fontSize:10, padding:'1px 6px', borderRadius:4, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'var(--t-text-muted)', cursor:'pointer' }}>
-                ↩ Cambiar
-              </button>
-            </div>
-          )}
-          <div style={{ height:4, background:'var(--t-border)', borderRadius:2, marginBottom:5, position:'relative' }}>
-            <div style={{ position:'absolute', top:0, left:0, height:'100%', width:`${pct}%`, background: completo ? '#3B6D11' : trackColor, borderRadius:2, transition:'width .3s' }} />
-          </div>
-          <div style={{ display:'flex', justifyContent:'space-between' }}>
-            {flujo.map((s, i) => {
-              const done = i < current;
-              const active = i === current;
-              const color = completo ? '#3B6D11' : (done || active ? trackColor : 'var(--t-border)');
-              return (
-                <div key={s.value} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2, flex:1, cursor: canEdit && i === current + 1 ? 'pointer' : 'default' }}
-                  onClick={() => canEdit && i === current + 1 && avanzar(s.value)}>
-                  <div style={{ width:9, height:9, borderRadius:'50%', background: done || active ? color : 'var(--t-bg-card)', border:`1.5px solid ${color}`, boxShadow: active ? `0 0 0 3px ${color}33` : 'none', transition:'all .2s' }} />
-                  <span style={{ fontSize:9, color: active ? color : 'var(--t-text-muted)', fontWeight: active ? 600 : 400, textAlign:'center', lineHeight:1.2, maxWidth:55, wordBreak:'break-word' }}>{s.label}</span>
-                </div>
-              );
-            })}
-          </div>
-        </>
       )}
+      <div style={{ height:4, background:'var(--t-border)', borderRadius:2, marginBottom:5, position:'relative' }}>
+        <div style={{ position:'absolute', top:0, left:0, height:'100%', width:`${pct}%`, background: completo ? '#3B6D11' : trackColor, borderRadius:2, transition:'width .3s' }} />
+      </div>
+      <div style={{ display:'flex', justifyContent:'space-between' }}>
+        {flujo.map((s, i) => {
+          const done = i < current;
+          const active = i === current;
+          const color = completo ? '#3B6D11' : (done || active ? trackColor : 'var(--t-border)');
+          return (
+            <div key={s.value} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2, flex:1, cursor: canEdit && i === current + 1 ? 'pointer' : 'default' }}
+              onClick={() => canEdit && i === current + 1 && avanzar(s.value)}>
+              <div style={{ width:9, height:9, borderRadius:'50%', background: done || active ? color : 'var(--t-bg-card)', border:`1.5px solid ${color}`, boxShadow: active ? `0 0 0 3px ${color}33` : 'none', transition:'all .2s' }} />
+              <span style={{ fontSize:9, color: active ? color : 'var(--t-text-muted)', fontWeight: active ? 600 : 400, textAlign:'center', lineHeight:1.2, maxWidth:55, wordBreak:'break-word' }}>{s.label}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -894,6 +865,10 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
 
 
 
