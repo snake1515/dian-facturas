@@ -152,10 +152,11 @@ const initDB = async () => {
         cantidad_devuelta NUMERIC(10,3) DEFAULT 0
       );
 
-      -- Actualizar constraint de rol para incluir prestamos y obra
+      -- Actualizar constraint de rol para todos los perfiles
       ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
-      ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check 
-        CHECK (rol IN ('admin', 'editor', 'lector', 'consulta', 'prestamos', 'obra'));
+      ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check
+        CHECK (rol IN ('admin', 'editor', 'lector', 'consulta', 'obra', 'regente', 'prestamos'));
+      ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS alias VARCHAR(50);
 
       -- Tabla estado de productos por factura (pendientes)
       CREATE TABLE IF NOT EXISTS productos_factura_estado (
@@ -187,6 +188,22 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
