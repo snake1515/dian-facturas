@@ -86,8 +86,7 @@ const initDB = async () => {
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS notas TEXT;
-      ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
-      ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check CHECK (rol IN ('admin', 'editor', 'lector', 'consulta'));
+      -- constraint manejado por Supabase directamente
       
       ALTER TABLE responsables_factura ADD COLUMN IF NOT EXISTS nombre VARCHAR(150);
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS es_contrato BOOLEAN DEFAULT false;
@@ -178,10 +177,8 @@ const initDB = async () => {
       ON CONFLICT (clave) DO NOTHING;
     `);
     // Migraciones de roles — queries separadas para que los UPDATE surtan efecto antes del constraint
-    await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol = 'lector'");
+    // Migrar roles viejos si existen (sin tocar el constraint)
     await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos')");
-    await client.query('ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check');
-    await client.query("ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check CHECK (rol IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos'))");
 
     console.log('✅ Base de datos inicializada correctamente');
   } finally {
@@ -190,6 +187,72 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
