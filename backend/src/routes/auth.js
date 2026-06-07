@@ -12,7 +12,11 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email y contraseña requeridos' });
 
-    const result = await pool.query('SELECT * FROM usuarios WHERE email = $1 AND activo = true', [email]);
+    // Permite login con email o alias
+    const result = await pool.query(
+      'SELECT * FROM usuarios WHERE (email = $1 OR alias = $1) AND activo = true LIMIT 1',
+      [email]
+    );
     const user = result.rows[0];
     if (!user) return res.status(401).json({ error: 'Credenciales inválidas' });
 
@@ -126,6 +130,16 @@ router.put('/tema', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
 
 
 
