@@ -152,13 +152,6 @@ const initDB = async () => {
         cantidad_devuelta NUMERIC(10,3) DEFAULT 0
       );
 
-      -- Actualizar constraint de rol para todos los perfiles
-      -- Primero migrar roles viejos a nuevos equivalentes
-      UPDATE usuarios SET rol = 'consulta' WHERE rol = 'lector';
-      UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos');
-      ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
-      ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check
-        CHECK (rol IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos'));
       ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS alias VARCHAR(50);
 
       -- Tabla estado de productos por factura (pendientes)
@@ -184,6 +177,12 @@ const initDB = async () => {
         ('palabras_clave', 'factura electrónica,nota crédito,DIAN,FE-')
       ON CONFLICT (clave) DO NOTHING;
     `);
+    // Migraciones de roles — queries separadas para que los UPDATE surtan efecto antes del constraint
+    await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol = 'lector'");
+    await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos')");
+    await client.query('ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check');
+    await client.query("ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check CHECK (rol IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos'))");
+
     console.log('✅ Base de datos inicializada correctamente');
   } finally {
     client.release();
@@ -191,6 +190,72 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
