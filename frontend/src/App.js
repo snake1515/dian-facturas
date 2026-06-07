@@ -9,6 +9,7 @@ import Usuarios from './pages/Usuarios';
 import Configuracion from './pages/Configuracion';
 import CruceDIAN from './pages/CruceDIAN';
 import Prestamos from './pages/Prestamos';
+import Pendientes from './pages/Pendientes';
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
@@ -47,7 +48,7 @@ function Layout({ children }) {
     textDecoration: 'none', transition: 'all .15s',
   });
 
-  const rolLabel = { admin: 'Administrador', editor: 'Editor', lector: 'Lector' }[user?.rol] || user?.rol;
+  const rolLabel = { admin: 'Administrador', editor: 'Editor', lector: 'Lector', obra: 'Obra' }[user?.rol] || user?.rol;
 
   const Sidebar = () => (
     <aside style={{
@@ -87,6 +88,12 @@ function Layout({ children }) {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
           Cruce DIAN
         </NavLink>
+        {puede.verPendientes && (
+          <NavLink to="/pendientes" style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Pendientes
+          </NavLink>
+        )}
         {(user?.rol === 'admin' || user?.rol === 'prestamos') && (
           <NavLink to="/prestamos" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/></svg>
@@ -215,6 +222,7 @@ export default function App() {
           <Route path="/configuracion" element={<PrivateRoute adminOnly><Layout><Configuracion /></Layout></PrivateRoute>} />
           <Route path="/cruce-dian" element={<PrivateRoute><Layout><CruceDIAN /></Layout></PrivateRoute>} />
           <Route path="/prestamos" element={<PrivateRoute><Layout><Prestamos /></Layout></PrivateRoute>} />
+          <Route path="/pendientes" element={<PrivateRoute><Layout><Pendientes /></Layout></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
@@ -226,6 +234,9 @@ function LoginGuard() {
   const { user } = useAuth();
   return user ? <Navigate to="/" replace /> : <Login />;
 }
+
+
+
 
 
 
