@@ -59,33 +59,58 @@ export function AuthProvider({ children }) {
 
   const rol = user?.rol || '';
 
-  // Permisos por rol
-  const isAdmin  = rol === 'admin';
-  const isEditor = rol === 'editor' || rol === 'admin';
-  const isObra   = rol === 'obra'   || rol === 'editor' || rol === 'admin';
-  const isLector = rol === 'lector' || rol === 'obra'   || rol === 'editor' || rol === 'admin';
+  // Flags por rol
+  const isAdmin   = rol === 'admin';
+  const isEditor  = rol === 'editor'  || rol === 'admin';
+  const isObra    = rol === 'obra'    || rol === 'editor' || rol === 'admin';
+  const isLector  = rol === 'lector'  || rol === 'consulta' || rol === 'obra' || rol === 'editor' || rol === 'admin';
+  const isRegente = rol === 'regente' || rol === 'admin';
 
-  // Capacidades específicas
+  // Capacidades específicas por rol
+  // consulta: ver/descargar/reenviar facturas y NC, nada más
+  // obra: ver facturas+NC, notas, doc ingreso, elegir flujo inicial, descargar/reenviar, pendientes
+  // regente: solo prestamos (ver + editar + subir PDF + cruces)
+  // editor: todo excepto configuración, eliminar facturas, gestionar usuarios
+  // admin: todo
+
+  const esConsulta = rol === 'consulta';
+  const esObra     = rol === 'obra';
+  const esRegente  = rol === 'regente';
+
   const puede = {
-    verFacturas:        isLector,
-    descargarArchivos:  isLector,
-    asignarResponsables: isLector,
-    reenviarFacturas:   isLector,
-    editarEstadoContable: isEditor,
-    editarDocIngreso:   isEditor,
-    editarNotas:        isEditor,
-    borrarPorFechas:    isEditor,
-    sincronizar:        isEditor,
-    eliminarFacturas:   isAdmin,
-    verUsuarios:        isAdmin,
-    verConfiguracion:   isAdmin,
-    gestionarUsuarios:  isAdmin,
-    editarPendientes:   isObra,
-    verPendientes:      isLector,
+    // Facturas
+    verFacturas:            isLector && !isRegente,
+    descargarArchivos:      isLector && !isRegente,
+    reenviarFacturas:       isLector && !isRegente,
+    asignarResponsables:    isEditor,
+    editarNotas:            isObra,                    // obra, editor, admin
+    editarDocIngreso:       isObra,                    // obra, editor, admin
+    elegirFlujo:            isObra,                    // obra puede elegir OC/CM y cambiar
+    editarEstadoContable:   isEditor,                  // solo editor/admin avanzan pasos
+    devolverEstado:         isAdmin,                   // solo admin puede devolver pasos
+    borrarPorFechas:        isEditor,
+    sincronizar:            isEditor,
+    eliminarFacturas:       isAdmin,
+
+    // Usuarios / config
+    verUsuarios:            isAdmin,
+    verConfiguracion:       isAdmin,
+    gestionarUsuarios:      isAdmin,
+
+    // Pendientes
+    verPendientes:          isObra,
+    editarPendientes:       isObra,
+
+    // Préstamos
+    verPrestamos:           isEditor || isRegente || esObra,
+    editarPrestamos:        isEditor || isRegente,
+
+    // Cruce DIAN
+    verCruceDIAN:           isEditor,
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isObra, isLector, puede, doLogin, doLogout, updateUser }}>
+    <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isObra, isLector, isRegente, puede, doLogin, doLogout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -98,3 +123,4 @@ export function useAuth() {
 }
 
 export default AuthContext;
+
