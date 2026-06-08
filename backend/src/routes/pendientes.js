@@ -42,6 +42,7 @@ router.get('/factura/:numero', authMiddleware, async (req, res) => {
          pfe.id        AS estado_id,
          pfe.cantidad_recibida,
          pfe.nota,
+         pfe.tipo_problema,
          pfe.updated_at AS estado_updated_at,
          u.nombre      AS revisado_por_nombre
        FROM productos_factura p
@@ -124,18 +125,21 @@ router.put('/producto/:productoId', authMiddleware, puedeEditar, async (req, res
       return res.json({ ok: true, resuelto: true });
     }
 
+    const { tipo_problema } = req.body;
+
     // Upsert del estado
     await pool.query(
       `INSERT INTO productos_factura_estado
-         (factura_id, producto_id, cantidad_recibida, nota, revisado_por, updated_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
+         (factura_id, producto_id, cantidad_recibida, nota, tipo_problema, revisado_por, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
        ON CONFLICT (factura_id, producto_id)
        DO UPDATE SET
          cantidad_recibida = $3,
          nota              = $4,
-         revisado_por      = $5,
+         tipo_problema     = $5,
+         revisado_por      = $6,
          updated_at        = NOW()`,
-      [factura_id, productoId, cantRecibida, nota || null, req.user.id]
+      [factura_id, productoId, cantRecibida, nota || null, tipo_problema || null, req.user.id]
     );
 
     res.json({ ok: true, resuelto: false });
@@ -162,4 +166,62 @@ router.delete('/producto/:productoId', authMiddleware, puedeEditar, async (req, 
   }
 });
 
+// ── GET /api/pendientes/factura/:facturaId/no-facturados ─────────────────────
+router.get('/factura/:facturaId/no-facturados', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM productos_no_facturados WHERE factura_id = $1 ORDER BY created_at`,
+      [req.params.facturaId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ── POST /api/pendientes/no-facturado ─────────────────────────────────────────
+router.post('/no-facturado', authMiddleware, puedeEditar, async (req, res) => {
+  try {
+    const { factura_id, descripcion, cantidad, tipo_problema, nota } = req.body;
+    if (!factura_id || !descripcion) return res.status(400).json({ error: 'Datos incompletos' });
+    const result = await pool.query(
+      `INSERT INTO productos_no_facturados (factura_id, descripcion, cantidad, tipo_problema, nota, registrado_por)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [factura_id, descripcion, cantidad || null, tipo_problema || 'no_facturado', nota || null, req.user.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al guardar' });
+  }
+});
+
+// ── DELETE /api/pendientes/no-facturado/:id ───────────────────────────────────
+router.delete('/no-facturado/:id', authMiddleware, puedeEditar, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM productos_no_facturados WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al eliminar' });
+  }
+});
+
+// ── PUT /api/pendientes/no-facturado/:id ──────────────────────────────────────
+router.put('/no-facturado/:id', authMiddleware, puedeEditar, async (req, res) => {
+  try {
+    const { descripcion, cantidad, tipo_problema, nota } = req.body;
+    const result = await pool.query(
+      `UPDATE productos_no_facturados SET descripcion=$1, cantidad=$2, tipo_problema=$3, nota=$4 WHERE id=$5 RETURNING *`,
+      [descripcion, cantidad || null, tipo_problema || null, nota || null, req.params.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al actualizar' });
+  }
+});
+
 module.exports = router;
+
