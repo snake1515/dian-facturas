@@ -165,6 +165,20 @@ const initDB = async () => {
         UNIQUE(factura_id, producto_id)
       );
       CREATE INDEX IF NOT EXISTS idx_pfe_factura ON productos_factura_estado(factura_id);
+      ALTER TABLE productos_factura_estado ADD COLUMN IF NOT EXISTS tipo_problema VARCHAR(30);
+
+      -- Productos que llegaron pero no están en la factura
+      CREATE TABLE IF NOT EXISTS productos_no_facturados (
+        id              SERIAL PRIMARY KEY,
+        factura_id      INTEGER NOT NULL REFERENCES facturas(id) ON DELETE CASCADE,
+        descripcion     TEXT NOT NULL,
+        cantidad        NUMERIC,
+        tipo_problema   VARCHAR(30) DEFAULT 'no_facturado',
+        nota            TEXT,
+        registrado_por  INTEGER REFERENCES usuarios(id),
+        created_at      TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_pnf_factura ON productos_no_facturados(factura_id);
 
       INSERT INTO configuracion (clave, valor) VALUES
         ('sync_interval_hours', '2'),
@@ -187,6 +201,71 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
