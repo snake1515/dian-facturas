@@ -69,6 +69,7 @@ router.get('/', authMiddleware, async (req, res) => {
         f.gmail_message_id,
         f.notas,
         f.es_contrato,
+        f.forma_pago,
         f.created_at,
         EXISTS(
           SELECT 1 FROM facturas nc
@@ -348,6 +349,15 @@ router.delete('/', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
 
 
 
