@@ -31,6 +31,7 @@ const parsearXMLDIAN = async (xmlString) => {
   const proveedor = extraerProveedor(raiz);
   const totales = extraerTotales(raiz, esNotaCredito);
   const productos = extraerProductos(raiz, esNotaCredito);
+  const formaPago = extraerFormaPago(raiz);
 
   return {
     tipo,
@@ -44,6 +45,7 @@ const parsearXMLDIAN = async (xmlString) => {
     iva: totales.iva,
     total: totales.total,
     productos,
+    formaPago,
   };
 };
 
@@ -213,4 +215,39 @@ const extraerProductos = (raiz, esNC) => {
   }
 };
 
+/**
+ * Extrae la forma de pago del XML DIAN (UBL 2.1)
+ * El elemento PaymentMeans contiene:
+ *   cbc:PaymentMeansCode → código (1=contado, 2=crédito, 10=efectivo, 20=cheque, 48=tarjeta, etc.)
+ *   cbc:PaymentDueDate   → fecha límite de pago (cuando es crédito)
+ */
+const extraerFormaPago = (raiz) => {
+  try {
+    const pm = raiz['cac:PaymentMeans'] || raiz['PaymentMeans'];
+    if (!pm) return null;
+
+    // Puede venir como array (múltiples formas de pago) o como objeto único
+    const primero = Array.isArray(pm) ? pm[0] : pm;
+
+    const codigo = getVal(primero, 'cbc:PaymentMeansCode') || null;
+
+    // Mapeo de códigos DIAN más comunes
+    const CODIGOS = {
+      '1':  'Contado',
+      '2':  'Crédito',
+      '10': 'Efectivo',
+      '20': 'Cheque',
+      '42': 'Consignación bancaria',
+      '48': 'Tarjeta de crédito/débito',
+      '49': 'Tarjeta débito',
+      'ZZZ': 'Otro',
+    };
+
+    return codigo ? (CODIGOS[codigo] || `Código ${codigo}`) : null;
+  } catch {
+    return null;
+  }
+};
+
 module.exports = { parsearXMLDIAN };
+
