@@ -323,6 +323,7 @@ export default function Facturas({ tipo = 'FE' }) {
                   <th style={th}>Responsable</th>
                   {thSort('documento_ingreso', 'Doc. ingreso')}
                   {thSort('estado_contable', 'Est. contable')}
+                  <th style={th}>Forma pago</th>
                   <th style={th}>Notas</th>
                   <th style={th}>Acciones</th>
                 </tr>
@@ -361,6 +362,11 @@ export default function Facturas({ tipo = 'FE' }) {
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <BarraProgreso factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} canElegirFlujo={puede.elegirFlujo} canDevolver={puede.devolverEstado} esCruzada={tipo === 'FE' && !!f.tiene_nc} />
                     </td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      {f.forma_pago
+                        ? <span style={{ background: f.forma_pago === 'Contado' ? '#052e16' : '#1e3a5f', color: f.forma_pago === 'Contado' ? '#4ade80' : '#60a5fa', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>{f.forma_pago}</span>
+                        : <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>—</span>}
+                    </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <NotasInput factura={f} onUpdate={cargar} canEdit={puede.editarNotas} />
                     </td>
@@ -394,6 +400,7 @@ export default function Facturas({ tipo = 'FE' }) {
               <Item label="CUFE" val={activeF.cufe ? activeF.cufe.substring(0, 20) + '...' : '—'} />
               <Item label="Fecha emisión" val={fmtDate(activeF.fecha_emision)} />
               <Item label="Fecha vencimiento" val={fmtDate(activeF.fecha_vencimiento)} />
+              <Item label="Forma de pago" val={activeF.forma_pago || '—'} />
               <Item label="Estado" val={estadoBadge(activeF)} />
               {activeF.reenviado_a && <Item label="Reenviado a" val={<span style={{ color: '#4ade80' }}>{activeF.reenviado_a}</span>} />}
             </Grid2>
@@ -920,6 +927,61 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
