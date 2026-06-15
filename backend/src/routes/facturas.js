@@ -9,7 +9,7 @@ const router = express.Router();
 // ── GET /api/facturas ─────────────────────────────────────────────────────────
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const { tipo, search, estado, estado_contable } = req.query;
+    const { tipo, search, estado, estado_contable, origen } = req.query;
 
     const condiciones = [];
     const valores = [];
@@ -28,6 +28,11 @@ router.get('/', authMiddleware, async (req, res) => {
     if (estado_contable) {
       condiciones.push(`f.estado_contable = $${i++}`);
       valores.push(estado_contable);
+    }
+
+    if (origen) {
+      condiciones.push(`f.origen = $${i++}`);
+      valores.push(origen);
     }
 
     if (search) {
@@ -70,6 +75,10 @@ router.get('/', authMiddleware, async (req, res) => {
         f.notas,
         f.es_contrato,
         f.forma_pago,
+        f.origen,
+        f.tiene_gmail,
+        f.gmail_factura_id,
+        f.notificacion_vista,
         f.created_at,
         EXISTS(
           SELECT 1 FROM facturas nc
@@ -349,6 +358,15 @@ router.delete('/', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
 
 
 
