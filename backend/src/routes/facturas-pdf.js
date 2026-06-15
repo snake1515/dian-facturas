@@ -98,14 +98,24 @@ router.post('/subir-pdf', authMiddleware, upload.single('pdf'), async (req, res)
 });
 
 // ── GET /api/facturas/notificaciones ─────────────────────────────────────────
-// Retorna facturas manuales que ya llegaron por Gmail
+// Busca facturas manuales que ya tienen su equivalente en Gmail (mismo número + NIT)
 router.get('/notificaciones', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT id, numero, proveedor_nombre, total, fecha_emision, gmail_message_id
-      FROM facturas
-      WHERE origen = 'pdf_manual' AND tiene_gmail = true AND notificacion_vista = false
-      ORDER BY created_at DESC
+      SELECT 
+        manual.id,
+        manual.numero,
+        manual.proveedor_nombre,
+        manual.total,
+        manual.fecha_emision,
+        gmail.id AS gmail_factura_id
+      FROM facturas manual
+      JOIN facturas gmail 
+        ON gmail.numero = manual.numero 
+        AND gmail.proveedor_nit = manual.proveedor_nit
+        AND gmail.origen = 'gmail'
+      WHERE manual.origen = 'pdf_manual'
+      ORDER BY manual.created_at DESC
     `);
     res.json(result.rows);
   } catch (err) {
@@ -167,3 +177,4 @@ router.post('/:id/descartar-notificacion', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
