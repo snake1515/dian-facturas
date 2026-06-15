@@ -62,6 +62,9 @@ export default function Facturas({ tipo = 'FE' }) {
   const [subiendoPdf, setSubiendoPdf] = useState(false);
   const [notificaciones, setNotificaciones] = useState([]);
   const [filterOrigen, setFilterOrigen] = useState('');
+  const [duplicados, setDuplicados] = useState([]); // pares de facturas duplicadas
+  const [modalDuplicado, setModalDuplicado] = useState(null); // { manual, gmail }
+  const [resaltadas, setResaltadas] = useState(new Set()); // ids resaltados en tabla
 
   // Sort
   const [sortCol, setSortCol] = useState('fecha_emision');
@@ -84,6 +87,7 @@ export default function Facturas({ tipo = 'FE' }) {
         origen: filterOrigen || undefined,
       });
       setFacturas(res.data);
+      detectarDuplicados(res.data);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   }, [tipo, debouncedSearch, filterEstado, filterEstadoContable, filterOrigen]);
@@ -96,6 +100,22 @@ export default function Facturas({ tipo = 'FE' }) {
   const cargarNotificaciones = useCallback(async () => {
     try { const res = await api.get('/facturas/notificaciones'); setNotificaciones(res.data || []); }
     catch { /* silencioso */ }
+  }, []);
+
+  // Detectar duplicados en el frontend: misma factura subida manual y por Gmail
+  const detectarDuplicados = useCallback((lista) => {
+    const manuales = lista.filter(f => f.origen === 'pdf_manual');
+    const gmails = lista.filter(f => f.origen === 'gmail');
+    const pares = [];
+    for (const manual of manuales) {
+      const numManual = (manual.numero || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+      const gemela = gmails.find(g => {
+        const numGmail = (g.numero || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        return numGmail === numManual && g.proveedor_nit === manual.proveedor_nit;
+      });
+      if (gemela) pares.push({ manual, gmail: gemela });
+    }
+    setDuplicados(pares);
   }, []);
 
   useEffect(() => { cargar(); cargarContactos(); cargarNotificaciones(); }, [cargar, cargarContactos, cargarNotificaciones]);
@@ -294,7 +314,25 @@ export default function Facturas({ tipo = 'FE' }) {
         </div>
       ))}
 
-      {/* Toolbar */}
+      {/* Banner duplicados — factura manual que ya llegó por Gmail */}
+      {duplicados.map(({ manual, gmail }) => (
+        <div key={manual.id} style={{ background: 'rgba(234,179,8,.12)', border: '1px solid rgba(234,179,8,.4)', borderRadius: 8, padding: '10px 14px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', cursor: 'pointer' }}
+          onClick={() => {
+            setResaltadas(new Set([manual.id, gmail.id]));
+            setModalDuplicado({ manual, gmail });
+            // Scroll a la primera fila resaltada
+            setTimeout(() => {
+              const el = document.getElementById(`fila-${manual.id}`);
+              if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
+          }}>
+          <span style={{ fontSize: 18 }}>🔔</span>
+          <div style={{ flex: 1, fontSize: 13, color: 'var(--t-text-primary)' }}>
+            La factura <strong>{manual.numero}</strong> de <strong>{manual.proveedor_nombre}</strong> por <strong>{fmt(manual.total)}</strong> fue subida manualmente y también llegó por Gmail (<strong>{gmail.numero}</strong>). Haz clic para ver y fusionar.
+          </div>
+          <span style={{ fontSize: 11, color: '#fbbf24' }}>Ver duplicado →</span>
+        </div>
+      ))}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         <input style={{ ...inputSt, flex: '1 1 180px', minWidth: 140 }} placeholder="Buscar proveedor, número, valor, doc. ingreso..." value={search} onChange={e => setSearch(e.target.value)} />
         <select style={{ ...inputSt, flex: '0 1 150px' }} value={filterEstado} onChange={e => setFilterEstado(e.target.value)}>
@@ -396,7 +434,8 @@ export default function Facturas({ tipo = 'FE' }) {
                     : 'transparent';
                   return (
                   <tr key={f.id}
-                    style={{ borderBottom: '1px solid rgba(42,51,72,.7)', cursor: 'pointer', background: rowBg, transition: 'background .12s' }}
+                    id={`fila-${f.id}`}
+                    style={{ borderBottom: '1px solid rgba(42,51,72,.7)', cursor: 'pointer', background: resaltadas.has(f.id) ? 'rgba(234,179,8,.15)' : rowBg, outline: resaltadas.has(f.id) ? '2px solid rgba(234,179,8,.6)' : 'none', transition: 'background .12s' }}
                     onMouseEnter={() => setHoveredRow(f.id)}
                     onMouseLeave={() => setHoveredRow(null)}
                     onClick={() => openModal('ver', f)}>
@@ -613,6 +652,60 @@ export default function Facturas({ tipo = 'FE' }) {
       {/* MODAL EXPORTAR */}
       {modal === 'exportar' && (
         <ExportModal facturas={sortedFacturas} tipo={tipo} onClose={closeModal} />
+      )}
+
+      {/* MODAL FUSIONAR DUPLICADO */}
+      {modalDuplicado && (
+        <Modal title="📋 Factura duplicada detectada" onClose={() => { setModalDuplicado(null); setResaltadas(new Set()); }} footer={
+          <>
+            <button style={btnGhost} onClick={() => { setModalDuplicado(null); setResaltadas(new Set()); }}>Cancelar</button>
+            <button style={btnPrimary} onClick={async () => {
+              try {
+                await api.post(`/facturas/${modalDuplicado.manual.id}/reemplazar-con-gmail`, {
+                  gmailFacturaId: modalDuplicado.gmail.id
+                });
+                setModalDuplicado(null);
+                setResaltadas(new Set());
+                setDuplicados(prev => prev.filter(d => d.manual.id !== modalDuplicado.manual.id));
+                await cargar();
+              } catch (err) {
+                alert('Error al fusionar: ' + (err.response?.data?.error || err.message));
+              }
+            }}>✅ Sí, heredar gestión y eliminar manual</button>
+          </>
+        }>
+          <p style={{ fontSize: 13, color: 'var(--t-text-secondary)', marginBottom: 16 }}>
+            Se encontraron dos versiones de la misma factura. La de Gmail tiene el XML oficial. ¿Deseas heredar la gestión realizada en la manual a la factura de Gmail y eliminar la manual?
+          </p>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+            <div style={{ background: 'rgba(168,85,247,.1)', border: '1px solid rgba(168,85,247,.3)', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: '#c084fc', fontWeight: 600, marginBottom: 6 }}>📄 MANUAL (se eliminará)</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{modalDuplicado.manual.numero}</div>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{modalDuplicado.manual.proveedor_nombre}</div>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{fmt(modalDuplicado.manual.total)}</div>
+            </div>
+            <div style={{ background: 'rgba(59,130,246,.1)', border: '1px solid rgba(59,130,246,.3)', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: '#60a5fa', fontWeight: 600, marginBottom: 6 }}>📧 GMAIL (quedará con XML)</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{modalDuplicado.gmail.numero}</div>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{modalDuplicado.gmail.proveedor_nombre}</div>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{fmt(modalDuplicado.gmail.total)}</div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 8, fontWeight: 600 }}>Gestión que se heredará:</div>
+          <div style={{ background: 'var(--t-bg-app)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {modalDuplicado.manual.documento_ingreso && <div style={{ fontSize: 12 }}>📎 Doc. ingreso: <strong>{modalDuplicado.manual.documento_ingreso}</strong></div>}
+            {modalDuplicado.manual.responsables?.length > 0 && <div style={{ fontSize: 12 }}>👤 Responsable: <strong>{modalDuplicado.manual.responsables.map(r => r.nombre || r.email).join(', ')}</strong></div>}
+            {modalDuplicado.manual.estado_contable && modalDuplicado.manual.estado_contable !== 'por_gestionar' && <div style={{ fontSize: 12 }}>📊 Estado contable: <strong>{ESTADOS_CONTABLES.find(e => e.value === modalDuplicado.manual.estado_contable)?.label || modalDuplicado.manual.estado_contable}</strong></div>}
+            {modalDuplicado.manual.es_contrato && <div style={{ fontSize: 12 }}>📄 <strong>Marcada como contrato</strong></div>}
+            {modalDuplicado.manual.tiene_nc && <div style={{ fontSize: 12 }}>🔄 <strong>Cruzada con nota crédito</strong></div>}
+            {modalDuplicado.manual.notas && <div style={{ fontSize: 12 }}>📝 Notas: <strong>{modalDuplicado.manual.notas}</strong></div>}
+            {!modalDuplicado.manual.documento_ingreso && !modalDuplicado.manual.responsables?.length && modalDuplicado.manual.estado_contable === 'por_gestionar' && !modalDuplicado.manual.es_contrato && !modalDuplicado.manual.notas && (
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted' }}>Sin gestión registrada aún</div>
+            )}
+          </div>
+        </Modal>
       )}
 
       {/* MODAL SINCRONIZAR */}
@@ -991,6 +1084,60 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
