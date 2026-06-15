@@ -59,6 +59,9 @@ export default function Facturas({ tipo = 'FE' }) {
   const [syncRange, setSyncRange] = useState({ desde: '', hasta: '' });
 
   const [hoveredRow, setHoveredRow] = useState(null);
+  const [subiendoPdf, setSubiendoPdf] = useState(false);
+  const [notificaciones, setNotificaciones] = useState([]);
+  const [filterOrigen, setFilterOrigen] = useState('');
 
   // Sort
   const [sortCol, setSortCol] = useState('fecha_emision');
@@ -78,18 +81,26 @@ export default function Facturas({ tipo = 'FE' }) {
         search: debouncedSearch || undefined,
         estado: filterEstado || undefined,
         estado_contable: filterEstadoContable || undefined,
+        origen: filterOrigen || undefined,
       });
       setFacturas(res.data);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
-  }, [tipo, debouncedSearch, filterEstado, filterEstadoContable]);
+  }, [tipo, debouncedSearch, filterEstado, filterEstadoContable, filterOrigen]);
 
   const cargarContactos = useCallback(async () => {
     try { const res = await listarContactos(); setContactos(res.data || []); }
     catch (err) { console.error(err); }
   }, []);
 
-  useEffect(() => { cargar(); cargarContactos(); }, [cargar, cargarContactos]);
+  useEffect(() => { cargar(); cargarContactos(); cargarNotificaciones(); }, [cargar, cargarContactos]);
+
+  const cargarNotificaciones = async () => {
+    try {
+      const res = await api.get('/facturas/notificaciones');
+      setNotificaciones(res.data || []);
+    } catch { /* silencioso */ }
+  };
 
   // Auto-seleccionar mes más reciente al cargar (solo la primera vez)
   const autoMesSeleccionado = React.useRef(false);
@@ -262,6 +273,29 @@ export default function Facturas({ tipo = 'FE' }) {
         ))}
       </div>
 
+      {/* Banner de notificaciones — facturas manuales que ya llegaron por Gmail */}
+      {notificaciones.map(n => (
+        <div key={n.id} style={{ background: 'rgba(234,179,8,.12)', border: '1px solid rgba(234,179,8,.4)', borderRadius: 8, padding: '10px 14px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 18 }}>🔔</span>
+          <div style={{ flex: 1, fontSize: 13, color: 'var(--t-text-primary)' }}>
+            La factura <strong>{n.numero}</strong> de <strong>{n.proveedor_nombre}</strong> por <strong>{fmt(n.total)}</strong> que subiste manualmente ya llegó al correo con su XML. ¿Deseas reemplazarla?
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button style={{ ...btnPrimary, fontSize: 12, padding: '5px 12px' }} onClick={async () => {
+              try {
+                await api.post(`/facturas/${n.id}/reemplazar-con-gmail`, { gmailFacturaId: n.gmail_factura_id });
+                setNotificaciones(prev => prev.filter(x => x.id !== n.id));
+                cargar();
+              } catch { alert('Error al reemplazar'); }
+            }}>✅ Sí, reemplazar</button>
+            <button style={{ ...btnGhost, fontSize: 12, padding: '5px 12px' }} onClick={async () => {
+              await api.post(`/facturas/${n.id}/descartar-notificacion`);
+              setNotificaciones(prev => prev.filter(x => x.id !== n.id));
+            }}>✕ Mantener manual</button>
+          </div>
+        </div>
+      ))}
+
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         <input style={{ ...inputSt, flex: '1 1 180px', minWidth: 140 }} placeholder="Buscar proveedor, número, valor, doc. ingreso..." value={search} onChange={e => setSearch(e.target.value)} />
@@ -270,6 +304,11 @@ export default function Facturas({ tipo = 'FE' }) {
           <option value="pendiente">Pendiente</option>
           <option value="procesado">Procesado</option>
           <option value="reenviado">Reenviado</option>
+        </select>
+        <select style={{ ...inputSt, flex: '0 1 130px' }} value={filterOrigen} onChange={e => setFilterOrigen(e.target.value)}>
+          <option value="">Todos los orígenes</option>
+          <option value="gmail">📧 Gmail</option>
+          <option value="pdf_manual">📄 PDF Manual</option>
         </select>
         <select style={{ ...inputSt, flex: '0 1 140px' }} value={filterMes} onChange={e => setFilterMes(e.target.value)}>
           <option value="">Todos los meses</option>
@@ -294,6 +333,30 @@ export default function Facturas({ tipo = 'FE' }) {
             {syncing ? '⟳ Sincronizando...' : '⟳ Sincronizar'}
           </button>
         )}
+        {/* Botón subir PDF manual */}
+        <label style={{ ...btnGhost, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: subiendoPdf ? 0.6 : 1 }}>
+          {subiendoPdf ? '⏳ Subiendo...' : '📤 Subir PDF DIAN'}
+          <input type="file" accept=".pdf" style={{ display: 'none' }} disabled={subiendoPdf} onChange={async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            e.target.value = '';
+            setSubiendoPdf(true);
+            try {
+              const fd = new FormData();
+              fd.append('pdf', file);
+              await api.post('/facturas/subir-pdf', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+              await cargar();
+              alert('✅ Factura subida correctamente');
+            } catch (err) {
+              const msg = err.response?.data?.mensaje || err.response?.data?.error || err.message;
+              if (err.response?.status === 409) {
+                alert('⚠️ ' + msg);
+              } else {
+                alert('❌ Error: ' + msg);
+              }
+            } finally { setSubiendoPdf(false); }
+          }} />
+        </label>
         <button style={btnGhost} onClick={() => setModal('exportar')} title="Descargar reporte Excel">
           📥 Exportar
         </button>
@@ -315,6 +378,7 @@ export default function Facturas({ tipo = 'FE' }) {
                 <tr style={{ background: 'var(--t-bg-sidebar)', borderBottom: '1px solid var(--t-border)' }}>
                   <th style={th}><input type="checkbox" checked={selected.size === facturas.length && facturas.length > 0} onChange={toggleAll} /></th>
                   <th style={th}>Tipo</th>
+                  <th style={th}>Origen</th>
                   {thSort('numero', 'Número')}
                   {thSort('proveedor_nombre', 'Proveedor')}
                   {thSort('fecha_emision', 'Fecha')}
@@ -323,7 +387,6 @@ export default function Facturas({ tipo = 'FE' }) {
                   <th style={th}>Responsable</th>
                   {thSort('documento_ingreso', 'Doc. ingreso')}
                   {thSort('estado_contable', 'Est. contable')}
-                  <th style={th}>Forma pago</th>
                   <th style={th}>Notas</th>
                   <th style={th}>Acciones</th>
                 </tr>
@@ -344,6 +407,11 @@ export default function Facturas({ tipo = 'FE' }) {
                     onClick={() => openModal('ver', f)}>
                     <td style={td} onClick={e => e.stopPropagation()}><input type="checkbox" checked={selected.has(f.id)} onChange={() => toggleSelect(f.id)} /></td>
                     <td style={td}><span style={{ background: f.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: f.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{f.tipo}</span></td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      {f.origen === 'pdf_manual'
+                        ? <span title="Subido manualmente desde PDF" style={{ background: 'rgba(168,85,247,.15)', color: '#c084fc', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>📄 Manual</span>
+                        : <span title="Sincronizado desde Gmail" style={{ background: 'rgba(59,130,246,.12)', color: '#60a5fa', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>📧 Gmail</span>}
+                    </td>
                     <td style={{ ...td, fontFamily: 'monospace', fontSize: 13, color: '#c8d0e0', whiteSpace: 'nowrap', fontWeight: 500 }}>{f.numero}</td>
                     <td style={td}>
                       <div style={{ fontWeight: 500, color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.proveedor_nombre}</div>
@@ -361,11 +429,6 @@ export default function Facturas({ tipo = 'FE' }) {
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <BarraProgreso factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} canElegirFlujo={puede.elegirFlujo} canDevolver={puede.devolverEstado} esCruzada={tipo === 'FE' && !!f.tiene_nc} />
-                    </td>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                      {f.forma_pago
-                        ? <span style={{ background: f.forma_pago === 'Contado' ? '#052e16' : '#1e3a5f', color: f.forma_pago === 'Contado' ? '#4ade80' : '#60a5fa', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>{f.forma_pago}</span>
-                        : <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>—</span>}
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <NotasInput factura={f} onUpdate={cargar} canEdit={puede.editarNotas} />
@@ -401,6 +464,7 @@ export default function Facturas({ tipo = 'FE' }) {
               <Item label="Fecha emisión" val={fmtDate(activeF.fecha_emision)} />
               <Item label="Fecha vencimiento" val={fmtDate(activeF.fecha_vencimiento)} />
               <Item label="Forma de pago" val={activeF.forma_pago || '—'} />
+              <Item label="Origen" val={activeF.origen === 'pdf_manual' ? '📄 PDF Manual' : '📧 Gmail'} />
               <Item label="Estado" val={estadoBadge(activeF)} />
               {activeF.reenviado_a && <Item label="Reenviado a" val={<span style={{ color: '#4ade80' }}>{activeF.reenviado_a}</span>} />}
             </Grid2>
@@ -927,6 +991,60 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
