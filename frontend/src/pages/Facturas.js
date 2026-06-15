@@ -93,14 +93,12 @@ export default function Facturas({ tipo = 'FE' }) {
     catch (err) { console.error(err); }
   }, []);
 
-  useEffect(() => { cargar(); cargarContactos(); cargarNotificaciones(); }, [cargar, cargarContactos]);
+  const cargarNotificaciones = useCallback(async () => {
+    try { const res = await api.get('/facturas/notificaciones'); setNotificaciones(res.data || []); }
+    catch { /* silencioso */ }
+  }, []);
 
-  const cargarNotificaciones = async () => {
-    try {
-      const res = await api.get('/facturas/notificaciones');
-      setNotificaciones(res.data || []);
-    } catch { /* silencioso */ }
-  };
+  useEffect(() => { cargar(); cargarContactos(); cargarNotificaciones(); }, [cargar, cargarContactos, cargarNotificaciones]);
 
   // Auto-seleccionar mes más reciente al cargar (solo la primera vez)
   const autoMesSeleccionado = React.useRef(false);
@@ -273,7 +271,7 @@ export default function Facturas({ tipo = 'FE' }) {
         ))}
       </div>
 
-      {/* Banner de notificaciones — facturas manuales que ya llegaron por Gmail */}
+      {/* Banner notificaciones — facturas manuales que ya llegaron por Gmail */}
       {notificaciones.map(n => (
         <div key={n.id} style={{ background: 'rgba(234,179,8,.12)', border: '1px solid rgba(234,179,8,.4)', borderRadius: 8, padding: '10px 14px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 18 }}>🔔</span>
@@ -333,7 +331,6 @@ export default function Facturas({ tipo = 'FE' }) {
             {syncing ? '⟳ Sincronizando...' : '⟳ Sincronizar'}
           </button>
         )}
-        {/* Botón subir PDF manual */}
         <label style={{ ...btnGhost, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: subiendoPdf ? 0.6 : 1 }}>
           {subiendoPdf ? '⏳ Subiendo...' : '📤 Subir PDF DIAN'}
           <input type="file" accept=".pdf" style={{ display: 'none' }} disabled={subiendoPdf} onChange={async (e) => {
@@ -349,11 +346,8 @@ export default function Facturas({ tipo = 'FE' }) {
               alert('✅ Factura subida correctamente');
             } catch (err) {
               const msg = err.response?.data?.mensaje || err.response?.data?.error || err.message;
-              if (err.response?.status === 409) {
-                alert('⚠️ ' + msg);
-              } else {
-                alert('❌ Error: ' + msg);
-              }
+              if (err.response?.status === 409) { alert('⚠️ ' + msg); }
+              else { alert('❌ Error: ' + msg); }
             } finally { setSubiendoPdf(false); }
           }} />
         </label>
@@ -388,6 +382,7 @@ export default function Facturas({ tipo = 'FE' }) {
                   {thSort('documento_ingreso', 'Doc. ingreso')}
                   {thSort('estado_contable', 'Est. contable')}
                   <th style={th}>Notas</th>
+                  <th style={th}>Forma pago</th>
                   <th style={th}>Acciones</th>
                 </tr>
               </thead>
@@ -432,6 +427,11 @@ export default function Facturas({ tipo = 'FE' }) {
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <NotasInput factura={f} onUpdate={cargar} canEdit={puede.editarNotas} />
+                    </td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      {f.forma_pago
+                        ? <span style={{ background: f.forma_pago === 'Contado' ? '#052e16' : '#1e3a5f', color: f.forma_pago === 'Contado' ? '#4ade80' : '#60a5fa', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>{f.forma_pago}</span>
+                        : <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>—</span>}
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 4 }}>
@@ -991,6 +991,61 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
