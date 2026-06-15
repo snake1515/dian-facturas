@@ -314,8 +314,8 @@ export default function Facturas({ tipo = 'FE' }) {
         </div>
       ))}
 
-      {/* Banner duplicados — factura manual que ya llegó por Gmail */}
-      {duplicados.map(({ manual, gmail }) => (
+      {/* Banner duplicados — solo visible para admin */}
+      {isAdmin && duplicados.map(({ manual, gmail }) => (
         <div key={manual.id} style={{ background: 'rgba(234,179,8,.12)', border: '1px solid rgba(234,179,8,.4)', borderRadius: 8, padding: '10px 14px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', cursor: 'pointer' }}
           onClick={() => {
             setResaltadas(new Set([manual.id, gmail.id]));
@@ -1084,6 +1084,60 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
