@@ -204,12 +204,38 @@ const procesarMensaje = async (gmail, messageId) => {
 
   const datos = await parsearXMLDIAN(xmlContent);
 
-  // Deduplicación adicional por número + NIT (mismo proveedor envió varias veces)
+  // Deduplicación: verificar si ya existe por número + NIT
   const existePorNumero = await pool.query(
-    'SELECT id FROM facturas WHERE numero = $1 AND proveedor_nit = $2',
+    'SELECT id, origen FROM facturas WHERE numero = $1 AND proveedor_nit = $2',
     [datos.numero, datos.proveedorNit]
   );
+
   if (existePorNumero.rows.length > 0) {
+    const existente = existePorNumero.rows[0];
+    if (existente.origen === 'pdf_manual') {
+      // Era manual — guardar esta factura gmail y notificar
+      console.log(`🔔 Factura manual ${datos.numero} tiene ahora su Gmail — creando notificacion`);
+      const gmailRes = await pool.query(
+        `INSERT INTO facturas
+          (numero, tipo, cufe, proveedor_nombre, proveedor_nit, fecha_emision, fecha_vencimiento,
+           subtotal, iva, total, gmail_message_id, pdf_path, xml_path, xml_raw, forma_pago, origen)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'gmail')
+         RETURNING id`,
+        [
+          datos.numero, datos.tipo, datos.cufe,
+          datos.proveedorNombre, datos.proveedorNit,
+          datos.fechaEmision, datos.fechaVence,
+          datos.subtotal, datos.iva, datos.total,
+          messageId, pdfFilename || null, xmlFilename || null, xmlContent,
+          datos.formaPago || null,
+        ]
+      );
+      await pool.query(
+        'UPDATE facturas SET tiene_gmail = true, gmail_factura_id = $1, notificacion_vista = false WHERE id = $2',
+        [gmailRes.rows[0].id, existente.id]
+      );
+      return true;
+    }
     console.log(`⚠️ Factura ${datos.numero} de NIT ${datos.proveedorNit} ya existe — omitida`);
     throw new Error('ya procesado');
   }
@@ -217,8 +243,8 @@ const procesarMensaje = async (gmail, messageId) => {
   const facturaRes = await pool.query(
     `INSERT INTO facturas
       (numero, tipo, cufe, proveedor_nombre, proveedor_nit, fecha_emision, fecha_vencimiento,
-       subtotal, iva, total, gmail_message_id, pdf_path, xml_path, xml_raw, forma_pago)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       subtotal, iva, total, gmail_message_id, pdf_path, xml_path, xml_raw, forma_pago, origen)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'gmail')
      RETURNING id`,
     [
       datos.numero, datos.tipo, datos.cufe,
@@ -269,6 +295,10 @@ const obtenerPartes = (payload, partes = []) => {
 };
 
 module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos };
+
+
+
+
 
 
 
