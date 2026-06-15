@@ -98,7 +98,7 @@ router.post('/subir-pdf', authMiddleware, upload.single('pdf'), async (req, res)
 });
 
 // ── GET /api/facturas/notificaciones ─────────────────────────────────────────
-// Busca facturas manuales que ya tienen su equivalente en Gmail (mismo número + NIT)
+// Busca facturas manuales que ya tienen su equivalente en Gmail (mismo número normalizado + NIT)
 router.get('/notificaciones', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -111,7 +111,7 @@ router.get('/notificaciones', authMiddleware, async (req, res) => {
         gmail.id AS gmail_factura_id
       FROM facturas manual
       JOIN facturas gmail 
-        ON gmail.numero = manual.numero 
+        ON REGEXP_REPLACE(UPPER(gmail.numero), '[^A-Z0-9]', '', 'g') = REGEXP_REPLACE(UPPER(manual.numero), '[^A-Z0-9]', '', 'g')
         AND gmail.proveedor_nit = manual.proveedor_nit
         AND gmail.origen = 'gmail'
       WHERE manual.origen = 'pdf_manual'
@@ -131,7 +131,7 @@ router.post('/:id/reemplazar-con-gmail', authMiddleware, async (req, res) => {
     const { gmailFacturaId } = req.body; // id de la factura que llegó por gmail
 
     // Traer datos de la factura gmail
-    const gmailF = await pool.query('SELECT * FROM facturas WHERE id = $1', [gmailFacturaId]);
+    const gmailF = await pool.query('SELECT * FROM facturas WHERE id = $1 AND origen = $2', [gmailFacturaId, 'gmail']);
     if (!gmailF.rows.length) return res.status(404).json({ error: 'Factura Gmail no encontrada' });
     const gf = gmailF.rows[0];
 
