@@ -124,38 +124,55 @@ router.get('/notificaciones', authMiddleware, async (req, res) => {
 });
 
 // ── POST /api/facturas/:id/reemplazar-con-gmail ───────────────────────────────
-// Reemplaza una factura manual con los datos del correo que llegó
+// :id = id de la factura MANUAL
+// gmailFacturaId = id de la factura que llegó por Gmail
+// Se elimina la manual y la Gmail hereda toda la gestión
 router.post('/:id/reemplazar-con-gmail', authMiddleware, async (req, res) => {
   try {
-    const { id } = req.params;
-    const { gmailFacturaId } = req.body; // id de la factura que llegó por gmail
+    const { id } = req.params; // factura manual
+    const { gmailFacturaId } = req.body;
 
-    // Traer datos de la factura gmail
+    const manualF = await pool.query('SELECT * FROM facturas WHERE id = $1 AND origen = $2', [id, 'pdf_manual']);
+    if (!manualF.rows.length) return res.status(404).json({ error: 'Factura manual no encontrada' });
+    const manual = manualF.rows[0];
+
     const gmailF = await pool.query('SELECT * FROM facturas WHERE id = $1 AND origen = $2', [gmailFacturaId, 'gmail']);
     if (!gmailF.rows.length) return res.status(404).json({ error: 'Factura Gmail no encontrada' });
-    const gf = gmailF.rows[0];
 
-    // Traer factura manual (para conservar su gestión)
-    const manualF = await pool.query('SELECT * FROM facturas WHERE id = $1', [id]);
-    if (!manualF.rows.length) return res.status(404).json({ error: 'Factura manual no encontrada' });
-
-    // Actualizar la factura manual con los datos del gmail (pdf, xml, cufe, gmail_message_id)
-    // pero conservando: estado_contable, flujo_tipo, documento_ingreso, notas, es_contrato, responsables
+    // Copiar gestión de la manual a la Gmail
     await pool.query(`
       UPDATE facturas SET
-        cufe = $1,
-        pdf_path = $2,
-        xml_path = $3,
-        xml_raw = $4,
-        gmail_message_id = $5,
-        origen = 'gmail',
-        tiene_gmail = false,
-        notificacion_vista = true
+        estado_contable   = $1,
+        flujo_tipo        = $2,
+        documento_ingreso = $3,
+        notas             = $4,
+        es_contrato       = $5
       WHERE id = $6
-    `, [gf.cufe, gf.pdf_path, gf.xml_path, gf.xml_raw, gf.gmail_message_id, id]);
+    `, [
+      manual.estado_contable,
+      manual.flujo_tipo,
+      manual.documento_ingreso,
+      manual.notas,
+      manual.es_contrato,
+      gmailFacturaId,
+    ]);
 
-    // Eliminar la factura duplicada de gmail
-    await pool.query('DELETE FROM facturas WHERE id = $1', [gmailFacturaId]);
+    // Copiar responsables de la manual a la Gmail
+    const responsables = await pool.query(
+      'SELECT email, nombre FROM responsables_factura WHERE factura_id = $1', [id]
+    );
+    if (responsables.rows.length > 0) {
+      await pool.query('DELETE FROM responsables_factura WHERE factura_id = $1', [gmailFacturaId]);
+      for (const r of responsables.rows) {
+        await pool.query(
+          'INSERT INTO responsables_factura (factura_id, email, nombre) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+          [gmailFacturaId, r.email, r.nombre]
+        );
+      }
+    }
+
+    // Eliminar la factura manual
+    await pool.query('DELETE FROM facturas WHERE id = $1', [id]);
 
     res.json({ ok: true });
   } catch (err) {
@@ -177,4 +194,5 @@ router.post('/:id/descartar-notificacion', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
 
