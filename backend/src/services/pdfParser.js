@@ -142,3 +142,4 @@ const extraerProductos = (texto, esNC) => {
 };
 
 module.exports = { parsearPDFDIAN };
+
