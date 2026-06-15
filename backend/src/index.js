@@ -10,6 +10,7 @@ const { sincronizarCorreos } = require('./services/gmailService');
 
 const authRoutes = require('./routes/auth');
 const facturasRoutes = require('./routes/facturas');
+const facturasPdfRoutes = require('./routes/facturas-pdf');
 const gmailRoutes = require('./routes/gmail');
 const configuracionRoutes = require('./routes/configuracion');
 const crucesDianRoutes = require('./routes/cruces-dian');
@@ -48,6 +49,7 @@ app.use(express.urlencoded({ extended: true }));
 // Rutas
 app.use('/api/auth', authRoutes);
 app.use('/api/facturas', facturasRoutes);
+app.use('/api/facturas', facturasPdfRoutes);
 app.use('/api/gmail', gmailRoutes);
 app.use('/api/configuracion', configuracionRoutes);
 app.use('/api/cruces-dian', crucesDianRoutes);
@@ -131,6 +133,13 @@ const arrancar = async () => {
 };
 
 arrancar();
+
+
+
+
+
+
+
 
 
 
