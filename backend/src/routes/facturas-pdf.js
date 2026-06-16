@@ -101,37 +101,23 @@ router.post('/subir-pdf', authMiddleware, upload.single('pdf'), async (req, res)
 // Busca facturas manuales que ya tienen su equivalente en Gmail (mismo número normalizado + NIT)
 router.get('/notificaciones', authMiddleware, async (req, res) => {
   try {
-    // Traer todas las manuales y gmails y comparar en JS para evitar problemas con REGEXP en PG
-    const manuales = await pool.query(
-      `SELECT id, numero, proveedor_nombre, proveedor_nit, total, fecha_emision 
-       FROM facturas WHERE origen = 'pdf_manual'`
-    );
-    const gmails = await pool.query(
-      `SELECT id, numero, proveedor_nit 
-       FROM facturas WHERE origen = 'gmail'`
-    );
-
-    const normalizar = (s) => (s || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-
-    const pares = [];
-    for (const manual of manuales.rows) {
-      const gemela = gmails.rows.find(g =>
-        normalizar(g.numero) === normalizar(manual.numero) &&
-        g.proveedor_nit === manual.proveedor_nit
-      );
-      if (gemela) {
-        pares.push({
-          id: manual.id,
-          numero: manual.numero,
-          proveedor_nombre: manual.proveedor_nombre,
-          total: manual.total,
-          fecha_emision: manual.fecha_emision,
-          gmail_factura_id: gemela.id,
-        });
-      }
-    }
-
-    res.json(pares);
+    const result = await pool.query(`
+      SELECT 
+        manual.id,
+        manual.numero,
+        manual.proveedor_nombre,
+        manual.total,
+        manual.fecha_emision,
+        gmail.id AS gmail_factura_id
+      FROM facturas manual
+      JOIN facturas gmail 
+        ON REGEXP_REPLACE(UPPER(gmail.numero), '[^A-Z0-9]', '', 'g') = REGEXP_REPLACE(UPPER(manual.numero), '[^A-Z0-9]', '', 'g')
+        AND gmail.proveedor_nit = manual.proveedor_nit
+        AND gmail.origen = 'gmail'
+      WHERE manual.origen = 'pdf_manual'
+      ORDER BY manual.created_at DESC
+    `);
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -208,7 +194,6 @@ router.post('/:id/descartar-notificacion', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
-
 
 
 
