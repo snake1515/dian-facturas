@@ -62,9 +62,15 @@ export default function Facturas({ tipo = 'FE' }) {
   const [subiendoPdf, setSubiendoPdf] = useState(false);
   const [notificaciones, setNotificaciones] = useState([]);
   const [filterOrigen, setFilterOrigen] = useState('');
-  const [duplicados, setDuplicados] = useState([]); // pares de facturas duplicadas
-  const [modalDuplicado, setModalDuplicado] = useState(null); // { manual, gmail }
-  const [resaltadas, setResaltadas] = useState(new Set()); // ids resaltados en tabla
+  const [duplicados, setDuplicados] = useState([]);
+  const [modalDuplicado, setModalDuplicado] = useState(null);
+  const [resaltadas, setResaltadas] = useState(new Set());
+  const [filterResponsable, setFilterResponsable] = useState('');
+  const [filterValorMin, setFilterValorMin] = useState('');
+  const [filterValorMax, setFilterValorMax] = useState('');
+  const [debouncedResponsable, setDebouncedResponsable] = useState('');
+  const [debouncedValorMin, setDebouncedValorMin] = useState('');
+  const [debouncedValorMax, setDebouncedValorMax] = useState('');
 
   // Sort
   const [sortCol, setSortCol] = useState('fecha_emision');
@@ -76,6 +82,16 @@ export default function Facturas({ tipo = 'FE' }) {
     return () => clearTimeout(t);
   }, [search]);
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedResponsable(filterResponsable), 400);
+    return () => clearTimeout(t);
+  }, [filterResponsable]);
+
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedValorMin(filterValorMin); setDebouncedValorMax(filterValorMax); }, 600);
+    return () => clearTimeout(t);
+  }, [filterValorMin, filterValorMax]);
+
   const cargar = useCallback(async () => {
     try {
       setLoading(true);
@@ -85,12 +101,15 @@ export default function Facturas({ tipo = 'FE' }) {
         estado: filterEstado || undefined,
         estado_contable: filterEstadoContable || undefined,
         origen: filterOrigen || undefined,
+        responsable: debouncedResponsable || undefined,
+        valor_min: debouncedValorMin || undefined,
+        valor_max: debouncedValorMax || undefined,
       });
       setFacturas(res.data);
       detectarDuplicados(res.data);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
-  }, [tipo, debouncedSearch, filterEstado, filterEstadoContable, filterOrigen]);
+  }, [tipo, debouncedSearch, filterEstado, filterEstadoContable, filterOrigen, debouncedResponsable, debouncedValorMin, debouncedValorMax]);
 
   const cargarContactos = useCallback(async () => {
     try { const res = await listarContactos(); setContactos(res.data || []); }
@@ -334,7 +353,10 @@ export default function Facturas({ tipo = 'FE' }) {
         </div>
       ))}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-        <input style={{ ...inputSt, flex: '1 1 180px', minWidth: 140 }} placeholder="Buscar proveedor, número, valor, doc. ingreso..." value={search} onChange={e => setSearch(e.target.value)} />
+        <input style={{ ...inputSt, flex: '1 1 180px', minWidth: 140 }} placeholder="Buscar proveedor, número, producto, doc. ingreso..." value={search} onChange={e => setSearch(e.target.value)} />
+        <input style={{ ...inputSt, flex: '0 1 150px' }} placeholder="👤 Responsable..." value={filterResponsable} onChange={e => setFilterResponsable(e.target.value)} />
+        <input style={{ ...inputSt, flex: '0 1 120px' }} placeholder="$ Valor mín." type="number" value={filterValorMin} onChange={e => setFilterValorMin(e.target.value)} />
+        <input style={{ ...inputSt, flex: '0 1 120px' }} placeholder="$ Valor máx." type="number" value={filterValorMax} onChange={e => setFilterValorMax(e.target.value)} />
         <select style={{ ...inputSt, flex: '0 1 150px' }} value={filterEstado} onChange={e => setFilterEstado(e.target.value)}>
           <option value="">Todos los estados</option>
           <option value="pendiente">Pendiente</option>
@@ -1084,6 +1106,333 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
