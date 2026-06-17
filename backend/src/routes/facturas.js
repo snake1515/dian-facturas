@@ -9,7 +9,7 @@ const router = express.Router();
 // ── GET /api/facturas ─────────────────────────────────────────────────────────
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const { tipo, search, estado, estado_contable, origen } = req.query;
+    const { tipo, search, estado, estado_contable, origen, responsable, valor_min, valor_max } = req.query;
 
     const condiciones = [];
     const valores = [];
@@ -35,6 +35,26 @@ router.get('/', authMiddleware, async (req, res) => {
       valores.push(origen);
     }
 
+    if (valor_min) {
+      condiciones.push(`f.total >= $${i++}`);
+      valores.push(parseFloat(valor_min));
+    }
+
+    if (valor_max) {
+      condiciones.push(`f.total <= $${i++}`);
+      valores.push(parseFloat(valor_max));
+    }
+
+    if (responsable) {
+      condiciones.push(`EXISTS (
+        SELECT 1 FROM responsables_factura rf
+        WHERE rf.factura_id = f.id
+        AND (rf.nombre ILIKE $${i} OR rf.email ILIKE $${i})
+      )`);
+      valores.push(`%${responsable}%`);
+      i++;
+    }
+
     if (search) {
       condiciones.push(`(
         f.proveedor_nombre ILIKE $${i}
@@ -44,6 +64,11 @@ router.get('/', authMiddleware, async (req, res) => {
         OR f.proveedor_nit ILIKE $${i}
         OR f.notas ILIKE $${i}
         OR f.total::text ILIKE $${i}
+        OR EXISTS (
+          SELECT 1 FROM productos_factura pf
+          WHERE pf.factura_id = f.id
+          AND (pf.descripcion ILIKE $${i} OR pf.codigo ILIKE $${i})
+        )
       )`);
       valores.push(`%${search}%`);
       i++;
