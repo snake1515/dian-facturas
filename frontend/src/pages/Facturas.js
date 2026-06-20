@@ -3,7 +3,8 @@ import { useAuth } from '../context/AuthContext';
 import {
   listarFacturas, obtenerFactura, actualizarResponsables, reenviarFactura,
   eliminarFactura, eliminarPorFechas, gmailSync, actualizarEstadoContable, actualizarContrato,
-  actualizarDocumentoIngreso, listarContactos, crearContacto, eliminarContacto
+  actualizarDocumentoIngreso, listarContactos, crearContacto, eliminarContacto,
+  listarCoincidencias, aceptarCoincidencia, ignorarCoincidencia
 } from '../services/api';
 import api from '../services/api';
 
@@ -40,6 +41,8 @@ export default function Facturas({ tipo = 'FE' }) {
   const [facturas, setFacturas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [coincidencias, setCoincidencias] = useState([]);
+  const [coincidenciasLoading, setCoincidenciasLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [filterEstado, setFilterEstado] = useState('');
   const [filterEstadoContable, setFilterEstadoContable] = useState('');
@@ -137,7 +140,7 @@ export default function Facturas({ tipo = 'FE' }) {
     setDuplicados(pares);
   }, []);
 
-  useEffect(() => { cargar(); cargarContactos(); cargarNotificaciones(); }, [cargar, cargarContactos, cargarNotificaciones]);
+  useEffect(() => { cargar(); cargarContactos(); cargarNotificaciones(); cargarCoincidencias(); }, [cargar, cargarContactos, cargarNotificaciones]);
 
   // Auto-seleccionar mes más reciente al cargar (solo la primera vez)
   const autoMesSeleccionado = React.useRef(false);
@@ -175,9 +178,16 @@ export default function Facturas({ tipo = 'FE' }) {
     return <span style={{ color: '#3b82f6', marginLeft: 4 }}>{sortDir === 'asc' ? '↑' : '↓'}</span>;
   };
 
+  const cargarCoincidencias = async () => {
+    try {
+      const res = await listarCoincidencias();
+      setCoincidencias(res.data || []);
+    } catch (err) { console.error('Error cargando coincidencias:', err); }
+  };
+
   const handleSync = async () => {
     setSyncing(true);
-    try { await gmailSync(); await cargar(); }
+    try { await gmailSync(); await cargar(); await cargarCoincidencias(); }
     catch (err) { alert('Error al sincronizar: ' + (err.response?.data?.error || err.message)); }
     finally { setSyncing(false); setSyncModal(false); }
   };
@@ -185,9 +195,28 @@ export default function Facturas({ tipo = 'FE' }) {
   const handleSyncRango = async () => {
     if (!syncRange.desde || !syncRange.hasta) return alert('Selecciona las fechas');
     setSyncing(true);
-    try { await gmailSync({ desde: syncRange.desde, hasta: syncRange.hasta }); await cargar(); }
+    try { await gmailSync({ desde: syncRange.desde, hasta: syncRange.hasta }); await cargar(); await cargarCoincidencias(); }
     catch (err) { alert('Error al sincronizar: ' + (err.response?.data?.error || err.message)); }
     finally { setSyncing(false); setSyncModal(false); }
+  };
+
+  const handleAceptarCoincidencia = async (id) => {
+    setCoincidenciasLoading(true);
+    try {
+      await aceptarCoincidencia(id);
+      await cargarCoincidencias();
+      await cargar();
+    } catch (err) { alert('Error: ' + (err.response?.data?.error || err.message)); }
+    finally { setCoincidenciasLoading(false); }
+  };
+
+  const handleIgnorarCoincidencia = async (id) => {
+    setCoincidenciasLoading(true);
+    try {
+      await ignorarCoincidencia(id);
+      await cargarCoincidencias();
+    } catch (err) { alert('Error: ' + (err.response?.data?.error || err.message)); }
+    finally { setCoincidenciasLoading(false); }
   };
 
   const openModal = async (m, f) => {
@@ -352,6 +381,21 @@ export default function Facturas({ tipo = 'FE' }) {
           <span style={{ fontSize: 11, color: '#fbbf24' }}>Ver duplicado →</span>
         </div>
       ))}
+
+      {/* Banner coincidencias — manual vs Gmail, requiere revisión antes de fusionar */}
+      {coincidencias.map(c => (
+        <div key={c.id} style={{ background: 'rgba(234,179,8,.12)', border: '1px solid rgba(234,179,8,.4)', borderRadius: 8, padding: '10px 14px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 18 }}>📬</span>
+          <div style={{ flex: 1, fontSize: 13, color: 'var(--t-text-primary)' }}>
+            La factura <strong>{c.numero_manual || c.numero}</strong> de <strong>{c.proveedor_manual || c.proveedor_nombre}</strong> por <strong>{fmt(c.total)}</strong> que subiste manualmente llegó al correo con su XML. ¿Deseas fusionar los datos del correo conservando tu gestión actual?
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button style={{ ...btnPrimary, fontSize: 12, padding: '5px 12px' }} disabled={coincidenciasLoading} onClick={() => handleAceptarCoincidencia(c.id)}>✅ Aceptar y fusionar</button>
+            <button style={{ ...btnGhost, fontSize: 12, padding: '5px 12px' }} disabled={coincidenciasLoading} onClick={() => handleIgnorarCoincidencia(c.id)}>✕ Ignorar</button>
+          </div>
+        </div>
+      ))}
+
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         <input style={{ ...inputSt, flex: '1 1 180px', minWidth: 140 }} placeholder="Buscar proveedor, número, producto, doc. ingreso..." value={search} onChange={e => setSearch(e.target.value)} />
         <input style={{ ...inputSt, flex: '0 1 150px' }} placeholder="👤 Responsable..." value={filterResponsable} onChange={e => setFilterResponsable(e.target.value)} />
@@ -1106,6 +1150,660 @@ const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borde
 const btnGhost = { background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer' };
 const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', padding: '4px 5px', borderRadius: 4, fontSize: 14 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
