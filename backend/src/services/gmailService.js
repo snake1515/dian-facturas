@@ -108,7 +108,13 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
       [new Date().toISOString()]
     );
 
-    return { ok: true, nuevas };
+    // Contar coincidencias pendientes de revisión (manual vs gmail)
+    const coincRes = await pool.query(
+      "SELECT COUNT(*) FROM coincidencias_gmail WHERE revisada = false"
+    );
+    const coincidenciasPendientes = parseInt(coincRes.rows[0].count);
+
+    return { ok: true, nuevas, coincidenciasPendientes };
   } catch (err) {
     console.error('❌ Error en sincronización:', err.message);
     return { ok: false, error: err.message };
@@ -212,14 +218,41 @@ const procesarMensaje = async (gmail, messageId) => {
 
   if (existePorNumero.rows.length > 0) {
     const existente = existePorNumero.rows[0];
-    // Si ya existe una de Gmail, omitir
+    // Si ya existe una de Gmail, omitir (deduplicación normal)
     if (existente.origen === 'gmail') {
       console.log(`⚠️ Factura ${datos.numero} de NIT ${datos.proveedorNit} ya existe — omitida`);
       throw new Error('ya procesado');
     }
-    // Si existe una manual, igual omitir el insert de Gmail
-    // El banner del frontend detectará el cruce en tiempo real
-    console.log(`ℹ️ Factura ${datos.numero} ya existe como manual — omitiendo duplicado Gmail`);
+    // Si existe una manual: NO se toca todavía. Se sube el XML/PDF a Storage
+    // y se registra como "coincidencia pendiente" para que el usuario decida
+    // si fusiona los datos (Aceptar) o la deja como está (Ignorar).
+    console.log(`ℹ️ Factura ${datos.numero} ya existe como manual — guardando coincidencia pendiente`);
+
+    if (pdfBuffer && pdfFilename) {
+      try { await subirArchivo(pdfBuffer, pdfFilename, 'application/pdf'); }
+      catch (err) { console.error('Error subiendo PDF coincidencia:', err.message); pdfFilename = null; }
+    }
+    if (xmlContent && xmlFilename) {
+      try { await subirArchivo(Buffer.from(xmlContent, 'utf-8'), xmlFilename, 'application/xml'); }
+      catch (err) { console.error('Error subiendo XML coincidencia:', err.message); xmlFilename = null; }
+    }
+
+    await pool.query(
+      `INSERT INTO coincidencias_gmail
+        (factura_manual_id, gmail_message_id, numero, cufe, proveedor_nombre, proveedor_nit,
+         fecha_emision, fecha_vencimiento, subtotal, iva, total, pdf_path, xml_path, xml_raw, forma_pago, productos_json)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       ON CONFLICT (gmail_message_id) DO NOTHING`,
+      [
+        existente.id, messageId, datos.numero, datos.cufe,
+        datos.proveedorNombre, datos.proveedorNit,
+        datos.fechaEmision, datos.fechaVence,
+        datos.subtotal, datos.iva, datos.total,
+        pdfFilename || null, xmlFilename || null, xmlContent,
+        datos.formaPago || null, JSON.stringify(datos.productos || []),
+      ]
+    );
+
     throw new Error('ya procesado');
   }
 
@@ -278,6 +311,21 @@ const obtenerPartes = (payload, partes = []) => {
 };
 
 module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
