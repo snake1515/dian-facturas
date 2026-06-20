@@ -46,6 +46,11 @@ export const listarContactos = () => api.get('/facturas/contactos/lista');
 export const crearContacto = (data) => api.post('/facturas/contactos', data);
 export const eliminarContacto = (id) => api.delete(`/facturas/contactos/${id}`);
 
+// Coincidencias manual vs Gmail
+export const listarCoincidencias = () => api.get('/coincidencias');
+export const aceptarCoincidencia = (id) => api.put(`/coincidencias/${id}/aceptar`);
+export const ignorarCoincidencia = (id) => api.put(`/coincidencias/${id}/ignorar`);
+
 // Gmail
 export const gmailStatus = () => api.get('/gmail/status');
 export const gmailAuthUrl = () => api.get('/gmail/auth-url');
@@ -58,4 +63,6 @@ export const guardarConfig = (data) => api.put('/configuracion', data);
 export const reiniciarCron = () => api.post('/configuracion/restart-cron');
 
 export default api;
+
+
 
