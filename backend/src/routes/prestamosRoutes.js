@@ -19,90 +19,6 @@ async function subirPDF(file, carpeta) {
   return filename; // Retorna solo el filename, no la URL
 }
 
-// ⚠️ TEMPORAL — Diagnóstico de upload a Supabase Storage. BORRAR después de usar.
-router.get('/diagnostico-storage', async (req, res) => {
-  const https = require('https');
-  const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-  const BUCKET = 'facturas';
-
-  // Helper que captura el body CRUDO de la respuesta del upload
-  function uploadCrudo(buffer, filename, mimeType) {
-    return new Promise((resolve) => {
-      const url = `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${filename}`;
-      const urlObj = new URL(url);
-      const options = {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname,
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
-          'Content-Type': mimeType,
-          'Content-Length': buffer.length,
-          'x-upsert': 'true',
-        },
-      };
-      const r = https.request(options, (resp) => {
-        let data = '';
-        resp.on('data', c => data += c);
-        resp.on('end', () => resolve({ statusCode: resp.statusCode, body: data }));
-      });
-      r.on('error', (e) => resolve({ error: e.message }));
-      r.write(buffer);
-      r.end();
-    });
-  }
-
-  // Helper que LISTA el contenido real de una carpeta en el bucket (API list de Supabase)
-  function listarCarpeta(prefix) {
-    return new Promise((resolve) => {
-      const url = `${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`;
-      const urlObj = new URL(url);
-      const body = JSON.stringify({ prefix, limit: 100 });
-      const options = {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname,
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      };
-      const r = https.request(options, (resp) => {
-        let data = '';
-        resp.on('data', c => data += c);
-        resp.on('end', () => resolve({ statusCode: resp.statusCode, body: data }));
-      });
-      r.on('error', (e) => resolve({ error: e.message }));
-      r.write(body);
-      r.end();
-    });
-  }
-
-  try {
-    const buffer = Buffer.from('contenido de prueba diagnostico');
-    const filename = `prestamos/documentos/test_diagnostico_${Date.now()}.txt`;
-
-    const resultadoUpload = await uploadCrudo(buffer, filename, 'text/plain');
-    const listadoRaiz = await listarCarpeta('');
-    const listadoPrestamos = await listarCarpeta('prestamos');
-    const listadoDocumentos = await listarCarpeta('prestamos/documentos');
-
-    res.json({
-      filename_intentado: filename,
-      upload_respuesta_cruda: resultadoUpload,
-      listado_raiz_bucket: listadoRaiz,
-      listado_carpeta_prestamos: listadoPrestamos,
-      listado_carpeta_prestamos_documentos: listadoDocumentos,
-      SUPABASE_URL_valor: SUPABASE_URL,
-      BUCKET_usado: BUCKET,
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
 // Servir PDFs e imágenes desde Supabase Storage (usando backend autenticado)
 router.get('/soporte/*', async (req, res) => {
   try {
@@ -547,6 +463,84 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
