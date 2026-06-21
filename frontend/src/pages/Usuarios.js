@@ -145,11 +145,10 @@ export default function Usuarios() {
       <div style={{ marginTop: 20, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
         {[
           { rol: 'Administrador', color: '#60a5fa', permisos: ['Acceso total', 'Gestiona usuarios y configuración', 'Elimina facturas', 'Sincroniza Gmail'] },
-          { rol: 'Editor', color: '#a78bfa', permisos: ['Ver y descargar facturas', 'Editar estado contable, doc. ingreso y notas', 'Asignar responsables y reenviar', 'Borrar por fechas y sincronizar'] },
+          { rol: 'Editor', color: '#a78bfa', permisos: ['Ver y descargar facturas', 'Editar estado contable, doc. ingreso y notas', 'Asignar responsables y reenviar', 'Avanzar estado contable y sincronizar Gmail', 'Módulo Préstamos: ver, editar, subir PDF y cruces'] },
           { rol: 'Consulta', color: '#94a3b8', permisos: ['Ver facturas y notas crédito', 'Descargar PDF/XML', 'Reenviar facturas', 'Sin edición'] },
         { rol: 'Obra', color: '#fb923c', permisos: ['Ver facturas y NC', 'Notas y doc. ingreso', 'Elegir OC / Caja menor', 'Descargar y reenviar', 'Módulo pendientes'] },
-        { rol: 'Regente', color: '#2dd4bf', permisos: ['Solo módulo préstamos', 'Ver, editar, subir PDF', 'Realizar cruces'] },
-        { rol: 'Editor', color: '#a78bfa', permisos: ['Todo excepto configuración', 'Avanzar estado contable', 'Sincronizar Gmail', 'Sin eliminar facturas'] },
+        { rol: 'Regente', color: '#2dd4bf', permisos: ['Módulo Préstamos: ver, editar, subir PDF', 'Realizar cruces'] },
         ].map(r => (
           <div key={r.rol} style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 8, padding: '12px 14px' }}>
             <div style={{ fontWeight: 600, color: r.color, marginBottom: 8, fontSize: 13 }}>{r.rol}</div>
@@ -286,4 +285,8 @@ const overlay = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', dis
 const modalBox = { background: '#161b27', border: '1px solid #374460', borderRadius: 14, width: 480, maxWidth: '100%', maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' };
 const modalHeader = { padding: '18px 20px', borderBottom: '1px solid #2a3348', display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
 const closeBtn = { background: '#1e2535', border: 'none', color: '#94a3b8', borderRadius: 6, width: 28, height: 28, cursor: 'pointer', fontSize: 18, lineHeight: 1 };
+
+
+
+
 
