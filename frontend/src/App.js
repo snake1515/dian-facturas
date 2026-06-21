@@ -94,7 +94,7 @@ function Layout({ children }) {
             Pendientes
           </NavLink>
         )}
-        {(user?.rol === 'admin' || user?.rol === 'prestamos') && (
+        {puede.verPrestamos && (
           <NavLink to="/prestamos" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/></svg>
             Préstamos
@@ -234,6 +234,13 @@ function LoginGuard() {
   const { user } = useAuth();
   return user ? <Navigate to="/" replace /> : <Login />;
 }
+
+
+
+
+
+
+
 
 
 
