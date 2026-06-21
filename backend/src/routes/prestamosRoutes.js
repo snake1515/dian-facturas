@@ -20,12 +20,21 @@ async function subirPDF(file, carpeta) {
   return `${SUPABASE_URL}/storage/v1/object/public/facturas/${filename}`;
 }
 
-// Servir PDFs desde Supabase Storage
+// Servir PDFs e imágenes desde Supabase Storage
 router.get('/soporte/:carpeta/:filename', async (req, res) => {
   try {
     const filepath = `prestamos/${req.params.carpeta}/${req.params.filename}`;
     const buffer = await storageService.descargarArchivo(filepath);
-    res.setHeader('Content-Type', 'application/pdf');
+    
+    // Detectar tipo de archivo por extensión
+    const ext = path.extname(req.params.filename).toLowerCase();
+    let contentType = 'application/pdf';
+    if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+    if (ext === '.png') contentType = 'image/png';
+    if (ext === '.gif') contentType = 'image/gif';
+    if (ext === '.webp') contentType = 'image/webp';
+    
+    res.setHeader('Content-Type', contentType);
     res.send(buffer);
   } catch (e) { res.status(404).json({ error: 'Archivo no encontrado' }); }
 });
@@ -234,7 +243,8 @@ router.post('/devoluciones', upload.single('soporte'), async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 //  PURGA MASIVA
 // ═══════════════════════════════════════════════════════════════════════════
-router.delete('/purgar', async (req, res) => {
+
+router.post('/purgar', async (req, res) => {
   try {
     const client = await pool.connect();
     try {
@@ -243,8 +253,6 @@ router.delete('/purgar', async (req, res) => {
       await client.query('DELETE FROM prestamo_devoluciones');
       await client.query('DELETE FROM prestamos');
       await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
       throw e;
     } finally {
       client.release();
@@ -431,7 +439,7 @@ router.patch('/cruces/:id/soporte', upload.single('soporte'), async (req, res) =
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Adjuntar PDF directamente a un préstamo/devolución
+// Adjuntar PDF o JPG directamente a un préstamo/devolución
 router.patch('/:id/soporte', upload.single('soporte'), async (req, res) => {
   try {
     const soporte_url = req.file ? await subirPDF(req.file, 'documentos') : null;
@@ -443,7 +451,20 @@ router.patch('/:id/soporte', upload.single('soporte'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Eliminar soporte de un préstamo/devolución
+router.delete('/:id/soporte', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'UPDATE prestamos SET soporte_url = NULL WHERE id = $1 RETURNING *',
+      [req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
+
+
 
 
 
