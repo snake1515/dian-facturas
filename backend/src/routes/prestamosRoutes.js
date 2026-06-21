@@ -16,11 +16,10 @@ async function subirPDF(file, carpeta) {
   if (!file) return null;
   const filename = `prestamos/${carpeta}/${Date.now()}_${file.originalname}`;
   await storageService.subirArchivo(file.buffer, filename, file.mimetype);
-  const SUPABASE_URL = process.env.SUPABASE_URL;
-  return `${SUPABASE_URL}/storage/v1/object/public/facturas/${filename}`;
+  return filename; // Retorna solo el filename, no la URL
 }
 
-// Servir PDFs e imágenes desde Supabase Storage
+// Servir PDFs e imágenes desde Supabase Storage (usando backend autenticado)
 router.get('/soporte/:carpeta/:filename', async (req, res) => {
   try {
     const filepath = `prestamos/${req.params.carpeta}/${req.params.filename}`;
@@ -35,6 +34,7 @@ router.get('/soporte/:carpeta/:filename', async (req, res) => {
     if (ext === '.webp') contentType = 'image/webp';
     
     res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `inline; filename="${req.params.filename}"`);
     res.send(buffer);
   } catch (e) { res.status(404).json({ error: 'Archivo no encontrado' }); }
 });
@@ -463,6 +463,7 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
 
 
 
