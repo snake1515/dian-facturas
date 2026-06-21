@@ -19,6 +19,31 @@ async function subirPDF(file, carpeta) {
   return filename; // Retorna solo el filename, no la URL
 }
 
+// ⚠️ TEMPORAL — Diagnóstico de upload a Supabase Storage. BORRAR después de usar.
+router.get('/diagnostico-storage', async (req, res) => {
+  try {
+    const buffer = Buffer.from('contenido de prueba diagnostico');
+    const filename = `prestamos/documentos/test_diagnostico_${Date.now()}.txt`;
+    const resultadoUpload = await storageService.subirArchivo(buffer, filename, 'text/plain');
+    res.json({
+      ok: true,
+      mensaje: 'Upload reportó éxito',
+      filename_guardado: resultadoUpload,
+      SUPABASE_URL_configurada: !!process.env.SUPABASE_URL,
+      SUPABASE_KEY_configurada: !!process.env.SUPABASE_SERVICE_KEY,
+      SUPABASE_URL_valor: process.env.SUPABASE_URL,
+    });
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      error: e.message,
+      SUPABASE_URL_configurada: !!process.env.SUPABASE_URL,
+      SUPABASE_KEY_configurada: !!process.env.SUPABASE_SERVICE_KEY,
+      SUPABASE_URL_valor: process.env.SUPABASE_URL,
+    });
+  }
+});
+
 // Servir PDFs e imágenes desde Supabase Storage (usando backend autenticado)
 router.get('/soporte/*', async (req, res) => {
   try {
@@ -463,6 +488,45 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
