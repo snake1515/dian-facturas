@@ -20,9 +20,9 @@ async function subirPDF(file, carpeta) {
 }
 
 // Servir PDFs e imágenes desde Supabase Storage (usando backend autenticado)
-router.get('/soporte/:path(*)', async (req, res) => {
+router.get('/soporte/*', async (req, res) => {
   try {
-    const filepath = req.params.path; // prestamos/documentos/1782014160410_pdf_factura_27663.pdf
+    const filepath = req.params[0]; // prestamos/documentos/1782014160410_pdf_factura_27663.pdf
     const buffer = await storageService.descargarArchivo(filepath);
     
     // Detectar tipo de archivo por extensión
