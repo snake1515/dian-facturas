@@ -20,13 +20,13 @@ async function subirPDF(file, carpeta) {
 }
 
 // Servir PDFs e imágenes desde Supabase Storage (usando backend autenticado)
-router.get('/soporte/:carpeta/:filename', async (req, res) => {
+router.get('/soporte/:path(*)', async (req, res) => {
   try {
-    const filepath = `prestamos/${req.params.carpeta}/${req.params.filename}`;
+    const filepath = req.params.path; // prestamos/documentos/1782014160410_pdf_factura_27663.pdf
     const buffer = await storageService.descargarArchivo(filepath);
     
     // Detectar tipo de archivo por extensión
-    const ext = path.extname(req.params.filename).toLowerCase();
+    const ext = path.extname(filepath).toLowerCase();
     let contentType = 'application/pdf';
     if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
     if (ext === '.png') contentType = 'image/png';
@@ -34,7 +34,7 @@ router.get('/soporte/:carpeta/:filename', async (req, res) => {
     if (ext === '.webp') contentType = 'image/webp';
     
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `inline; filename="${req.params.filename}"`);
+    res.setHeader('Content-Disposition', `inline; filename="${path.basename(filepath)}"`);
     res.send(buffer);
   } catch (e) { res.status(404).json({ error: 'Archivo no encontrado' }); }
 });
@@ -463,7 +463,6 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
-
 
 
 
