@@ -234,10 +234,18 @@ export default function CruceDIAN() {
     let headers, rows;
     if (nombre === 'cruzadas') {
       headers = ['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
+
+      const estadoLabel = (f) => {
+        if (!f) return '';
+        if (f.es_contrato) return 'Contrato';
+        if (f.tiene_nc) return 'Cruzado con nota crédito';
+        const MAP = { por_gestionar: 'Por gestionar', recibio_inventarios: 'Recibió inventarios', recibio_contabilidad: 'Recibió contabilidad', ingresado_caja_menor: 'Ingresado por caja menor', ingresado_orden_compra: 'Ingresado por orden de compra', aprobado: 'Aprobado' };
+        return MAP[f.estado_contable] || f.estado_contable || '';
+      };
       rows = datos.map(({ dian, factura }) => [
         dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
-        factura.estado_contable || '', factura.documento_ingreso || '',
+        estadoLabel(factura), factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]);
     } else {
       headers = ['N° DIAN','Tipo','Emisor DIAN','Fecha Recepción','Valor DIAN','Estado','Notas','Responsable','Observación'];
@@ -260,12 +268,20 @@ export default function CruceDIAN() {
   const exportarCompleto = () => {
     if (!resultado) return;
     const bom = '\uFEFF';
-    const headers = ['Estado Cruce','N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso'];
+    const headers = ['Estado Cruce','N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
     const rows = [
+
+      const estadoLabel = (f) => {
+        if (!f) return '';
+        if (f.es_contrato) return 'Contrato';
+        if (f.tiene_nc) return 'Cruzado con nota crédito';
+        const MAP = { por_gestionar: 'Por gestionar', recibio_inventarios: 'Recibió inventarios', recibio_contabilidad: 'Recibió contabilidad', ingresado_caja_menor: 'Ingresado por caja menor', ingresado_orden_compra: 'Ingresado por orden de compra', aprobado: 'Aprobado' };
+        return MAP[f.estado_contable] || f.estado_contable || '';
+      };
       ...resultado.cruzadas.map(({ dian, factura }) => [
         'ENCONTRADA', dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
-        factura.estado_contable || '', factura.documento_ingreso || '',
+        estadoLabel(factura), factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]),
       ...resultado.noCruzadas.map(({ dian }) => [
         'NO ENCONTRADA', dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
@@ -678,6 +694,7 @@ End Function`;
     </div>
   );
 }
+
 
 
 
