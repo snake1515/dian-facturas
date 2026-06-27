@@ -6,6 +6,34 @@ import api from '../services/api';
 const fmt = (n) =>
   new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
 
+// ── Estado contable: misma lógica que la pestaña Facturas (Contrato / Cruzado con NC / NC por cruzar-cruzado / flujo normal) ──
+const ESTADOS_CONTABLES_MAP = {
+  por_gestionar: 'Por gestionar',
+  recibio_inventarios: 'Recibió inventarios',
+  recibio_contabilidad: 'Recibió contabilidad',
+  ingresado_caja_menor: 'Ingresado por caja menor',
+  ingresado_orden_compra: 'Ingresado por orden de compra',
+  aprobado: 'Aprobado',
+};
+
+const estadoContableInfo = (f) => {
+  if (!f) return { label: '—', emoji: '', bg: 'transparent', color: 'var(--t-text-muted)' };
+  if (f.tipo === 'NC') {
+    const cruzado = !!f.documento_ingreso;
+    return cruzado
+      ? { label: 'Cruzado', emoji: '🔄', bg: '#FAEEDA', color: '#854F0B' }
+      : { label: 'Por cruzar', emoji: '⏳', bg: 'var(--t-bg-card)', color: 'var(--t-text-muted)' };
+  }
+  if (f.es_contrato) return { label: 'Contrato', emoji: '📄', bg: 'var(--t-bg-card)', color: 'var(--t-text-secondary)' };
+  if (f.tiene_nc) return { label: 'Cruzado con nota crédito', emoji: '🔄', bg: '#FAEEDA', color: '#854F0B' };
+  return {
+    label: ESTADOS_CONTABLES_MAP[f.estado_contable] || f.estado_contable || 'Por gestionar',
+    emoji: '',
+    bg: 'var(--t-bg-card)',
+    color: 'var(--t-text-secondary)',
+  };
+};
+
 const MESES = [
   { value: '01', label: 'Enero' },
   { value: '02', label: 'Febrero' },
@@ -235,17 +263,10 @@ export default function CruceDIAN() {
     if (nombre === 'cruzadas') {
       headers = ['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
-      const estadoLabel = (f) => {
-        if (!f) return '';
-        if (f.es_contrato) return 'Contrato';
-        if (f.tiene_nc) return 'Cruzado con nota crédito';
-        const MAP = { por_gestionar: 'Por gestionar', recibio_inventarios: 'Recibió inventarios', recibio_contabilidad: 'Recibió contabilidad', ingresado_caja_menor: 'Ingresado por caja menor', ingresado_orden_compra: 'Ingresado por orden de compra', aprobado: 'Aprobado' };
-        return MAP[f.estado_contable] || f.estado_contable || '';
-      };
       rows = datos.map(({ dian, factura }) => [
         dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
-        estadoLabel(factura), factura.documento_ingreso || '', dian.estadoEntrega || '',
+        estadoContableInfo(factura).label, factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]);
     } else {
       headers = ['N° DIAN','Tipo','Emisor DIAN','Fecha Recepción','Valor DIAN','Estado','Notas','Responsable','Observación'];
@@ -270,19 +291,11 @@ export default function CruceDIAN() {
     const bom = '\uFEFF';
     const headers = ['Estado Cruce','N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
-    const estadoLabel = (f) => {
-      if (!f) return '';
-      if (f.es_contrato) return 'Contrato';
-      if (f.tiene_nc) return 'Cruzado con nota crédito';
-      const MAP = { por_gestionar: 'Por gestionar', recibio_inventarios: 'Recibió inventarios', recibio_contabilidad: 'Recibió contabilidad', ingresado_caja_menor: 'Ingresado por caja menor', ingresado_orden_compra: 'Ingresado por orden de compra', aprobado: 'Aprobado' };
-      return MAP[f.estado_contable] || f.estado_contable || '';
-    };
-
     const rows = [
       ...resultado.cruzadas.map(({ dian, factura }) => [
         'ENCONTRADA', dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
-        estadoLabel(factura), factura.documento_ingreso || '', dian.estadoEntrega || '',
+        estadoContableInfo(factura).label, factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]),
       ...resultado.noCruzadas.map(({ dian }) => [
         'NO ENCONTRADA', dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
@@ -539,7 +552,16 @@ const selectSt = {
                         <td style={{ padding: '8px 12px', color: '#60a5fa', fontFamily: 'monospace' }}>{factura.numero}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{factura.proveedor_nombre}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmt(factura.total)}</td>
-                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontSize: 11 }}>{factura.estado_contable || '—'}</td>
+                        <td style={{ padding: '8px 12px' }}>
+                          {(() => {
+                            const info = estadoContableInfo(factura);
+                            return (
+                              <span style={{ background: info.bg, color: info.color, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                {info.emoji && <span>{info.emoji}</span>}{info.label}
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{factura.documento_ingreso || '—'}</td>
                         <td style={{ padding: '8px 12px' }}>{badgeEntrega(dian.estadoEntrega)}</td>
                       </tr>
@@ -695,6 +717,80 @@ End Function`;
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
