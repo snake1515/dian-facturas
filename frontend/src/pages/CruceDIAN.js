@@ -232,7 +232,7 @@ export default function CruceDIAN() {
     const bom = '\uFEFF';
     let headers, rows;
     if (nombre === 'cruzadas') {
-      headers = ['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso'];
+      headers = ['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
       rows = datos.map(({ dian, factura }) => [
         dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
@@ -282,7 +282,29 @@ export default function CruceDIAN() {
     URL.revokeObjectURL(a.href);
   };
 
-  const selectSt = {
+  const badgeEntrega = (val) => {
+  if (!val) return <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>;
+  const v = val.toUpperCase();
+  let bg, color;
+  if (v.includes('NO ENTREGADA') || v === '') {
+    bg = 'rgba(248,113,113,.15)'; color = '#f87171';
+  } else if (v.includes('PARCIAL')) {
+    bg = 'rgba(234,179,8,.15)'; color = '#fbbf24';
+  } else if (v.includes('CREDITO') || v.includes('CRÉDITO')) {
+    bg = 'rgba(59,130,246,.15)'; color = '#60a5fa';
+  } else if (v.includes('CONTADO')) {
+    bg = 'rgba(74,222,128,.15)'; color = '#4ade80';
+  } else if (v.includes('NC') || v.includes('NOTA')) {
+    bg = 'rgba(168,85,247,.15)'; color = '#c084fc';
+  } else if (v.includes('NO SOLICITADA')) {
+    bg = 'rgba(156,163,175,.15)'; color = '#9ca3af';
+  } else {
+    bg = 'rgba(99,102,241,.15)'; color = '#818cf8';
+  }
+  return <span style={{ background: bg, color, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{val}</span>;
+};
+
+const selectSt = {
     background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 6,
     color: 'var(--t-text-primary)', fontSize: 13, padding: '8px 10px', outline: 'none', cursor: 'pointer',
   };
@@ -515,7 +537,7 @@ export default function CruceDIAN() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                      {['N° DIAN','CUFE','Tipo','NIT Emisor','Nombre Emisor','Fecha Emisión','Valor DIAN','Estado','Notas','Responsable'].map(h => (
+                      {['N° DIAN','CUFE','Tipo','NIT Emisor','Nombre Emisor','Fecha Emisión','Valor DIAN','Estado','Notas','Responsable','Estado Entrega'].map(h => (
                         <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -566,6 +588,10 @@ export default function CruceDIAN() {
     </div>
   );
 }
+
+
+
+
 
 
 
