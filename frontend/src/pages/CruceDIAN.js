@@ -111,6 +111,7 @@ export default function CruceDIAN() {
         estado:         String(cols[15] || '').trim(),
         responsable:    String(cols[17] || '').trim(),
         notas:          String(cols[18] || '').trim(),
+        estadoEntrega:  String(cols[19] || '').trim(),
       });
     }
     return registros;
@@ -590,6 +591,10 @@ const selectSt = {
     </div>
   );
 }
+
+
+
+
 
 
 
