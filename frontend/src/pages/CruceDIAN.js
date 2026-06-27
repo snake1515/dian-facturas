@@ -492,7 +492,7 @@ const selectSt = {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                      {['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso'].map(h => (
+                      {['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'].map(h => (
                         <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -520,6 +520,7 @@ const selectSt = {
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmt(factura.total)}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontSize: 11 }}>{factura.estado_contable || '—'}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{factura.documento_ingreso || '—'}</td>
+                        <td style={{ padding: '8px 12px' }}>{badgeEntrega(dian.estadoEntrega)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -537,7 +538,7 @@ const selectSt = {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                      {['N° DIAN','CUFE','Tipo','NIT Emisor','Nombre Emisor','Fecha Emisión','Valor DIAN','Estado','Notas','Responsable','Estado Entrega'].map(h => (
+                      {['N° DIAN','CUFE','Tipo','NIT Emisor','Nombre Emisor','Fecha Emisión','Valor DIAN','Estado','Notas','Responsable DIAN','Estado Entrega'].map(h => (
                         <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -569,10 +570,11 @@ const selectSt = {
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#2a1a1a', color: '#f87171', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
                         <td style={{ padding: '8px 12px' }}>
-                          {factura.responsables?.length > 0
-                            ? <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{factura.responsables.map(r => r.nombre || r.email).join(', ')}</span>
+                          {dian.responsable
+                            ? <span style={{ background: '#1e2a3a', color: '#93c5fd', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.responsable}</span>
                             : <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>}
                         </td>
+                        <td style={{ padding: '8px 12px' }}>{badgeEntrega(dian.estadoEntrega)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -588,6 +590,10 @@ const selectSt = {
     </div>
   );
 }
+
+
+
+
 
 
 
