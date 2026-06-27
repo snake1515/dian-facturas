@@ -261,10 +261,10 @@ export default function CruceDIAN() {
     const bom = '\uFEFF';
     let headers, rows;
     if (nombre === 'cruzadas') {
-      headers = ['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
+      headers = ['Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
       rows = datos.map(({ dian, factura }) => [
-        dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
+        factura.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
         estadoContableInfo(factura).label, factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]);
@@ -289,17 +289,17 @@ export default function CruceDIAN() {
   const exportarCompleto = () => {
     if (!resultado) return;
     const bom = '\uFEFF';
-    const headers = ['Estado Cruce','N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
+    const headers = ['Estado Cruce','Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
     const rows = [
       ...resultado.cruzadas.map(({ dian, factura }) => [
-        'ENCONTRADA', dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
+        'ENCONTRADA', factura.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
         estadoContableInfo(factura).label, factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]),
       ...resultado.noCruzadas.map(({ dian }) => [
-        'NO ENCONTRADA', dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
-        '', '', '', '', '',
+        'NO ENCONTRADA', dian.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
+        '', '', '', '', '', dian.estadoEntrega || '',
       ]),
     ];
     const csv = bom + [headers, ...rows].map(row =>
@@ -526,7 +526,7 @@ const selectSt = {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                      {['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'].map(h => (
+                      {['Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'].map(h => (
                         <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -534,6 +534,9 @@ const selectSt = {
                   <tbody>
                     {resultado.cruzadas.map(({ dian, factura }, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
+                        <td style={{ padding: '8px 12px' }}>
+                          <span style={{ background: factura.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: factura.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{factura.tipo}</span>
+                        </td>
                         <td style={{ padding: '8px 12px', color: '#4ade80', fontFamily: 'monospace' }}>{dian.numero}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
@@ -717,6 +720,80 @@ End Function`;
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
