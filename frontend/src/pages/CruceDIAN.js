@@ -595,6 +595,90 @@ const selectSt = {
   );
 }
 
+function MacroInstrucciones() {
+  const [abierto, setAbierto] = useState(false);
+  const macro = `Function LeyendaColor(celda As Range) As String
+    Select Case celda.Interior.Color
+        Case RGB(255, 255, 0)
+            LeyendaColor = "FACTURAS CREDITO AUDITADAS"
+        Case RGB(255, 0, 0)
+            LeyendaColor = "FACTURAS CREDITO AUDITADAS CON NOTA CREDITO PARCIAL"
+        Case RGB(0, 176, 240)
+            LeyendaColor = "FACTURAS CONTADO AUDITADAS"
+        Case RGB(192, 0, 0)
+            LeyendaColor = "NOTAS CREDITO"
+        Case RGB(255, 0, 255)
+            LeyendaColor = "NO SOLICITADA POR UCIS"
+        Case Else
+            LeyendaColor = "FACTURA NO ENTREGADA FISICAMENTE A CONTABILIDAD"
+    End Select
+End Function`;
+
+  const descargar = () => {
+    const texto = 'MACRO REQUERIDA PARA LA COLUMNA ESTADO ENTREGA DOCS\n\nPASOS:\n1. Abre el Excel de la DIAN (.xlsm)\n2. ALT + F11 para abrir el Editor VBA\n3. Clic derecho VBAProject → Insertar → Modulo\n4. Pega el codigo\n5. Cierra el editor (ALT + F11)\n6. En la hoja del mes agrega columna T: ESTADO ENTREGA DOCS\n7. En T2 escribe =LeyendaColor(C2) y arrastrala\n8. Guarda como .xlsm\n\n' + macro;
+    const blob = new Blob([texto], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'macro_LeyendaColor.txt'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <button onClick={() => setAbierto(o => !o)}
+        style={{ width: '100%', background: 'rgba(234,179,8,.08)', border: '1px solid rgba(234,179,8,.25)', borderRadius: 6, padding: '9px 14px', fontSize: 12, color: '#fbbf24', cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>⚙️</span>
+        <span style={{ flex: 1 }}>Requisito: macro <strong>LeyendaColor</strong> en el Excel DIAN (para mostrar Estado Entrega)</span>
+        <span style={{ fontSize: 11, opacity: 0.7 }}>{abierto ? '▲ Ocultar' : '▼ Ver instrucciones'}</span>
+      </button>
+      {abierto && (
+        <div style={{ background: 'rgba(15,17,23,.6)', border: '1px solid rgba(234,179,8,.2)', borderTop: 'none', borderRadius: '0 0 6px 6px', padding: '14px 16px', fontSize: 12 }}>
+          <p style={{ color: 'var(--t-text-secondary)', marginBottom: 12 }}>
+            Para que la columna <strong style={{ color: '#fbbf24' }}>Estado Entrega</strong> funcione, el Excel debe tener la macro VBA y una columna <strong style={{ color: '#fbbf24' }}>T</strong> llamada <em>ESTADO ENTREGA DOCS</em> con la fórmula <code style={{ background: '#1a2234', padding: '1px 6px', borderRadius: 3 }}>=LeyendaColor(C2)</code>.
+          </p>
+          <ol style={{ color: 'var(--t-text-secondary)', paddingLeft: 18, lineHeight: 1.9, marginBottom: 12 }}>
+            <li>Abre el archivo Excel de la DIAN (.xlsm)</li>
+            <li>Presiona <strong>ALT + F11</strong> para abrir el Editor de Visual Basic</li>
+            <li>Clic derecho sobre <em>VBAProject</em> → <strong>Insertar → Módulo</strong></li>
+            <li>Pega el código de abajo en el módulo nuevo</li>
+            <li>Cierra el editor (<strong>ALT + F11</strong>)</li>
+            <li>En la hoja del mes (ej: FACT JUN), agrega columna T con header <em>ESTADO ENTREGA DOCS</em></li>
+            <li>En T2 escribe <code style={{ background: '#1a2234', padding: '1px 6px', borderRadius: 3 }}>=LeyendaColor(C2)</code> y arrástrala hacia abajo</li>
+            <li>Guarda como <strong>.xlsm</strong> (con macros habilitadas)</li>
+          </ol>
+          <div style={{ position: 'relative' }}>
+            <pre style={{ background: '#0d1117', border: '1px solid #2a3348', borderRadius: 6, padding: '12px 14px', paddingRight: 150, fontSize: 11, color: '#a5b4fc', overflowX: 'auto', margin: 0, lineHeight: 1.6 }}>
+              {macro}
+            </pre>
+            <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 6 }}>
+              <button onClick={() => navigator.clipboard.writeText(macro)}
+                style={{ background: 'rgba(99,102,241,.2)', border: '1px solid rgba(99,102,241,.4)', borderRadius: 4, padding: '3px 10px', fontSize: 11, color: '#a5b4fc', cursor: 'pointer' }}>
+                📋 Copiar
+              </button>
+              <button onClick={descargar}
+                style={{ background: 'rgba(74,222,128,.15)', border: '1px solid rgba(74,222,128,.3)', borderRadius: 4, padding: '3px 10px', fontSize: 11, color: '#4ade80', cursor: 'pointer' }}>
+                ⬇️ Descargar
+              </button>
+            </div>
+          </div>
+          <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {[
+              { color: '#fbbf24', bg: 'rgba(234,179,8,.15)', label: 'Amarillo → CREDITO AUDITADAS' },
+              { color: '#f87171', bg: 'rgba(248,113,113,.15)', label: 'Rojo → CREDITO CON NOTA PARCIAL' },
+              { color: '#60a5fa', bg: 'rgba(59,130,246,.15)', label: 'Azul → CONTADO AUDITADAS' },
+              { color: '#cd3030', bg: 'rgba(192,0,0,.2)', label: 'Rojo oscuro → NOTAS CREDITO' },
+              { color: '#e879f9', bg: 'rgba(255,0,255,.1)', label: 'Fucsia → NO SOLICITADA' },
+              { color: '#9ca3af', bg: 'rgba(156,163,175,.1)', label: 'Sin color → NO ENTREGADA' },
+            ].map((item, i) => (
+              <span key={i} style={{ background: item.bg, color: item.color, padding: '3px 10px', borderRadius: 20, fontSize: 11 }}>{item.label}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 
 
