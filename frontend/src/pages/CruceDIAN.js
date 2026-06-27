@@ -422,6 +422,9 @@ const selectSt = {
           ℹ️ Compara la <strong style={{ color: '#60a5fa' }}>columna E (N° Factura)</strong> del reporte DIAN contra las facturas de <strong style={{ color: '#60a5fa' }}>{mesAppLabel} {añoApp}</strong> en la app. Si ya existe un archivo del mismo mes, será reemplazado por el más reciente.
         </div>
 
+        {/* Aviso macro LeyendaColor */}
+        <MacroInstrucciones />
+
         <button
           onClick={procesarArchivo}
           disabled={(!archivo && registrosDIAN.length === 0) || procesando}
@@ -591,6 +594,10 @@ const selectSt = {
     </div>
   );
 }
+
+
+
+
 
 
 
