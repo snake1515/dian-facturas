@@ -232,7 +232,7 @@ export default function CruceDIAN() {
     const bom = '\uFEFF';
     let headers, rows;
     if (nombre === 'cruzadas') {
-      headers = ['N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso'];
+      headers = ['N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso'];
       rows = datos.map(({ dian, factura }) => [
         dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
@@ -483,7 +483,19 @@ export default function CruceDIAN() {
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#1e3a5f', color: '#60a5fa', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
-                        <td style={{ padding: '8px 12px' }}><span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{dian.responsable}</span></td>
+                        <td style={{ padding: '8px 12px' }}>(() => {
+                          const resp = factura.responsables?.length > 0
+                            ? factura.responsables.map(r => r.nombre || r.email).join(', ')
+                            : '—';
+                          return resp !== '—'
+                            ? <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{resp}</span>
+                            : <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>;
+                        })()</td>
+                        <td style={{ padding: '8px 12px' }}>
+                          {dian.responsable
+                            ? <span style={{ background: '#1e2a3a', color: '#93c5fd', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.responsable}</span>
+                            : <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>}
+                        </td>
                         <td style={{ padding: '8px 12px', color: '#60a5fa', fontFamily: 'monospace' }}>{factura.numero}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{factura.proveedor_nombre}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmt(factura.total)}</td>
@@ -506,7 +518,7 @@ export default function CruceDIAN() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                      {['N° DIAN','Tipo','NIT Emisor','Nombre Emisor','Fecha Emisión','Valor DIAN','Estado','Notas','Responsable'].map(h => (
+                      {['N° DIAN','CUFE','Tipo','NIT Emisor','Nombre Emisor','Fecha Emisión','Valor DIAN','Estado','Notas','Responsable'].map(h => (
                         <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -515,6 +527,21 @@ export default function CruceDIAN() {
                     {resultado.noCruzadas.map(({ dian }, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
                         <td style={{ padding: '8px 12px', color: '#f87171', fontFamily: 'monospace' }}>{dian.numero}</td>
+                        <td style={{ padding: '8px 12px' }}>
+                          {dian.cufe ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--t-text-muted)', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }} title={dian.cufe}>
+                                {dian.cufe.substring(0, 12)}…
+                              </span>
+                              <button
+                                onClick={() => { navigator.clipboard.writeText(dian.cufe); }}
+                                title={'Copiar CUFE: ' + dian.cufe}
+                                style={{ background: 'rgba(59,130,246,.15)', border: '1px solid rgba(59,130,246,.3)', borderRadius: 4, padding: '2px 7px', fontSize: 10, color: '#60a5fa', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                                📋 Copiar
+                              </button>
+                            </div>
+                          ) : <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>}
+                        </td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontSize: 11 }}>{dian.tipo}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontFamily: 'monospace' }}>{dian.nitEmisor}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
@@ -522,7 +549,14 @@ export default function CruceDIAN() {
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#2a1a1a', color: '#f87171', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
-                        <td style={{ padding: '8px 12px' }}><span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{dian.responsable}</span></td>
+                        <td style={{ padding: '8px 12px' }}>(() => {
+                          const resp = factura.responsables?.length > 0
+                            ? factura.responsables.map(r => r.nombre || r.email).join(', ')
+                            : '—';
+                          return resp !== '—'
+                            ? <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{resp}</span>
+                            : <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>;
+                        })()</td>
                       </tr>
                     ))}
                   </tbody>
@@ -538,6 +572,11 @@ export default function CruceDIAN() {
     </div>
   );
 }
+
+
+
+
+
 
 
 
