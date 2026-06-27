@@ -85,7 +85,7 @@ export default function CruceDIAN() {
       ? hojaDelMes
       : wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
 
     const registros = [];
     for (let i = 1; i < rows.length; i++) {
@@ -591,6 +591,11 @@ const selectSt = {
     </div>
   );
 }
+
+
+
+
+
 
 
 
