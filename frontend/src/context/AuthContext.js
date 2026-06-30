@@ -107,6 +107,9 @@ export function AuthProvider({ children }) {
 
     // Cruce DIAN
     verCruceDIAN:           isEditor,
+
+    // Validador de Inventarios
+    verValidadorInventario: isEditor || esObra,
   };
 
   return (
@@ -123,4 +126,6 @@ export function useAuth() {
 }
 
 export default AuthContext;
+
+
 
