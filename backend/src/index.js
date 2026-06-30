@@ -17,6 +17,7 @@ const crucesDianRoutes = require('./routes/cruces-dian');
 const prestamosRoutes = require('./routes/prestamosRoutes');
 const pendientesRoutes = require('./routes/pendientes');
 const coincidenciasRoutes = require('./routes/coincidencias');
+const validadorInventarioRoutes = require('./routes/validadorInventarioRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -57,6 +58,7 @@ app.use('/api/cruces-dian', crucesDianRoutes);
 app.use('/api/prestamos', prestamosRoutes);
 app.use('/api/pendientes', pendientesRoutes);
 app.use('/api/coincidencias', coincidenciasRoutes);
+app.use('/api/validador-inventario', validadorInventarioRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -135,6 +137,64 @@ const arrancar = async () => {
 };
 
 arrancar();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
