@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useContext } from 'react';
 import * as XLSX from 'xlsx';
 import api from '../services/api';
-import { AuthContext } from '../context/AuthContext';
+import AuthContext from '../context/AuthContext';
 
 // ── Bodegas conocidas (mismo listado que usa Préstamos) ───────────────────────
 const BODEGAS = [
