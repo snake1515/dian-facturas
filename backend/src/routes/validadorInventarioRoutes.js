@@ -39,14 +39,16 @@ router.post('/importar', authMiddleware, async (req, res) => {
     for (const it of items) {
       if (!it.codigo) continue;
       await client.query(
-        `INSERT INTO validador_inventario (bodega, codigo, nombre, lote, fecha_vencimiento, existencia_sistema)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO validador_inventario (bodega, codigo, nombre, lote, fecha_vencimiento, existencia_sistema, costo_unitario, costo_total)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (bodega, codigo, lote, fecha_vencimiento)
          DO UPDATE SET
            nombre             = EXCLUDED.nombre,
            existencia_sistema = EXCLUDED.existencia_sistema,
+           costo_unitario     = EXCLUDED.costo_unitario,
+           costo_total        = EXCLUDED.costo_total,
            actualizado_en     = NOW()`,
-        [bod, String(it.codigo).trim(), String(it.nombre || '').trim(), String(it.lote || '').trim(), String(it.fecha_vencimiento || '').trim(), it.existencia_sistema || 0]
+        [bod, String(it.codigo).trim(), String(it.nombre || '').trim(), String(it.lote || '').trim(), String(it.fecha_vencimiento || '').trim(), it.existencia_sistema || 0, it.costo_unitario || 0, it.costo_total || 0]
       );
     }
     await client.query('COMMIT');
@@ -113,3 +115,4 @@ router.patch('/:id/reset', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
