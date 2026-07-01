@@ -264,7 +264,9 @@ export default function CruceDIAN() {
       headers = ['Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
       rows = datos.map(({ dian, factura }) => [
-        factura.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
+        factura.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas,
+        factura.responsables?.length > 0 ? factura.responsables.map(r => r.nombre || r.email).join(', ') : '',
+        dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
         estadoContableInfo(factura).label, factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]);
@@ -289,16 +291,18 @@ export default function CruceDIAN() {
   const exportarCompleto = () => {
     if (!resultado) return;
     const bom = '\uFEFF';
-    const headers = ['Estado Cruce','Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
+    const headers = ['Estado Cruce','Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
     const rows = [
       ...resultado.cruzadas.map(({ dian, factura }) => [
-        'ENCONTRADA', factura.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
+        'ENCONTRADA', factura.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas,
+        factura.responsables?.length > 0 ? factura.responsables.map(r => r.nombre || r.email).join(', ') : '',
+        dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
         estadoContableInfo(factura).label, factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]),
       ...resultado.noCruzadas.map(({ dian }) => [
-        'NO ENCONTRADA', dian.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, dian.responsable,
+        'NO ENCONTRADA', dian.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, '', dian.responsable,
         '', '', '', '', '', dian.estadoEntrega || '',
       ]),
     ];
@@ -720,6 +724,227 @@ End Function`;
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
