@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useContext } from 'react';
 import * as XLSX from 'xlsx';
 import api from '../services/api';
+import { AuthContext } from '../context/AuthContext';
 
 // ── Bodegas conocidas (mismo listado que usa Préstamos) ───────────────────────
 const BODEGAS = [
@@ -40,13 +41,17 @@ function fmtFechaCorta(f) {
 }
 
 export default function ValidadorInventario() {
+  const { puede, isEditor, isAdmin } = useContext(AuthContext);
+  const puedeEditarContado = isEditor || isAdmin; // solo editor/admin modifican cantidades ya guardadas
   const [bodega, setBodega] = useState('BV');
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [importando, setImportando] = useState(false);
   const [busqueda, setBusqueda] = useState('');
-  const [filtro, setFiltro] = useState('todos'); // todos | contados | pendientes | diferencias
-  const [editValues, setEditValues] = useState({}); // { [id]: 'valor en edición' }
+  const [filtro, setFiltro] = useState('todos');
+  const [sortCol, setSortCol] = useState(null);   // 'costo_unitario' | 'costo_total' | null
+  const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
+  const [editValues, setEditValues] = useState({});
   const [guardandoId, setGuardandoId] = useState(null);
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
@@ -101,6 +106,8 @@ export default function ValidadorInventario() {
             fecha_vencimiento: String(r[2] || '').trim(),
             lote: String(r[3] || '').trim(),
             existencia_sistema: parseNumCO(r[4]),
+            costo_unitario: parseNumCO(r[5]),
+            costo_total: parseNumCO(r[6]),
           });
         }
 
@@ -149,7 +156,16 @@ export default function ValidadorInventario() {
     }
   }
 
-  // ── Filtros ──────────────────────────────────────────────────────────────────
+  // ── Ordenamiento por columna ─────────────────────────────────────────────────
+  function toggleSort(col) {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortCol(col); setSortDir('desc'); }
+  }
+
+  // ── Formato moneda COP ────────────────────────────────────────────────────────
+  const fmtPesos = (n) => Number(n || 0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+
+  // ── Filtros y ordenamiento ───────────────────────────────────────────────────
   const itemsFiltrados = items.filter(it => {
     if (busqueda) {
       const q = busqueda.toUpperCase();
@@ -160,6 +176,14 @@ export default function ValidadorInventario() {
     if (filtro === 'diferencias' && (!it.contado || Number(it.cantidad_fisica) === Number(it.existencia_sistema))) return false;
     return true;
   });
+
+  if (sortCol) {
+    itemsFiltrados.sort((a, b) => {
+      const va = Number(a[sortCol] || 0);
+      const vb = Number(b[sortCol] || 0);
+      return sortDir === 'asc' ? va - vb : vb - va;
+    });
+  }
 
   const totales = {
     total: items.length,
@@ -244,30 +268,68 @@ export default function ValidadorInventario() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {['Código', 'Nombre', 'Lote', 'Fecha Venc.', 'Existencia Sistema', 'Cantidad Física', 'Diferencia', 'Estado', ''].map(h => (
-                  <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                {[
+                  { key: null,            label: 'Código' },
+                  { key: null,            label: 'Nombre' },
+                  { key: null,            label: 'Lote' },
+                  { key: null,            label: 'Fecha Venc.' },
+                  { key: null,            label: 'Existencia' },
+                  { key: 'costo_unitario', label: 'Costo Unit.' },
+                  { key: 'costo_total',    label: 'Costo Total' },
+                  { key: null,            label: 'Cant. Física' },
+                  { key: null,            label: 'Diferencia' },
+                  { key: null,            label: 'Estado' },
+                  { key: null,            label: '' },
+                ].map(({ key, label }) => (
+                  <th
+                    key={label}
+                    onClick={key ? () => toggleSort(key) : undefined}
+                    style={{
+                      padding: '10px 12px', textAlign: 'left', color: key ? 'var(--t-accent)' : 'var(--t-text-muted)',
+                      fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)',
+                      cursor: key ? 'pointer' : 'default', userSelect: 'none',
+                    }}
+                  >
+                    {label}
+                    {key && sortCol === key && (
+                      <span style={{ marginLeft: 4 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
+                    )}
+                    {key && sortCol !== key && <span style={{ marginLeft: 4, opacity: 0.3 }}>⇅</span>}
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {itemsFiltrados.map(item => {
                 const enEdicion = editValues[item.id] !== undefined;
+                const yaContado = item.contado;
+                // Si ya fue contado, solo editor/admin pueden modificar
+                const puedeEditar = !yaContado || puedeEditarContado;
                 const valorActual = enEdicion ? editValues[item.id] : (item.cantidad_fisica ?? '');
-                const diferencia = item.contado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
+                const diferencia = yaContado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
                 return (
                   <tr key={item.id} style={{ borderBottom: '1px solid #1a2234' }}>
                     <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
-                    <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 280 }}>{item.nombre}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 240 }}>{item.nombre}</td>
                     <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
                     <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtFechaCorta(item.fecha_vencimiento)}</td>
                     <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{Number(item.existencia_sistema).toLocaleString('es-CO')}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_total)}</td>
                     <td style={{ padding: '8px 12px' }}>
-                      <input
-                        type="number" value={valorActual}
-                        onChange={(e) => setEditValues(prev => ({ ...prev, [item.id]: e.target.value }))}
-                        placeholder="—"
-                        style={{ ...inputStyle, width: 90, fontFamily: 'monospace' }}
-                      />
+                      {puedeEditar ? (
+                        <input
+                          type="number" value={valorActual}
+                          onChange={(e) => setEditValues(prev => ({ ...prev, [item.id]: e.target.value }))}
+                          placeholder="—"
+                          style={{ ...inputStyle, width: 90, fontFamily: 'monospace' }}
+                        />
+                      ) : (
+                        <span title="Solo editor/admin pueden modificar cantidades ya contadas"
+                          style={{ color: 'var(--t-text-muted)', fontFamily: 'monospace' }}>
+                          {item.cantidad_fisica ?? '—'} 🔒
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>
                       {diferencia === null ? (
@@ -279,26 +341,28 @@ export default function ValidadorInventario() {
                       )}
                     </td>
                     <td style={{ padding: '8px 12px' }}>
-                      {item.contado ? (
+                      {yaContado ? (
                         <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
                       ) : (
                         <span style={{ background: 'var(--t-bg-sidebar)', color: '#fbbf24', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>⏳ Pendiente</span>
                       )}
                     </td>
                     <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
-                      <button
-                        onClick={() => guardarConteo(item)}
-                        disabled={!enEdicion || guardandoId === item.id}
-                        style={{
-                          background: enEdicion ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                          color: enEdicion ? '#fff' : 'var(--t-text-muted)',
-                          border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 12, fontWeight: 500,
-                          cursor: enEdicion ? 'pointer' : 'not-allowed', marginRight: 6,
-                        }}
-                      >
-                        {guardandoId === item.id ? 'Guardando…' : 'Guardar'}
-                      </button>
-                      {item.contado && (
+                      {puedeEditar && (
+                        <button
+                          onClick={() => guardarConteo(item)}
+                          disabled={!enEdicion || guardandoId === item.id}
+                          style={{
+                            background: enEdicion ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
+                            color: enEdicion ? '#fff' : 'var(--t-text-muted)',
+                            border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 12, fontWeight: 500,
+                            cursor: enEdicion ? 'pointer' : 'not-allowed', marginRight: 6,
+                          }}
+                        >
+                          {guardandoId === item.id ? 'Guardando…' : 'Guardar'}
+                        </button>
+                      )}
+                      {yaContado && puedeEditarContado && (
                         <button
                           onClick={() => deshacerConteo(item)}
                           title="Deshacer conteo"
@@ -318,3 +382,4 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
