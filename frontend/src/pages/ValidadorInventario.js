@@ -156,6 +156,25 @@ export default function ValidadorInventario() {
     }
   }
 
+  // ── Eliminar manualmente un item sin existencias ────────────────────────────
+  // Pide confirmar qué pasó con el producto antes de dejarlo borrar, así no se
+  // elimina por error algo que en realidad solo cambió de lote/fecha
+  async function eliminarItem(item) {
+    const motivo = window.prompt(
+      `"${item.nombre}" (código ${item.codigo}) no aparece en las últimas cargas del Excel.\n\n` +
+      `¿Qué sucedió con este producto? (ej. agotado, dado de baja, reemplazado por otro lote)\n` +
+      `Escribe el motivo para confirmar la eliminación, o cancela si no estás seguro:`
+    );
+    if (motivo === null || motivo.trim() === '') return; // canceló o no escribió nada
+    if (!window.confirm(`¿Confirmas eliminar definitivamente "${item.nombre}"? Esta acción no se puede deshacer.`)) return;
+    try {
+      await api.delete(`/validador-inventario/${item.id}`);
+      setItems(prev => prev.filter(it => it.id !== item.id));
+    } catch (e) {
+      alert('Error eliminando el item: ' + (e.response?.data?.error || e.message));
+    }
+  }
+
   // ── Ordenamiento por columna ─────────────────────────────────────────────────
   function toggleSort(col) {
     if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -395,9 +414,18 @@ export default function ValidadorInventario() {
                         <button
                           onClick={() => deshacerConteo(item)}
                           title="Deshacer conteo"
-                          style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer' }}
+                          style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer', marginRight: 6 }}
                         >
                           ↺
+                        </button>
+                      )}
+                      {item.sin_existencias && puedeEditarContado && (
+                        <button
+                          onClick={() => eliminarItem(item)}
+                          title="Eliminar definitivamente (solo disponible para ítems sin existencias)"
+                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}
+                        >
+                          🗑️
                         </button>
                       )}
                     </td>
@@ -411,6 +439,8 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
+
 
 
 
