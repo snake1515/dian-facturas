@@ -6,6 +6,12 @@ const router = express.Router();
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
 
+// ── Trunca strings de forma segura para respetar los límites varchar de la BD ─
+function truncar(valor, max) {
+  const s = String(valor || '').trim();
+  return s.length > max ? s.substring(0, max) : s;
+}
+
 // ── GET /api/validador-inventario?bodega=BV ──────────────────────────────────
 // Lista los items guardados de una bodega
 router.get('/', authMiddleware, async (req, res) => {
@@ -48,7 +54,7 @@ router.post('/importar', authMiddleware, async (req, res) => {
            costo_unitario     = EXCLUDED.costo_unitario,
            costo_total        = EXCLUDED.costo_total,
            actualizado_en     = NOW()`,
-        [bod, String(it.codigo).trim(), String(it.nombre || '').trim(), String(it.lote || '').trim(), String(it.fecha_vencimiento || '').trim(), it.existencia_sistema || 0, it.costo_unitario || 0, it.costo_total || 0]
+        [bod, truncar(it.codigo, 50), truncar(it.nombre, 300), truncar(it.lote, 100), truncar(it.fecha_vencimiento, 20), it.existencia_sistema || 0, it.costo_unitario || 0, it.costo_total || 0]
       );
     }
     await client.query('COMMIT');
@@ -115,4 +121,5 @@ router.patch('/:id/reset', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
 
