@@ -145,7 +145,29 @@ router.patch('/:id/reset', authMiddleware, async (req, res) => {
   }
 });
 
+// ── DELETE /api/validador-inventario/:id ──────────────────────────────────────
+// Elimina manualmente un item, solo permitido si está marcado sin_existencias
+// (evita borrar por error ítems que sí siguen activos en el sistema)
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `DELETE FROM validador_inventario
+       WHERE id = $1 AND sin_existencias = true
+       RETURNING id`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(400).json({ error: 'Solo se pueden eliminar ítems marcados como sin existencias' });
+    }
+    res.json({ ok: true, id: rows[0].id });
+  } catch (err) {
+    console.error('Error al eliminar item del validador de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 module.exports = router;
+
 
 
 
