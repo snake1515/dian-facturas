@@ -97,18 +97,53 @@ export default function ValidadorInventario() {
 
         const filas = data.slice(idxHeader + 1);
         const nuevosItems = [];
+        let filasCorregidas = 0;
+
+        // Detecta cuando la celda "nombre" trae pegado un fragmento de HTML roto
+        // del reporte SIIS (ej. "...12”\n🔩/td>2045-06-11"). Cuando esto pasa, la
+        // celda de fecha real "desaparece" de la fila y todas las columnas
+        // siguientes (lote, existencia, costos) se corren una posición.
+        const FRAGMENTO_ROTO_RE = /\/t[dr]>\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\s*$/i;
+
         for (const r of filas) {
           const codigo = String(r[0] || '').trim();
           if (!codigo || codigo.toUpperCase().startsWith('TOTAL')) continue;
-          nuevosItems.push({
-            codigo,
-            nombre: String(r[1] || '').trim(),
-            fecha_vencimiento: String(r[2] || '').trim(),
-            lote: String(r[3] || '').trim(),
-            existencia_sistema: parseNumCO(r[4]),
-            costo_unitario: parseNumCO(r[5]),
-            costo_total: parseNumCO(r[6]),
-          });
+
+          let nombreRaw = String(r[1] || '');
+          let fecha_vencimiento, lote, existencia_sistema, costo_unitario, costo_total;
+
+          const roto = nombreRaw.match(FRAGMENTO_ROTO_RE);
+          if (roto) {
+            // Se recupera la fecha real desde dentro del nombre y se corrige
+            // el corrimiento: lo que venía en r[2]/r[3]/r[4]/r[5] en realidad
+            // corresponde a lote/existencia/costo_unitario/costo_total.
+            fecha_vencimiento = roto[1];
+            nombreRaw = nombreRaw.slice(0, roto.index);
+            lote = String(r[2] || '').trim();
+            existencia_sistema = parseNumCO(r[3]);
+            costo_unitario = parseNumCO(r[4]);
+            costo_total = parseNumCO(r[5]);
+            filasCorregidas++;
+          } else {
+            fecha_vencimiento = String(r[2] || '').trim();
+            lote = String(r[3] || '').trim();
+            existencia_sistema = parseNumCO(r[4]);
+            costo_unitario = parseNumCO(r[5]);
+            costo_total = parseNumCO(r[6]);
+          }
+
+          // Limpieza general: quita tags HTML sueltos y saltos de línea que a
+          // veces vienen pegados en la celda de nombre, sin importar si hubo
+          // corrimiento de columnas o no
+          const nombre = nombreRaw
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/\/t[dr]>/gi, ' ')
+            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, ' ')
+            .replace(/[\r\n]+/g, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+
+          nuevosItems.push({ codigo, nombre, fecha_vencimiento, lote, existencia_sistema, costo_unitario, costo_total });
         }
 
         if (nuevosItems.length === 0) {
@@ -116,10 +151,17 @@ export default function ValidadorInventario() {
           return;
         }
 
+        if (filasCorregidas > 0) {
+          console.warn(`Validador Inventario: se corrigieron ${filasCorregidas} fila(s) con corrimiento de columnas por HTML roto en el reporte SIIS.`);
+        }
+
         setImportando(true);
         const res = await api.post('/validador-inventario/importar', { bodega: bodDetectada, items: nuevosItems });
         setBodega(bodDetectada);
         setItems(res.data || []);
+        if (filasCorregidas > 0) {
+          setError(`⚠️ Se corrigieron automáticamente ${filasCorregidas} fila(s) del Excel que tenían la fecha de vencimiento pegada al nombre (fragmento HTML roto del reporte SIIS). Revisa esos ítems para confirmar que quedaron bien.`);
+        }
       } catch (err) {
         console.error(err);
         setError('Error procesando el archivo: ' + err.message);
@@ -439,6 +481,8 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
+
 
 
 
