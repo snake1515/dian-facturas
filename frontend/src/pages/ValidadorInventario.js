@@ -174,6 +174,7 @@ export default function ValidadorInventario() {
     if (filtro === 'contados' && !it.contado) return false;
     if (filtro === 'pendientes' && it.contado) return false;
     if (filtro === 'diferencias' && (!it.contado || Number(it.cantidad_fisica) === Number(it.existencia_sistema))) return false;
+    if (filtro === 'sin_existencias' && !it.sin_existencias) return false;
     return true;
   });
 
@@ -190,8 +191,19 @@ export default function ValidadorInventario() {
     contados: items.filter(it => it.contado).length,
     pendientes: items.filter(it => !it.contado).length,
     diferencias: items.filter(it => it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema)).length,
+    sinExistencias: items.filter(it => it.sin_existencias).length,
   };
   const avance = totales.total > 0 ? Math.round((totales.contados / totales.total) * 100) : 0;
+
+  // Fecha de la última vez que se subió un Excel para esta bodega (la más reciente entre todos los ítems)
+  const ultimaCarga = items.reduce((max, it) => {
+    if (!it.ultima_carga) return max;
+    const f = new Date(it.ultima_carga);
+    return (!max || f > max) ? f : max;
+  }, null);
+  const ultimaCargaTexto = ultimaCarga
+    ? ultimaCarga.toLocaleString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : '—';
 
   const inputStyle = {
     background: 'var(--t-bg-input)', border: '1px solid var(--t-border)', borderRadius: 6,
@@ -211,6 +223,9 @@ export default function ValidadorInventario() {
         <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--t-text-primary)' }}>Validador de Inventarios</h1>
         <p style={{ fontSize: 13, color: 'var(--t-text-muted)', marginTop: 2 }}>
           Conteo físico de bodega contra el sistema — sube el Excel de SIIS cuando quieras actualizar existencias sin perder lo ya contado
+        </p>
+        <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4 }}>
+          Última carga de Excel para <strong>{bodega}</strong>: {ultimaCargaTexto}
         </p>
       </div>
 
@@ -239,6 +254,7 @@ export default function ValidadorInventario() {
           <option value="contados">✅ Contados</option>
           <option value="pendientes">⏳ Pendientes</option>
           <option value="diferencias">⚠️ Con diferencias</option>
+          <option value="sin_existencias">🚫 Sin existencias</option>
         </select>
       </div>
 
@@ -254,6 +270,7 @@ export default function ValidadorInventario() {
         {card('Contados', totales.contados, '#4ade80')}
         {card('Pendientes', totales.pendientes, '#fbbf24')}
         {card('Con diferencias', totales.diferencias, '#f87171')}
+        {card('Sin existencias', totales.sinExistencias, '#94a3b8')}
         {card('% Avance', `${avance}%`, 'var(--t-accent)')}
       </div>
 
@@ -308,7 +325,7 @@ export default function ValidadorInventario() {
                 const valorActual = enEdicion ? editValues[item.id] : (item.cantidad_fisica ?? '');
                 const diferencia = yaContado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
                 return (
-                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234' }}>
+                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', opacity: item.sin_existencias ? 0.6 : 1 }}>
                     <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
                     <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 240 }}>{item.nombre}</td>
                     <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
@@ -341,6 +358,11 @@ export default function ValidadorInventario() {
                       )}
                     </td>
                     <td style={{ padding: '8px 12px' }}>
+                      {item.sin_existencias && (
+                        <span style={{ background: '#2a2a35', color: '#94a3b8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', marginRight: 4, display: 'inline-block', marginBottom: 2 }}>
+                          🚫 Sin existencias
+                        </span>
+                      )}
                       {yaContado ? (
                         <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
                       ) : (
@@ -382,4 +404,6 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
+
 
