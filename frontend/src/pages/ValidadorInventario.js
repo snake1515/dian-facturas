@@ -359,9 +359,16 @@ export default function ValidadorInventario() {
                     </td>
                     <td style={{ padding: '8px 12px' }}>
                       {item.sin_existencias && (
-                        <span style={{ background: '#2a2a35', color: '#94a3b8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', marginRight: 4, display: 'inline-block', marginBottom: 2 }}>
-                          🚫 Sin existencias
-                        </span>
+                        <div style={{ marginBottom: 2 }}>
+                          <span style={{ background: '#2a2a35', color: '#94a3b8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-block' }}>
+                            🚫 Sin existencias
+                          </span>
+                          {item.sin_existencias_desde && (
+                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2 }}>
+                              desde {fmtFechaCorta(item.sin_existencias_desde)}
+                            </div>
+                          )}
+                        </div>
                       )}
                       {yaContado ? (
                         <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
@@ -404,6 +411,7 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
 
 
 
