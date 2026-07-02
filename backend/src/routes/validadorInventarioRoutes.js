@@ -39,24 +39,45 @@ router.post('/importar', authMiddleware, async (req, res) => {
   }
   const bod = String(bodega).toUpperCase();
 
+  // Ítems válidos (con código) tal como quedarán guardados, para luego saber
+  // cuáles NO vinieron en esta carga y marcarlos como sin_existencias
+  const clavesCargadas = items
+    .filter(it => it.codigo)
+    .map(it => `${truncar(it.codigo, 50)}|${truncar(it.lote, 100)}|${truncar(it.fecha_vencimiento, 20)}`);
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     for (const it of items) {
       if (!it.codigo) continue;
       await client.query(
-        `INSERT INTO validador_inventario (bodega, codigo, nombre, lote, fecha_vencimiento, existencia_sistema, costo_unitario, costo_total)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO validador_inventario (bodega, codigo, nombre, lote, fecha_vencimiento, existencia_sistema, costo_unitario, costo_total, sin_existencias, ultima_carga)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, NOW())
          ON CONFLICT (bodega, codigo, lote, fecha_vencimiento)
          DO UPDATE SET
            nombre             = EXCLUDED.nombre,
            existencia_sistema = EXCLUDED.existencia_sistema,
            costo_unitario     = EXCLUDED.costo_unitario,
            costo_total        = EXCLUDED.costo_total,
+           sin_existencias    = false,
+           ultima_carga       = NOW(),
            actualizado_en     = NOW()`,
         [bod, truncar(it.codigo, 50), truncar(it.nombre, 300), truncar(it.lote, 100), truncar(it.fecha_vencimiento, 20), it.existencia_sistema || 0, it.costo_unitario || 0, it.costo_total || 0]
       );
     }
+
+    // Marca como sin_existencias los ítems de esta bodega que NO vinieron en
+    // el Excel recién cargado (no se borran, conservan su conteo/historial)
+    if (clavesCargadas.length > 0) {
+      await client.query(
+        `UPDATE validador_inventario
+         SET sin_existencias = true
+         WHERE bodega = $1
+           AND (codigo || '|' || lote || '|' || fecha_vencimiento) <> ALL($2::text[])`,
+        [bod, clavesCargadas]
+      );
+    }
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -121,5 +142,8 @@ router.patch('/:id/reset', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
 
 
