@@ -170,6 +170,33 @@ router.patch('/:id/sobrante', authMiddleware, async (req, res) => {
   }
 });
 
+});
+
+// ── PATCH /api/validador-inventario/:id/tipo-diferencia ───────────────────────
+// Clasificación MANUAL de la diferencia: 'real' o 'actualizacion'. Persistente
+// a propósito: el UPSERT de /importar nunca toca esta columna, así que la
+// elección sobrevive a nuevas cargas de Excel hasta que se cambie a mano.
+router.patch('/:id/tipo-diferencia', authMiddleware, async (req, res) => {
+  try {
+    const { tipo_diferencia } = req.body;
+    if (![null, 'real', 'actualizacion'].includes(tipo_diferencia)) {
+      return res.status(400).json({ error: "tipo_diferencia debe ser 'real', 'actualizacion' o null" });
+    }
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET tipo_diferencia = $1
+       WHERE id = $2
+       RETURNING *`,
+      [tipo_diferencia, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar tipo de diferencia:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // ── DELETE /api/validador-inventario/:id ──────────────────────────────────────
 // Elimina manualmente un item, solo permitido si está marcado sin_existencias
 // (evita borrar por error ítems que sí siguen activos en el sistema)
