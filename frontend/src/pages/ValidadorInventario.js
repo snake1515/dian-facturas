@@ -432,7 +432,14 @@ export default function ValidadorInventario() {
                         </div>
                       )}
                       {yaContado ? (
-                        <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
+                        <div>
+                          <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
+                          {item.contado_en && (
+                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2 }}>
+                              {fmtFechaCorta(item.contado_en)}
+                            </div>
+                          )}
+                        </div>
                       ) : (
                         <span style={{ background: 'var(--t-bg-sidebar)', color: '#fbbf24', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>⏳ Pendiente</span>
                       )}
@@ -481,6 +488,7 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
 
 
 
