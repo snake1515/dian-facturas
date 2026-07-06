@@ -40,6 +40,15 @@ function fmtFechaCorta(f) {
   return String(f).substring(0, 10);
 }
 
+// Limita a máximo 2 decimales y quita ceros sobrantes (Postgres NUMERIC(14,3)
+// devuelve valores como "46.000"; esto los deja en "46" o "11.5")
+function fmtNum2(v) {
+  if (v === null || v === undefined || v === '') return '';
+  const n = Number(v);
+  if (isNaN(n)) return '';
+  return String(Number(n.toFixed(2)));
+}
+
 // Fecha + hora en horario de Colombia (America/Bogota), sin importar en qué
 // zona horaria esté el navegador de quien esté viendo la pantalla
 function fmtFechaHoraCO(f) {
@@ -324,7 +333,7 @@ export default function ValidadorInventario() {
   );
 
   return (
-    <div style={{ maxWidth: 1300, margin: '0 auto' }}>
+    <div style={{ maxWidth: '100%', width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
       <div style={{ marginBottom: 18 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--t-text-primary)' }}>Validador de Inventarios</h1>
         <p style={{ fontSize: 13, color: 'var(--t-text-muted)', marginTop: 2 }}>
@@ -389,7 +398,7 @@ export default function ValidadorInventario() {
           No hay inventario cargado para la bodega <strong>{bodega}</strong>. Usa "Cargar / Actualizar Excel" para empezar.
         </div>
       ) : (
-        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflow: 'auto' }}>
+        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto', width: '100%', maxWidth: '100%' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-sidebar)' }}>
@@ -411,7 +420,7 @@ export default function ValidadorInventario() {
                     key={label}
                     onClick={key ? () => toggleSort(key) : undefined}
                     style={{
-                      padding: '10px 12px', textAlign: 'left', color: key ? 'var(--t-accent)' : 'var(--t-text-muted)',
+                      padding: '8px 8px', textAlign: 'left', color: key ? 'var(--t-accent)' : 'var(--t-text-muted)',
                       fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)',
                       cursor: key ? 'pointer' : 'default', userSelect: 'none',
                     }}
@@ -431,7 +440,7 @@ export default function ValidadorInventario() {
                 const yaContado = item.contado;
                 // Si ya fue contado, solo editor/admin pueden modificar
                 const puedeEditar = !yaContado || puedeEditarContado;
-                const valorActual = enEdicion ? editValues[item.id] : (item.cantidad_fisica ?? '');
+                const valorActual = enEdicion ? editValues[item.id] : fmtNum2(item.cantidad_fisica);
                 const diferencia = yaContado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
                 // El sistema actualizó la existencia DESPUÉS de que este ítem ya
                 // había sido contado (por una carga de Excel posterior). En ese
@@ -440,14 +449,14 @@ export default function ValidadorInventario() {
                 const actualizadoDespuesDeContar = fueActualizadoDespuesDeContar(item);
                 return (
                   <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', opacity: item.sin_existencias ? 0.6 : 1 }}>
-                    <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
-                    <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 240 }}>{item.nombre}</td>
-                    <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
-                    <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtFechaCorta(item.fecha_vencimiento)}</td>
-                    <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{Number(item.existencia_sistema).toLocaleString('es-CO')}</td>
-                    <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
-                    <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_total)}</td>
-                    <td style={{ padding: '8px 12px' }}>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--t-text-primary)', maxWidth: 240 }}>{item.nombre}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtFechaCorta(item.fecha_vencimiento)}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{Number(item.existencia_sistema).toLocaleString('es-CO')}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_total)}</td>
+                    <td style={{ padding: '6px 8px' }}>
                       {puedeEditar ? (
                         <input
                           type="number" value={valorActual}
@@ -463,11 +472,11 @@ export default function ValidadorInventario() {
                       ) : (
                         <span title="Solo editor/admin pueden modificar cantidades ya contadas"
                           style={{ color: yaContado ? '#4ade80' : 'var(--t-text-muted)', fontFamily: 'monospace' }}>
-                          {item.cantidad_fisica ?? '—'} 🔒
+                          {item.cantidad_fisica !== null && item.cantidad_fisica !== undefined ? fmtNum2(item.cantidad_fisica) : '—'} 🔒
                         </span>
                       )}
                     </td>
-                    <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
                       {diferencia === null ? (
                         <span style={{ color: 'var(--t-text-muted)' }}>—</span>
                       ) : diferencia === 0 ? (
@@ -477,22 +486,22 @@ export default function ValidadorInventario() {
                           title="El sistema actualizó la existencia DESPUÉS de que contaste este ítem — no necesariamente es un error de conteo, conviene revisarlo"
                           style={{ color: '#38bdf8', fontWeight: 600 }}
                         >
-                          🔄 {diferencia > 0 ? `+${diferencia}` : diferencia}
+                          🔄 {diferencia > 0 ? `+${fmtNum2(diferencia)}` : fmtNum2(diferencia)}
                         </span>
                       ) : (
                         <span
                           title="Diferencia detectada en el momento del conteo físico"
                           style={{ color: '#f87171', fontWeight: 600 }}
                         >
-                          ⚠️ {diferencia > 0 ? `+${diferencia}` : diferencia}
+                          ⚠️ {diferencia > 0 ? `+${fmtNum2(diferencia)}` : fmtNum2(diferencia)}
                         </span>
                       )}
                     </td>
-                    <td style={{ padding: '8px 12px' }}>
+                    <td style={{ padding: '6px 8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                         <input
                           type="number"
-                          value={editSobrante[item.id] !== undefined ? editSobrante[item.id] : (item.sobrante_libro ?? '')}
+                          value={editSobrante[item.id] !== undefined ? editSobrante[item.id] : fmtNum2(item.sobrante_libro)}
                           onChange={(e) => setEditSobrante(prev => ({ ...prev, [item.id]: e.target.value }))}
                           placeholder="—"
                           title="Registro manual: sobrante antiguo de antes del control de inventario (no se calcula solo)"
@@ -513,7 +522,7 @@ export default function ValidadorInventario() {
                         </button>
                       </div>
                     </td>
-                    <td style={{ padding: '8px 12px' }}>
+                    <td style={{ padding: '6px 8px' }}>
                       {item.sin_existencias && (
                         <div style={{ marginBottom: 2 }}>
                           <span style={{ background: '#2a2a35', color: '#94a3b8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-block' }}>
@@ -535,33 +544,34 @@ export default function ValidadorInventario() {
                             </div>
                           )}
                           <div style={{ fontSize: 10, color: 'var(--t-text-secondary)', marginTop: 1 }}>
-                            Cant: <strong>{item.cantidad_fisica}</strong>
+                            Cant: <strong>{fmtNum2(item.cantidad_fisica)}</strong>
                           </div>
                         </div>
                       ) : (
                         <span style={{ background: 'var(--t-bg-sidebar)', color: '#fbbf24', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>⏳ Pendiente</span>
                       )}
                     </td>
-                    <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
                       {puedeEditar && (
                         <button
                           onClick={() => guardarConteo(item)}
                           disabled={!enEdicion || guardandoId === item.id}
+                          title="Guardar conteo"
                           style={{
                             background: enEdicion ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
                             color: enEdicion ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 12, fontWeight: 500,
-                            cursor: enEdicion ? 'pointer' : 'not-allowed', marginRight: 6,
+                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12, fontWeight: 500,
+                            cursor: enEdicion ? 'pointer' : 'not-allowed', marginRight: 4, minWidth: 30,
                           }}
                         >
-                          {guardandoId === item.id ? 'Guardando…' : 'Guardar'}
+                          {guardandoId === item.id ? '…' : '💾'}
                         </button>
                       )}
                       {yaContado && puedeEditarContado && (
                         <button
                           onClick={() => deshacerConteo(item)}
                           title="Deshacer conteo"
-                          style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer', marginRight: 6 }}
+                          style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer', marginRight: 4 }}
                         >
                           ↺
                         </button>
@@ -586,6 +596,8 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
+
 
 
 
