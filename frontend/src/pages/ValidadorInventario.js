@@ -40,6 +40,29 @@ function fmtFechaCorta(f) {
   return String(f).substring(0, 10);
 }
 
+// Fecha + hora en horario de Colombia (America/Bogota), sin importar en qué
+// zona horaria esté el navegador de quien esté viendo la pantalla
+function fmtFechaHoraCO(f) {
+  if (!f) return '—';
+  const d = new Date(f);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('es-CO', {
+    timeZone: 'America/Bogota',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+// Detecta si el sistema actualizó la existencia DESPUÉS de que el ítem ya
+// había sido contado (por una carga de Excel posterior al conteo)
+function fueActualizadoDespuesDeContar(it) {
+  return !!(it.contado && it.actualizado_en && it.contado_en && new Date(it.actualizado_en) > new Date(it.contado_en));
+}
+
 export default function ValidadorInventario() {
   const { puede, isEditor, isAdmin } = useContext(AuthContext);
   const puedeEditarContado = isEditor || isAdmin; // solo editor/admin modifican cantidades ya guardadas
@@ -234,7 +257,8 @@ export default function ValidadorInventario() {
     }
     if (filtro === 'contados' && !it.contado) return false;
     if (filtro === 'pendientes' && it.contado) return false;
-    if (filtro === 'diferencias' && (!it.contado || Number(it.cantidad_fisica) === Number(it.existencia_sistema))) return false;
+    if (filtro === 'diferencias_reales' && !(it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema) && !fueActualizadoDespuesDeContar(it))) return false;
+    if (filtro === 'diferencias_actualizacion' && !(it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema) && fueActualizadoDespuesDeContar(it))) return false;
     if (filtro === 'sin_existencias' && !it.sin_existencias) return false;
     return true;
   });
@@ -251,7 +275,8 @@ export default function ValidadorInventario() {
     total: items.length,
     contados: items.filter(it => it.contado).length,
     pendientes: items.filter(it => !it.contado).length,
-    diferencias: items.filter(it => it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema)).length,
+    diferenciasReales: items.filter(it => it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema) && !fueActualizadoDespuesDeContar(it)).length,
+    diferenciasPorActualizacion: items.filter(it => it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema) && fueActualizadoDespuesDeContar(it)).length,
     sinExistencias: items.filter(it => it.sin_existencias).length,
   };
   const avance = totales.total > 0 ? Math.round((totales.contados / totales.total) * 100) : 0;
@@ -314,7 +339,8 @@ export default function ValidadorInventario() {
           <option value="todos">Todos</option>
           <option value="contados">✅ Contados</option>
           <option value="pendientes">⏳ Pendientes</option>
-          <option value="diferencias">⚠️ Con diferencias</option>
+          <option value="diferencias_reales">⚠️ Diferencias reales</option>
+          <option value="diferencias_actualizacion">🔄 Por actualización</option>
           <option value="sin_existencias">🚫 Sin existencias</option>
         </select>
       </div>
@@ -330,7 +356,8 @@ export default function ValidadorInventario() {
         {card('Total ítems', totales.total, 'var(--t-text-primary)')}
         {card('Contados', totales.contados, '#4ade80')}
         {card('Pendientes', totales.pendientes, '#fbbf24')}
-        {card('Con diferencias', totales.diferencias, '#f87171')}
+        {card('⚠️ Diferencias reales', totales.diferenciasReales, '#f87171')}
+        {card('🔄 Por actualización', totales.diferenciasPorActualizacion, '#38bdf8')}
         {card('Sin existencias', totales.sinExistencias, '#94a3b8')}
         {card('% Avance', `${avance}%`, 'var(--t-accent)')}
       </div>
@@ -385,6 +412,11 @@ export default function ValidadorInventario() {
                 const puedeEditar = !yaContado || puedeEditarContado;
                 const valorActual = enEdicion ? editValues[item.id] : (item.cantidad_fisica ?? '');
                 const diferencia = yaContado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
+                // El sistema actualizó la existencia DESPUÉS de que este ítem ya
+                // había sido contado (por una carga de Excel posterior). En ese
+                // caso la diferencia no viene de un error de conteo, sino de que
+                // el dato del sistema cambió después — se marca distinto.
+                const actualizadoDespuesDeContar = fueActualizadoDespuesDeContar(item);
                 return (
                   <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', opacity: item.sin_existencias ? 0.6 : 1 }}>
                     <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
@@ -400,11 +432,16 @@ export default function ValidadorInventario() {
                           type="number" value={valorActual}
                           onChange={(e) => setEditValues(prev => ({ ...prev, [item.id]: e.target.value }))}
                           placeholder="—"
-                          style={{ ...inputStyle, width: 90, fontFamily: 'monospace' }}
+                          style={{
+                            ...inputStyle,
+                            width: 90,
+                            fontFamily: 'monospace',
+                            ...(yaContado ? { background: '#132018', borderColor: '#2f6d3f', color: '#4ade80' } : {}),
+                          }}
                         />
                       ) : (
                         <span title="Solo editor/admin pueden modificar cantidades ya contadas"
-                          style={{ color: 'var(--t-text-muted)', fontFamily: 'monospace' }}>
+                          style={{ color: yaContado ? '#4ade80' : 'var(--t-text-muted)', fontFamily: 'monospace' }}>
                           {item.cantidad_fisica ?? '—'} 🔒
                         </span>
                       )}
@@ -414,8 +451,20 @@ export default function ValidadorInventario() {
                         <span style={{ color: 'var(--t-text-muted)' }}>—</span>
                       ) : diferencia === 0 ? (
                         <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
+                      ) : actualizadoDespuesDeContar ? (
+                        <span
+                          title="El sistema actualizó la existencia DESPUÉS de que contaste este ítem — no necesariamente es un error de conteo, conviene revisarlo"
+                          style={{ color: '#38bdf8', fontWeight: 600 }}
+                        >
+                          🔄 {diferencia > 0 ? `+${diferencia}` : diferencia}
+                        </span>
                       ) : (
-                        <span style={{ color: '#f87171', fontWeight: 600 }}>{diferencia > 0 ? `+${diferencia}` : diferencia}</span>
+                        <span
+                          title="Diferencia detectada en el momento del conteo físico"
+                          style={{ color: '#f87171', fontWeight: 600 }}
+                        >
+                          ⚠️ {diferencia > 0 ? `+${diferencia}` : diferencia}
+                        </span>
                       )}
                     </td>
                     <td style={{ padding: '8px 12px' }}>
@@ -435,10 +484,13 @@ export default function ValidadorInventario() {
                         <div>
                           <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
                           {item.contado_en && (
-                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2 }}>
-                              {fmtFechaCorta(item.contado_en)}
+                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2, whiteSpace: 'nowrap' }}>
+                              {fmtFechaHoraCO(item.contado_en)}
                             </div>
                           )}
+                          <div style={{ fontSize: 10, color: 'var(--t-text-secondary)', marginTop: 1 }}>
+                            Cant: <strong>{item.cantidad_fisica}</strong>
+                          </div>
                         </div>
                       ) : (
                         <span style={{ background: 'var(--t-bg-sidebar)', color: '#fbbf24', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>⏳ Pendiente</span>
