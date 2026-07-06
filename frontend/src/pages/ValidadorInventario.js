@@ -76,6 +76,8 @@ export default function ValidadorInventario() {
   const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
   const [editValues, setEditValues] = useState({});
   const [guardandoId, setGuardandoId] = useState(null);
+  const [editSobrante, setEditSobrante] = useState({});
+  const [guardandoSobranteId, setGuardandoSobranteId] = useState(null);
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
 
@@ -209,6 +211,24 @@ export default function ValidadorInventario() {
       alert('Error guardando el conteo: ' + (e.response?.data?.error || e.message));
     }
     setGuardandoId(null);
+  }
+
+  // ── Guardar sobrante en libro (registro MANUAL, no calculado) ──────────────
+  // Sobrantes antiguos que vienen de antes de que existiera el control de
+  // inventario físico — no se calculan automáticamente porque las diferencias
+  // reales suelen deberse a errores en salidas de consumo, no a un sobrante real.
+  async function guardarSobrante(item) {
+    const valor = editSobrante[item.id];
+    if (valor === undefined || valor === '') return;
+    setGuardandoSobranteId(item.id);
+    try {
+      const res = await api.patch(`/validador-inventario/${item.id}/sobrante`, { sobrante_libro: parseNumCO(valor) });
+      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
+      setEditSobrante(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
+    } catch (e) {
+      alert('Error guardando el sobrante en libro: ' + (e.response?.data?.error || e.message));
+    }
+    setGuardandoSobranteId(null);
   }
 
   async function deshacerConteo(item) {
@@ -383,6 +403,7 @@ export default function ValidadorInventario() {
                   { key: 'costo_total',    label: 'Costo Total' },
                   { key: null,            label: 'Cant. Física' },
                   { key: null,            label: 'Diferencia' },
+                  { key: null,            label: 'Sobrante en libro' },
                   { key: null,            label: 'Estado' },
                   { key: null,            label: '' },
                 ].map(({ key, label }) => (
@@ -468,6 +489,31 @@ export default function ValidadorInventario() {
                       )}
                     </td>
                     <td style={{ padding: '8px 12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <input
+                          type="number"
+                          value={editSobrante[item.id] !== undefined ? editSobrante[item.id] : (item.sobrante_libro ?? '')}
+                          onChange={(e) => setEditSobrante(prev => ({ ...prev, [item.id]: e.target.value }))}
+                          placeholder="—"
+                          title="Registro manual: sobrante antiguo de antes del control de inventario (no se calcula solo)"
+                          style={{ ...inputStyle, width: 80, fontFamily: 'monospace' }}
+                        />
+                        <button
+                          onClick={() => guardarSobrante(item)}
+                          disabled={editSobrante[item.id] === undefined || guardandoSobranteId === item.id}
+                          title="Guardar sobrante en libro"
+                          style={{
+                            background: editSobrante[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
+                            color: editSobrante[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
+                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
+                            cursor: editSobrante[item.id] !== undefined ? 'pointer' : 'not-allowed',
+                          }}
+                        >
+                          {guardandoSobranteId === item.id ? '…' : '💾'}
+                        </button>
+                      </div>
+                    </td>
+                    <td style={{ padding: '8px 12px' }}>
                       {item.sin_existencias && (
                         <div style={{ marginBottom: 2 }}>
                           <span style={{ background: '#2a2a35', color: '#94a3b8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-block' }}>
@@ -540,6 +586,7 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
 
 
 
