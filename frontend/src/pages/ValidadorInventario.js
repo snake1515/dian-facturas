@@ -72,6 +72,17 @@ function fueActualizadoDespuesDeContar(it) {
   return !!(it.contado && it.actualizado_en && it.contado_en && new Date(it.actualizado_en) > new Date(it.contado_en));
 }
 
+// Clasificación de la diferencia: 'real' o 'actualizacion'. Prioriza SIEMPRE
+// la elección manual guardada en tipo_diferencia (persiste entre cargas de
+// Excel); si aún no se ha clasificado, usa la detección automática por fecha
+// solo como sugerencia inicial hasta que el usuario la confirme o la cambie.
+function getTipoDiferencia(it) {
+  const tieneDiferencia = it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema);
+  if (!tieneDiferencia) return null;
+  if (it.tipo_diferencia === 'real' || it.tipo_diferencia === 'actualizacion') return it.tipo_diferencia;
+  return fueActualizadoDespuesDeContar(it) ? 'actualizacion' : 'real';
+}
+
 export default function ValidadorInventario() {
   const { puede, isEditor, isAdmin } = useContext(AuthContext);
   const puedeEditarContado = isEditor || isAdmin; // solo editor/admin modifican cantidades ya guardadas
@@ -240,6 +251,18 @@ export default function ValidadorInventario() {
     setGuardandoSobranteId(null);
   }
 
+  // ── Clasificar manualmente la diferencia (real vs. por actualización) ──────
+  // Persistente: se guarda en tipo_diferencia y el /importar nunca la toca,
+  // así que sobrevive a nuevas cargas de Excel hasta que se cambie a mano.
+  async function clasificarDiferencia(item, tipo) {
+    try {
+      const res = await api.patch(`/validador-inventario/${item.id}/tipo-diferencia`, { tipo_diferencia: tipo });
+      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
+    } catch (e) {
+      alert('Error guardando la clasificación: ' + (e.response?.data?.error || e.message));
+    }
+  }
+
   async function deshacerConteo(item) {
     if (!window.confirm(`¿Deshacer el conteo de "${item.nombre}"?`)) return;
     try {
@@ -286,8 +309,8 @@ export default function ValidadorInventario() {
     }
     if (filtro === 'contados' && !it.contado) return false;
     if (filtro === 'pendientes' && it.contado) return false;
-    if (filtro === 'diferencias_reales' && !(it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema) && !fueActualizadoDespuesDeContar(it))) return false;
-    if (filtro === 'diferencias_actualizacion' && !(it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema) && fueActualizadoDespuesDeContar(it))) return false;
+    if (filtro === 'diferencias_reales' && getTipoDiferencia(it) !== 'real') return false;
+    if (filtro === 'diferencias_actualizacion' && getTipoDiferencia(it) !== 'actualizacion') return false;
     if (filtro === 'sin_existencias' && !it.sin_existencias) return false;
     return true;
   });
@@ -304,8 +327,8 @@ export default function ValidadorInventario() {
     total: items.length,
     contados: items.filter(it => it.contado).length,
     pendientes: items.filter(it => !it.contado).length,
-    diferenciasReales: items.filter(it => it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema) && !fueActualizadoDespuesDeContar(it)).length,
-    diferenciasPorActualizacion: items.filter(it => it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema) && fueActualizadoDespuesDeContar(it)).length,
+    diferenciasReales: items.filter(it => getTipoDiferencia(it) === 'real').length,
+    diferenciasPorActualizacion: items.filter(it => getTipoDiferencia(it) === 'actualizacion').length,
     sinExistencias: items.filter(it => it.sin_existencias).length,
   };
   const avance = totales.total > 0 ? Math.round((totales.contados / totales.total) * 100) : 0;
@@ -442,11 +465,11 @@ export default function ValidadorInventario() {
                 const puedeEditar = !yaContado || puedeEditarContado;
                 const valorActual = enEdicion ? editValues[item.id] : fmtNum2(item.cantidad_fisica);
                 const diferencia = yaContado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
-                // El sistema actualizó la existencia DESPUÉS de que este ítem ya
-                // había sido contado (por una carga de Excel posterior). En ese
-                // caso la diferencia no viene de un error de conteo, sino de que
-                // el dato del sistema cambió después — se marca distinto.
-                const actualizadoDespuesDeContar = fueActualizadoDespuesDeContar(item);
+                // Clasificación de la diferencia: prioriza SIEMPRE la elección
+                // manual guardada (persiste entre cargas de Excel); si aún no
+                // se ha clasificado, usa la detección automática por fecha
+                // solo como sugerencia inicial.
+                const tipoDif = getTipoDiferencia(item);
                 return (
                   <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', opacity: item.sin_existencias ? 0.6 : 1 }}>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
@@ -481,20 +504,38 @@ export default function ValidadorInventario() {
                         <span style={{ color: 'var(--t-text-muted)' }}>—</span>
                       ) : diferencia === 0 ? (
                         <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
-                      ) : actualizadoDespuesDeContar ? (
-                        <span
-                          title="El sistema actualizó la existencia DESPUÉS de que contaste este ítem — no necesariamente es un error de conteo, conviene revisarlo"
-                          style={{ color: '#38bdf8', fontWeight: 600 }}
-                        >
-                          🔄 {diferencia > 0 ? `+${fmtNum2(diferencia)}` : fmtNum2(diferencia)}
-                        </span>
                       ) : (
-                        <span
-                          title="Diferencia detectada en el momento del conteo físico"
-                          style={{ color: '#f87171', fontWeight: 600 }}
-                        >
-                          ⚠️ {diferencia > 0 ? `+${fmtNum2(diferencia)}` : fmtNum2(diferencia)}
-                        </span>
+                        <div>
+                          <div style={{ marginBottom: 3, color: tipoDif === 'actualizacion' ? '#38bdf8' : '#f87171', fontWeight: 600 }}>
+                            {tipoDif === 'actualizacion' ? '🔄' : '⚠️'} {diferencia > 0 ? `+${fmtNum2(diferencia)}` : fmtNum2(diferencia)}
+                          </div>
+                          <div style={{ display: 'flex', gap: 3 }}>
+                            <button
+                              onClick={() => clasificarDiferencia(item, 'real')}
+                              title="Marcar como diferencia real (error de conteo/consumo)"
+                              style={{
+                                background: tipoDif === 'real' ? '#3a1d1d' : 'var(--t-bg-sidebar)',
+                                border: tipoDif === 'real' ? '1px solid #f87171' : '1px solid var(--t-border)',
+                                color: tipoDif === 'real' ? '#f87171' : 'var(--t-text-muted)',
+                                borderRadius: 4, padding: '2px 5px', fontSize: 10, cursor: 'pointer', fontWeight: tipoDif === 'real' ? 700 : 400,
+                              }}
+                            >
+                              ⚠️ Real
+                            </button>
+                            <button
+                              onClick={() => clasificarDiferencia(item, 'actualizacion')}
+                              title="Marcar como diferencia por actualización posterior del sistema"
+                              style={{
+                                background: tipoDif === 'actualizacion' ? '#132433' : 'var(--t-bg-sidebar)',
+                                border: tipoDif === 'actualizacion' ? '1px solid #38bdf8' : '1px solid var(--t-border)',
+                                color: tipoDif === 'actualizacion' ? '#38bdf8' : 'var(--t-text-muted)',
+                                borderRadius: 4, padding: '2px 5px', fontSize: 10, cursor: 'pointer', fontWeight: tipoDif === 'actualizacion' ? 700 : 400,
+                              }}
+                            >
+                              🔄 Actual.
+                            </button>
+                          </div>
+                        </div>
                       )}
                     </td>
                     <td style={{ padding: '6px 8px' }}>
@@ -596,6 +637,8 @@ export default function ValidadorInventario() {
     </div>
   );
 }
+
+
 
 
 
