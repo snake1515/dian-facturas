@@ -145,6 +145,31 @@ router.patch('/:id/reset', authMiddleware, async (req, res) => {
   }
 });
 
+// ── PATCH /api/validador-inventario/:id/sobrante ──────────────────────────────
+// Registro MANUAL (no calculado) del sobrante en libro: sobrantes antiguos
+// de antes de que existiera el control de inventario físico. Independiente
+// del conteo físico — se puede editar en cualquier momento.
+router.patch('/:id/sobrante', authMiddleware, async (req, res) => {
+  try {
+    const { sobrante_libro } = req.body;
+    if (sobrante_libro === undefined || sobrante_libro === null || sobrante_libro === '') {
+      return res.status(400).json({ error: 'sobrante_libro requerido' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET sobrante_libro = $1
+       WHERE id = $2
+       RETURNING *`,
+      [sobrante_libro, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar sobrante en libro:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // ── DELETE /api/validador-inventario/:id ──────────────────────────────────────
 // Elimina manualmente un item, solo permitido si está marcado sin_existencias
 // (evita borrar por error ítems que sí siguen activos en el sistema)
@@ -167,6 +192,7 @@ router.delete('/:id', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
 
 
 
