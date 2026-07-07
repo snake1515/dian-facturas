@@ -170,8 +170,6 @@ router.patch('/:id/sobrante', authMiddleware, async (req, res) => {
   }
 });
 
-});
-
 // ── PATCH /api/validador-inventario/:id/tipo-diferencia ───────────────────────
 // Clasificación MANUAL de la diferencia: 'real' o 'actualizacion'. Persistente
 // a propósito: el UPSERT de /importar nunca toca esta columna, así que la
