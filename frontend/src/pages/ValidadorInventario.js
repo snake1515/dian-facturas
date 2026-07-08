@@ -98,6 +98,8 @@ export default function ValidadorInventario() {
   const [guardandoId, setGuardandoId] = useState(null);
   const [editSobrante, setEditSobrante] = useState({});
   const [guardandoSobranteId, setGuardandoSobranteId] = useState(null);
+  const [editNotas, setEditNotas] = useState({});
+  const [guardandoNotasId, setGuardandoNotasId] = useState(null);
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
 
@@ -249,6 +251,21 @@ export default function ValidadorInventario() {
       alert('Error guardando el sobrante en libro: ' + (e.response?.data?.error || e.message));
     }
     setGuardandoSobranteId(null);
+  }
+
+  // ── Guardar notas (texto libre MANUAL de observaciones por ítem) ───────────
+  async function guardarNotas(item) {
+    const valor = editNotas[item.id];
+    if (valor === undefined) return;
+    setGuardandoNotasId(item.id);
+    try {
+      const res = await api.patch(`/validador-inventario/${item.id}/notas`, { notas: valor });
+      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
+      setEditNotas(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
+    } catch (e) {
+      alert('Error guardando la nota: ' + (e.response?.data?.error || e.message));
+    }
+    setGuardandoNotasId(null);
   }
 
   // ── Clasificar manualmente la diferencia (real vs. por actualización) ──────
@@ -435,6 +452,7 @@ export default function ValidadorInventario() {
                   { key: 'costo_total',    label: 'Costo Total' },
                   { key: null,            label: 'Cant. Física' },
                   { key: null,            label: 'Diferencia' },
+                  { key: null,            label: 'Notas' },
                   { key: null,            label: 'Sobrante en libro' },
                   { key: null,            label: 'Estado' },
                   { key: null,            label: '' },
@@ -537,6 +555,31 @@ export default function ValidadorInventario() {
                           </div>
                         </div>
                       )}
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <input
+                          type="text"
+                          value={editNotas[item.id] !== undefined ? editNotas[item.id] : (item.notas || '')}
+                          onChange={(e) => setEditNotas(prev => ({ ...prev, [item.id]: e.target.value }))}
+                          placeholder="—"
+                          title="Observaciones (texto libre, no se borra al subir un Excel nuevo)"
+                          style={{ ...inputStyle, width: 130, fontSize: 12 }}
+                        />
+                        <button
+                          onClick={() => guardarNotas(item)}
+                          disabled={editNotas[item.id] === undefined || guardandoNotasId === item.id}
+                          title="Guardar nota"
+                          style={{
+                            background: editNotas[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
+                            color: editNotas[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
+                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
+                            cursor: editNotas[item.id] !== undefined ? 'pointer' : 'not-allowed',
+                          }}
+                        >
+                          {guardandoNotasId === item.id ? '…' : '💾'}
+                        </button>
+                      </div>
                     </td>
                     <td style={{ padding: '6px 8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
