@@ -195,6 +195,27 @@ router.patch('/:id/tipo-diferencia', authMiddleware, async (req, res) => {
   }
 });
 
+// ── PATCH /api/validador-inventario/:id/notas ──────────────────────────────────
+// Texto libre MANUAL de observaciones por ítem. Persistente: el UPSERT de
+// /importar nunca la toca, así que sobrevive a nuevas cargas de Excel.
+router.patch('/:id/notas', authMiddleware, async (req, res) => {
+  try {
+    const { notas } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET notas = $1
+       WHERE id = $2
+       RETURNING *`,
+      [notas ?? null, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar notas:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // ── DELETE /api/validador-inventario/:id ──────────────────────────────────────
 // Elimina manualmente un item, solo permitido si está marcado sin_existencias
 // (evita borrar por error ítems que sí siguen activos en el sistema)
