@@ -244,21 +244,21 @@ router.post('/devoluciones', upload.single('soporte'), async (req, res) => {
 //  PURGA MASIVA
 // ═══════════════════════════════════════════════════════════════════════════
 
-router.post('/purgar', async (req, res) => {
+router.delete('/purgar', async (req, res) => {
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('DELETE FROM prestamo_cruces');
-      await client.query('DELETE FROM prestamo_devoluciones');
-      await client.query('DELETE FROM prestamos');
-      await client.query('COMMIT');
-      throw e;
-    } finally {
-      client.release();
-    }
+    await client.query('BEGIN');
+    await client.query('DELETE FROM prestamo_cruces');
+    await client.query('DELETE FROM prestamo_devoluciones');
+    await client.query('DELETE FROM prestamos');
+    await client.query('COMMIT');
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -463,6 +463,242 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
