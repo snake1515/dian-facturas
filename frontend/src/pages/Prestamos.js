@@ -149,6 +149,42 @@ function CatTag({ categoria }) {
   );
 }
 
+// Muestra el/los soporte(s) de un cruce. Para cruces totales hay un único PDF
+// (soporte_url); para cruces parciales puede haber un PDF por producto
+// (soporte_items, guardado como { [codigo]: soporte_url }).
+function CruceSoportes({ cruce }) {
+  const linkS = { color: 'var(--t-accent)', fontSize: 11, textDecoration: 'none', display: 'block' };
+
+  if (cruce.tipo_cruce === 'parcial' && cruce.soporte_items && Object.keys(cruce.soporte_items).length > 0) {
+    const entradas = Object.entries(cruce.soporte_items).filter(([, url]) => url);
+    if (entradas.length === 0) return <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        {entradas.map(([codigo, url]) => {
+          const item = (cruce.devolucion_items || []).find(i => i.codigo === codigo);
+          const nombre = item?.nombre || codigo;
+          return (
+            <a key={codigo} href={`${API_BASE}/prestamos/soporte/${url}`} target="_blank" rel="noreferrer"
+              title={nombre} style={linkS}>
+              📄 {nombre.length > 22 ? nombre.substring(0, 22) + '…' : nombre}
+            </a>
+          );
+        })}
+      </div>
+    );
+  }
+
+  if (cruce.soporte_url) {
+    return (
+      <a href={`${API_BASE}/prestamos/soporte/${cruce.soporte_url}`} target="_blank" rel="noreferrer" style={linkS}>
+        📄 Ver
+      </a>
+    );
+  }
+
+  return <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>;
+}
+
 // ─── Componente principal ───────────────────────────────────────────────────────
 
 export default function Prestamos() {
@@ -222,7 +258,7 @@ export default function Prestamos() {
       ) : (
         <>
           {activeTab === 'resumen'     && <TabResumen prestamos={prestamos} devoluciones={devoluciones} onRefresh={cargarDatos} />}
-          {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} onRefresh={cargarDatos} />}
+          {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
@@ -374,7 +410,7 @@ function TabResumen({ prestamos, devoluciones, onRefresh }) {
 
 // ─── TAB MOVIMIENTOS ────────────────────────────────────────────────────────────
 
-function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
+function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefresh }) {
   function saldoPend(p) {
     const totalPrestado = (p.items || []).reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
     const totalDevuelto = devoluciones
@@ -382,6 +418,13 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
       .flatMap(d => d.items || [])
       .reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
     return Math.max(0, totalPrestado - totalDevuelto);
+  }
+
+  // Un documento puede participar en un cruce como el préstamo original o
+  // como la devolución que lo cierra — se busca en ambos lados.
+  function crucesDe(p) {
+    if (!p) return [];
+    return cruces.filter(c => c.prestamo_id === p.id || c.devolucion_id === p.id);
   }
 
   async function borrarMovimiento(p, e) {
@@ -545,6 +588,9 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
                     {devs.length > 0 && (
                       <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--t-text-muted)' }}>{devs.length} dev.</span>
                     )}
+                    {crucesDe(p).length > 0 && (
+                      <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--t-accent)' }}>🔗 {crucesDe(p).length} cruce{crucesDe(p).length > 1 ? 's' : ''}</span>
+                    )}
                     <button onClick={e => borrarMovimiento(p, e)}
                       title='Borrar movimiento'
                       style={{ marginLeft: 6, padding: '4px 8px', fontSize: 12, border: '1px solid #ef444455', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#ef4444' }}>
@@ -563,7 +609,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
 
       {detalle && (
         <Modal onClose={() => setDetalle(null)} titulo={`Préstamo ${detalle.documento_contable}`}>
-          <DetallePrestamoModal prestamo={detalle} devoluciones={devoluciones.filter(d => d.prestamo_id === detalle.id)} />
+          <DetallePrestamoModal prestamo={detalle} devoluciones={devoluciones.filter(d => d.prestamo_id === detalle.id)} cruces={crucesDe(detalle)} />
         </Modal>
       )}
 
@@ -582,7 +628,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, onRefresh }) {
 
 // ─── DETALLE PRÉSTAMO ───────────────────────────────────────────────────────────
 
-function DetallePrestamoModal({ prestamo, devoluciones }) {
+function DetallePrestamoModal({ prestamo, devoluciones, cruces = [] }) {
   const thS = { textAlign: 'left', padding: '7px 10px', fontSize: 11, color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)', fontWeight: 500 };
   const tdS = { padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontSize: 13 };
 
@@ -643,6 +689,35 @@ function DetallePrestamoModal({ prestamo, devoluciones }) {
               </table>
             </div>
           ))}
+        </>
+      )}
+
+      {cruces.length > 0 && (
+        <>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8, marginTop: 20 }}>Cruces</div>
+          {cruces.map(c => {
+            const esDevolucion = c.devolucion_id === prestamo.id;
+            const docContraparte = esDevolucion ? c.prestamo_doc : c.devolucion_doc;
+            return (
+              <div key={c.id} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden' }}>
+                <div style={{ background: 'var(--t-bg-card)', padding: '8px 12px', display: 'flex', gap: 12, alignItems: 'center', fontSize: 13, flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 500 }}>🔗 {esDevolucion ? 'Cruce con préstamo' : 'Cruce con devolución'} {docContraparte}</span>
+                  <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, background: c.tipo_cruce === 'total' ? '#22c55e22' : '#f59e0b22', color: c.tipo_cruce === 'total' ? '#22c55e' : '#f59e0b' }}>
+                    {c.tipo_cruce}
+                  </span>
+                  <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>{c.created_at?.substring(0, 10)}</span>
+                </div>
+                <div style={{ padding: '10px 12px' }}>
+                  {c.observaciones && (
+                    <div style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 8, lineHeight: 1.5 }}>
+                      <span style={{ color: 'var(--t-text-muted)', fontWeight: 500 }}>Notas: </span>{c.observaciones}
+                    </div>
+                  )}
+                  <CruceSoportes cruce={c} />
+                </div>
+              </div>
+            );
+          })}
         </>
       )}
     </div>
@@ -798,6 +873,24 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
     setGuardandoCl(false);
   }
 
+  // Convierte una celda de fecha de Excel a 'YYYY-MM-DD'. Las fechas pueden venir
+  // como texto ('2020-12-09') o como número serial de Excel (días desde 1899-12-30,
+  // ej. 46142) cuando la celda tiene formato de fecha nativo — sin esta conversión
+  // el serial se guardaba tal cual y Postgres rechazaba el insert.
+  function parseFechaExcel(val) {
+    if (val === null || val === undefined || val === '') return '';
+    if (typeof val === 'number') {
+      const ms = Math.round((val - 25569) * 86400 * 1000);
+      const d = new Date(ms);
+      if (isNaN(d.getTime())) return '';
+      return d.toISOString().substring(0, 10);
+    }
+    const s = String(val).trim();
+    // Algunas celdas numéricas llegan como texto ("46142")
+    if (/^\d{4,6}$/.test(s)) return parseFechaExcel(Number(s));
+    return s.substring(0, 10);
+  }
+
   function cargarExcel(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -823,7 +916,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       const tipo = tipoMap[prefijo];
       if (!tipo) continue;
       if (!documentos[docKey]) {
-        const fechaVal = r[1] ? String(r[1]).substring(0, 10) : '';
+        const fechaVal = parseFechaExcel(r[1]);
         const bodegaExcel = String(r[12] || '').trim().toUpperCase();
         const bodegaMatch = BODEGAS.find(b => bodegaExcel.includes(b.nombre.toUpperCase()) || bodegaExcel.includes(b.codigo));
         documentos[docKey] = {
@@ -843,7 +936,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       const precioUnit = cantidad > 0 ? totalCosto / cantidad : 0;
       const nombre    = String(r[11] || '').trim();
       const lote      = String(r[19] || '').trim();
-      const fechaVenc = r[20] ? String(r[20]).substring(0, 10) : '';
+      const fechaVenc = parseFechaExcel(r[20]);
       const prodMaestro = productos.find(p => p.codigo === codigo);
       if (!prodMaestro) codigosNuevos.add(codigo);
       // Actualizar precio en maestro si difiere (igual que en buscarEnExcel)
@@ -879,7 +972,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ documentos }),
       });
-      setImportResult({ creados: result.creados, omitidos: result.omitidos, omitidos_docs: result.omitidos_docs || [], codigosNuevos });
+      setImportResult({ creados: result.creados, omitidos: result.omitidos, omitidos_docs: result.omitidos_docs || [], errores: result.errores || 0, errores_docs: result.errores_docs || [], codigosNuevos });
       onSaved();
     } catch (e) { setError('Error importando: ' + e.message); }
     setImportando(false);
@@ -1113,6 +1206,16 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
             ✅ <b>{importResult.creados}</b> documentos creados
             {importResult.omitidos > 0 && <span style={{ color: 'var(--t-text-muted)' }}> · {importResult.omitidos} ya existían ({importResult.omitidos_docs.join(', ')})</span>}
             {importResult.codigosNuevos?.length > 0 && <div style={{ color: '#f59e0b', marginTop: 4 }}>⚠️ Códigos sin categoría: {importResult.codigosNuevos.join(', ')}</div>}
+            {importResult.errores > 0 && (
+              <div style={{ color: '#ef4444', marginTop: 4 }}>
+                ⚠️ {importResult.errores} documento(s) con datos inválidos, omitidos:
+                <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                  {importResult.errores_docs.map(err => (
+                    <li key={err.documento_contable}>{err.documento_contable}: {err.motivo}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1586,9 +1689,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                     <span style={{ color: estadoColor(c.estado_prestamo), fontWeight: 600 }}>{c.estado_prestamo || '—'}</span>
                   </td>
                   <td style={{ padding: '8px 10px' }}>
-                    {c.soporte_url
-                      ? <a href={`${API_BASE}/prestamos/soporte/${c.soporte_url}`} target="_blank" rel="noreferrer" style={{ color: 'var(--t-accent)', fontSize: 11 }}>📄 Ver</a>
-                      : <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>}
+                    <CruceSoportes cruce={c} />
                   </td>
                   <td style={{ padding: '8px 10px' }}>
                     <button onClick={e => revertirCruce(c, e)}
@@ -1868,6 +1969,7 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
 
 
