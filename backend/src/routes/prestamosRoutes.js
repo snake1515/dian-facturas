@@ -273,14 +273,23 @@ router.post('/importar-masivo', async (req, res) => {
     if (!Array.isArray(documentos) || documentos.length === 0)
       return res.status(400).json({ error: 'documentos requerido' });
 
+    const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
     const client = await pool.connect();
     const creados = [];
     const omitidos = [];
+    const errores = [];
 
     try {
       await client.query('BEGIN');
 
       for (const doc of documentos) {
+        // Validar fecha antes de intentar el insert — un documento con fecha
+        // inválida se omite y se reporta, en vez de abortar TODA la importación.
+        if (!doc.fecha || !FECHA_RE.test(doc.fecha)) {
+          errores.push({ documento_contable: doc.documento_contable, motivo: `Fecha inválida: "${doc.fecha}"` });
+          continue;
+        }
+
         // Verificar si ya existe
         const { rows: existe } = await client.query(
           'SELECT id FROM prestamos WHERE documento_contable = $1',
@@ -337,7 +346,14 @@ router.post('/importar-masivo', async (req, res) => {
       client.release();
     }
 
-    res.json({ creados: creados.length, omitidos: omitidos.length, omitidos_docs: omitidos, documentos: creados });
+    res.json({
+      creados: creados.length,
+      omitidos: omitidos.length,
+      omitidos_docs: omitidos,
+      errores: errores.length,
+      errores_docs: errores,
+      documentos: creados,
+    });
   } catch (e) { console.error('importar-masivo ERROR:', e.message); res.status(500).json({ error: e.message }); }
 });
 
@@ -463,6 +479,242 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
