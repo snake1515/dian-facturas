@@ -468,8 +468,19 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
   const [filtroTipo,  setFiltroTipo]  = useState('');
   const [filtroEstado,setFiltroEstado]= useState('');
   const [filtroBodega,setFiltroBodega]= useState('');
+  const [filtroMes,   setFiltroMes]   = useState('');
+  const [filtroAnio,  setFiltroAnio]  = useState('');
   const [detalle,     setDetalle]     = useState(null);
   const [devModal,    setDevModal]    = useState(null);
+
+  const MESES = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+  ];
+
+  const aniosDisponibles = [...new Set(
+    prestamos.map(p => p.fecha && p.fecha.substring(0, 4)).filter(Boolean)
+  )].sort((a, b) => b - a);
 
   const filtrados = prestamos.filter(p => {
     const q = busqueda.toLowerCase();
@@ -477,7 +488,9 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
     const matchTipo   = !filtroTipo   || p.tipo          === filtroTipo;
     const matchEstado = !filtroEstado || p.estado         === filtroEstado;
     const matchBodega = !filtroBodega || p.bodega_codigo  === filtroBodega;
-    return matchQ && matchTipo && matchEstado && matchBodega;
+    const matchMes    = !filtroMes    || p.fecha?.substring(5, 7) === filtroMes;
+    const matchAnio   = !filtroAnio   || p.fecha?.substring(0, 4) === filtroAnio;
+    return matchQ && matchTipo && matchEstado && matchBodega && matchMes && matchAnio;
   });
 
   async function exportar() {
@@ -522,6 +535,18 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
           <option value='abierto'>Abierto</option>
           <option value='parcial'>Parcial</option>
           <option value='cerrado'>Cerrado</option>
+        </select>
+        <select value={filtroMes} onChange={e => setFiltroMes(e.target.value)}
+          style={{ padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+          <option value=''>Todos los meses</option>
+          {MESES.map((m, i) => (
+            <option key={m} value={String(i + 1).padStart(2, '0')}>{m}</option>
+          ))}
+        </select>
+        <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)}
+          style={{ padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+          <option value=''>Todos los años</option>
+          {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
         </select>
         <button onClick={exportar} style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
           ↓ Exportar
