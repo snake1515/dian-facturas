@@ -509,6 +509,15 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
 
     setSubiendoLote(false);
     setResultadoLote({ subidos, noEncontrados });
+
+    // Aviso nativo del navegador — no depende de estilos ni de que el modal
+    // se renderice correctamente, siempre se ve.
+    let resumen = `Carga de PDFs terminada.\n\n✓ Subidos correctamente: ${subidos.length}`;
+    if (subidos.length > 0) resumen += `\n${subidos.map(s => '  • ' + s).join('\n')}`;
+    resumen += `\n\n✕ Sin coincidencia: ${noEncontrados.length}`;
+    if (noEncontrados.length > 0) resumen += `\n${noEncontrados.map(s => '  • ' + s).join('\n')}`;
+    window.alert(resumen);
+
     onRefresh();
   }
 
