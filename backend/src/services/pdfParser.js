@@ -34,8 +34,8 @@ const extraerDatosDIAN = (texto) => {
   const cufe = get(/Código Único de Factura - CUFE\s*:\s*\n\s*([a-f0-9]{80,})/i)
     || get(/CUFE\s*:\s*([a-f0-9]{80,})/i);
 
-  const numeroRaw = get(/Número de Factura:\s*([^\s\n]+)/i)
-    || get(/Número de Nota[^:]*:\s*([^\s\n]+)/i);
+  const numeroRaw = get(/Número de Factura:\s*([^\n]+?)(?=\s{2,}|\n|$)/i)
+    || get(/Número de Nota[^:]*:\s*([^\n]+?)(?=\s{2,}|\n|$)/i);
   // Normalizar: quitar caracteres especiales para que SC-2314 === SC2314
   const numero = numeroRaw ? numeroRaw.replace(/[^A-Za-z0-9]/g, '').toUpperCase() : null;
 
@@ -142,4 +142,7 @@ const extraerProductos = (texto, esNC) => {
 };
 
 module.exports = { parsearPDFDIAN };
+
+
+
 
