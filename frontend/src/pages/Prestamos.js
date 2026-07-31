@@ -549,6 +549,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
   const [filtroAnio,  setFiltroAnio]  = useState('');
   const [detalle,     setDetalle]     = useState(null);
   const [devModal,    setDevModal]    = useState(null);
+  const [crucesModal, setCrucesModal] = useState(null); // array de cruces del documento clickeado
 
   const MESES = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -737,7 +738,11 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
                       <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--t-text-muted)' }}>{devs.length} dev.</span>
                     )}
                     {crucesDe(p).length > 0 && (
-                      <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--t-accent)' }}>🔗 {crucesDe(p).length} cruce{crucesDe(p).length > 1 ? 's' : ''}</span>
+                      <button onClick={e => { e.stopPropagation(); setCrucesModal(crucesDe(p)); }}
+                        title='Ver detalle del cruce'
+                        style={{ marginLeft: 6, padding: '4px 8px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                        🔗 Cruce{crucesDe(p).length > 1 ? ` (${crucesDe(p).length})` : ''}
+                      </button>
                     )}
                     <button onClick={e => borrarMovimiento(p, e)}
                       title='Borrar movimiento'
@@ -758,6 +763,48 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
       {detalle && (
         <Modal onClose={() => setDetalle(null)} titulo={`Préstamo ${detalle.documento_contable}`}>
           <DetallePrestamoModal prestamo={detalle} devoluciones={devoluciones.filter(d => d.prestamo_id === detalle.id)} cruces={crucesDe(detalle)} />
+        </Modal>
+      )}
+
+      {crucesModal && (
+        <Modal onClose={() => setCrucesModal(null)} titulo="Detalle del cruce">
+          {crucesModal.map((c, idx) => (
+            <div key={c.id} style={{ marginBottom: idx < crucesModal.length - 1 ? 20 : 0, paddingBottom: idx < crucesModal.length - 1 ? 20 : 0, borderBottom: idx < crucesModal.length - 1 ? '1px solid var(--t-border)' : 'none' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)', marginBottom: 8 }}>
+                {c.prestamo_doc} <span style={{ color: 'var(--t-text-muted)', fontWeight: 400 }}>↔</span> {c.devolucion_doc}
+                <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: c.tipo_cruce === 'total' ? '#22c55e22' : '#f59e0b22', color: c.tipo_cruce === 'total' ? '#22c55e' : '#f59e0b' }}>
+                  {c.tipo_cruce}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 10 }}>
+                <span style={{ fontWeight: 600, color: 'var(--t-text-primary)' }}>Descripción: </span>
+                {c.observaciones || 'Sin descripción'}
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+                Items cruzados
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    {['Código','Producto','Cantidad'].map(h => (
+                      <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(c.devolucion_items || []).length === 0 ? (
+                    <tr><td colSpan={3} style={{ padding: '6px 8px', color: 'var(--t-text-muted)' }}>Sin items registrados</td></tr>
+                  ) : (c.devolucion_items || []).map(item => (
+                    <tr key={item.codigo}>
+                      <td style={{ padding: '4px 8px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{item.codigo}</td>
+                      <td style={{ padding: '4px 8px', color: 'var(--t-text-primary)' }}>{item.nombre}</td>
+                      <td style={{ padding: '4px 8px', color: 'var(--t-text-muted)' }}>{item.cantidad}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
         </Modal>
       )}
 
@@ -2220,3 +2267,4 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
