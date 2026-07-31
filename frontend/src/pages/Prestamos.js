@@ -182,6 +182,26 @@ function CruceSoportes({ cruce }) {
     );
   }
 
+  // Fallback: mostrar los soportes originales del préstamo (IPE/EPO) y de la devolución (IDP/ED)
+  const enlaces = [];
+  if (cruce.prestamo_soporte_url) {
+    enlaces.push(
+      <a key="prestamo" href={`${API_BASE}/prestamos/soporte/${cruce.prestamo_soporte_url}`} target="_blank" rel="noreferrer" style={linkS}>
+        📄 {cruce.prestamo_doc}
+      </a>
+    );
+  }
+  if (cruce.devolucion_soporte_url) {
+    enlaces.push(
+      <a key="devolucion" href={`${API_BASE}/prestamos/soporte/${cruce.devolucion_soporte_url}`} target="_blank" rel="noreferrer" style={linkS}>
+        📄 {cruce.devolucion_doc}
+      </a>
+    );
+  }
+  if (enlaces.length > 0) {
+    return <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>{enlaces}</div>;
+  }
+
   return <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>;
 }
 
@@ -1872,7 +1892,9 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                   <td style={{ padding: '8px 10px', color: 'var(--t-text-muted)' }}>{c.clinica_nombre}</td>
                   <td style={{ padding: '8px 10px', color: 'var(--t-text-muted)' }}>{c.created_at?.substring(0,10)}</td>
                   <td style={{ padding: '8px 10px' }}>
-                    <span style={{ color: estadoColor(c.estado_prestamo), fontWeight: 600 }}>{c.estado_prestamo || '—'}</span>
+                    <span style={{ color: estadoColor(c.estado_prestamo), fontWeight: 600 }}>
+                      {c.estado_prestamo === 'cerrado' ? 'total' : (c.estado_prestamo || '—')}
+                    </span>
                   </td>
                   <td style={{ padding: '8px 10px' }}>
                     <CruceSoportes cruce={c} />
