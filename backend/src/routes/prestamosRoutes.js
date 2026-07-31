@@ -369,9 +369,12 @@ router.get('/cruces', async (req, res) => {
       SELECT c.*,
         p.documento_contable AS prestamo_doc,
         p.tipo               AS prestamo_tipo,
+        p.estado              AS estado_prestamo,
+        p.soporte_url          AS prestamo_soporte_url,
         p.clinica_nombre,
         p.items              AS prestamo_items,
         d.documento_contable AS devolucion_doc,
+        d.soporte_url          AS devolucion_soporte_url,
         d.items              AS devolucion_items
       FROM prestamo_cruces c
       JOIN prestamos p ON c.prestamo_id = p.id
