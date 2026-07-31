@@ -1518,6 +1518,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [soporteFile,  setSoporteFile]  = React.useState(null);
   const [soporteItemFiles, setSoporteItemFiles] = React.useState({});
   const [cantDevueltas,    setCantDevueltas]    = React.useState({});
+  const [expandedCruce,    setExpandedCruce]    = React.useState(null);
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
   const [anioPrest,    setAnioPrest]    = React.useState('');
@@ -1881,8 +1882,15 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
             </thead>
             <tbody>
               {cruces.map(c => (
-                <tr key={c.id} style={{ borderBottom: '1px solid var(--t-border)' }}>
-                  <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)', fontWeight: 600 }}>{c.prestamo_doc}</td>
+                <React.Fragment key={c.id}>
+                <tr onClick={() => setExpandedCruce(expandedCruce === c.id ? null : c.id)}
+                  style={{ borderBottom: expandedCruce === c.id ? 'none' : '1px solid var(--t-border)', cursor: 'pointer' }}>
+                  <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)', fontWeight: 600 }}>
+                    <span style={{ display: 'inline-block', width: 12, color: 'var(--t-text-muted)', fontSize: 10 }}>
+                      {expandedCruce === c.id ? '▼' : '▶'}
+                    </span>
+                    {c.prestamo_doc}
+                  </td>
                   <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)' }}>{c.devolucion_doc}</td>
                   <td style={{ padding: '8px 10px' }}>
                     <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, background: c.tipo_cruce === 'total' ? '#22c55e22' : '#f59e0b22', color: c.tipo_cruce === 'total' ? '#22c55e' : '#f59e0b' }}>
@@ -1896,10 +1904,10 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                       {c.estado_prestamo === 'cerrado' ? 'total' : (c.estado_prestamo || '—')}
                     </span>
                   </td>
-                  <td style={{ padding: '8px 10px' }}>
+                  <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
                     <CruceSoportes cruce={c} />
                   </td>
-                  <td style={{ padding: '8px 10px' }}>
+                  <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
                     <button onClick={e => revertirCruce(c, e)}
                       title="Revertir cruce"
                       style={{ padding: '3px 8px', fontSize: 11, border: '1px solid #ef444455', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: '#ef4444' }}>
@@ -1907,6 +1915,40 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                     </button>
                   </td>
                 </tr>
+                {expandedCruce === c.id && (
+                  <tr style={{ borderBottom: '1px solid var(--t-border)' }}>
+                    <td colSpan={8} style={{ padding: '4px 10px 14px 30px', background: 'var(--t-bg-inner)' }}>
+                      <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 10 }}>
+                        <span style={{ fontWeight: 600, color: 'var(--t-text-primary)' }}>Descripción: </span>
+                        {c.observaciones || 'Sin descripción'}
+                      </div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+                        Items cruzados
+                      </div>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr>
+                            {['Código','Producto','Cantidad'].map(h => (
+                              <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(c.devolucion_items || []).length === 0 ? (
+                            <tr><td colSpan={3} style={{ padding: '6px 8px', color: 'var(--t-text-muted)' }}>Sin items registrados</td></tr>
+                          ) : (c.devolucion_items || []).map(item => (
+                            <tr key={item.codigo}>
+                              <td style={{ padding: '4px 8px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{item.codigo}</td>
+                              <td style={{ padding: '4px 8px', color: 'var(--t-text-primary)' }}>{item.nombre}</td>
+                              <td style={{ padding: '4px 8px', color: 'var(--t-text-muted)' }}>{item.cantidad}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
