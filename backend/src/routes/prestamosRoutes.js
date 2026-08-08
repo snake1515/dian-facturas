@@ -359,8 +359,97 @@ router.post('/importar-masivo', async (req, res) => {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  CRUCES
+//  CRUCES  (soporta multicruce: un préstamo con varias devoluciones,
+//  una devolución con varios préstamos, o combinaciones entre ambos)
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Recalcula el estado de un documento (préstamo o devolución) sumando
+// TODOS los cruces en los que participa, sin importar si es de un lado u otro
+async function recalcularEstadoDocumento(client, documentoId) {
+  const { rows: [doc] } = await client.query('SELECT items FROM prestamos WHERE id = $1', [documentoId]);
+  if (!doc) return null;
+  const totalDoc = (doc.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
+
+  const { rows: comoPrest } = await client.query(
+    `SELECT d.items FROM prestamo_cruces c JOIN prestamos d ON d.id = c.devolucion_id WHERE c.prestamo_id = $1`,
+    [documentoId]
+  );
+  const { rows: comoDevo } = await client.query(
+    `SELECT p.items FROM prestamo_cruces c JOIN prestamos p ON p.id = c.prestamo_id WHERE c.devolucion_id = $1`,
+    [documentoId]
+  );
+
+  const cruzado = [...comoPrest, ...comoDevo].reduce(
+    (s, r) => s + (r.items || []).reduce((a, i) => a + Number(i.cantidad), 0), 0
+  );
+
+  const nuevoEstado = totalDoc === 0 ? 'abierto' : cruzado >= totalDoc ? 'cerrado' : cruzado > 0 ? 'parcial' : 'abierto';
+  await client.query('UPDATE prestamos SET estado = $1 WHERE id = $2', [nuevoEstado, documentoId]);
+  return nuevoEstado;
+}
+
+// Genera el PDF del cruce: portada con consecutivo/descripción/documentos + soportes anexados
+async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
+  const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+  const pdfDoc = await PDFDocument.create();
+  const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  let page = pdfDoc.addPage([612, 792]);
+  let y = 740;
+  const linea = (texto, size, f, color) => { page.drawText(texto, { x: 50, y, size, font: f || font, color: color || rgb(0.1,0.1,0.1) }); y -= size + 6; };
+
+  linea('CRUCE DE PRÉSTAMOS', 18, fontBold);
+  linea(`Consecutivo: ${numero}`, 12, fontBold, rgb(0.1,0.4,0.8));
+  linea(`Fecha: ${fecha}`, 11);
+  y -= 6;
+
+  if (observaciones) {
+    linea('Descripción:', 11, fontBold);
+    const palabras = observaciones.split(' ');
+    let renglon = '';
+    for (const w of palabras) {
+      if ((renglon + w).length > 95) { linea(renglon, 10); renglon = ''; }
+      renglon += w + ' ';
+    }
+    if (renglon) linea(renglon, 10);
+    y -= 6;
+  }
+
+  linea('Documentos incluidos en este cruce:', 11, fontBold);
+  linea('Documento        Tipo                 Clínica                                Valor total', 9, fontBold);
+  page.drawLine({ start: { x: 50, y: y + 10 }, end: { x: 562, y: y + 10 }, thickness: 0.5, color: rgb(0.75,0.75,0.75) });
+
+  for (const d of documentos) {
+    if (y < 70) { page = pdfDoc.addPage([612, 792]); y = 740; }
+    const valor = (d.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
+    const fila = `${(d.documento_contable || '').padEnd(16)} ${(d.tipo || '').padEnd(20)} ${(d.clinica_nombre || '').substring(0,38).padEnd(39)} $${valor.toLocaleString('es-CO')}`;
+    linea(fila, 9);
+  }
+
+  // Anexar el soporte (PDF o imagen) de cada documento involucrado
+  for (const d of documentos) {
+    if (!d.soporte_url) continue;
+    try {
+      const buffer = await storageService.descargarArchivo(d.soporte_url);
+      const ext = path.extname(d.soporte_url).toLowerCase();
+      if (ext === '.pdf') {
+        const donante = await PDFDocument.load(buffer, { ignoreEncryption: true });
+        const paginas = await pdfDoc.copyPages(donante, donante.getPageIndices());
+        paginas.forEach(p => pdfDoc.addPage(p));
+      } else if (['.jpg', '.jpeg', '.png'].includes(ext)) {
+        const img = ext === '.png' ? await pdfDoc.embedPng(buffer) : await pdfDoc.embedJpg(buffer);
+        const pImg = pdfDoc.addPage([612, 792]);
+        const scale = Math.min(500 / img.width, 700 / img.height, 1);
+        pImg.drawImage(img, { x: 56, y: 792 - 60 - img.height * scale, width: img.width * scale, height: img.height * scale });
+      }
+    } catch (e) {
+      console.error(`No se pudo anexar el soporte de ${d.documento_contable}:`, e.message);
+    }
+  }
+
+  return Buffer.from(await pdfDoc.save());
+}
 
 // Obtener todos los cruces
 router.get('/cruces', async (req, res) => {
@@ -375,51 +464,86 @@ router.get('/cruces', async (req, res) => {
         p.items              AS prestamo_items,
         d.documento_contable AS devolucion_doc,
         d.soporte_url          AS devolucion_soporte_url,
-        d.items              AS devolucion_items
+        d.items              AS devolucion_items,
+        g.numero              AS grupo_numero,
+        g.pdf_url              AS grupo_pdf_url,
+        g.observaciones        AS grupo_observaciones
       FROM prestamo_cruces c
       JOIN prestamos p ON c.prestamo_id = p.id
       JOIN prestamos d ON c.devolucion_id = d.id
+      LEFT JOIN cruce_grupos g ON g.id = c.grupo_id
       ORDER BY c.created_at DESC
     `);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Crear cruce entre préstamo y devolución
+// Crear cruce (uno o varios pares préstamo/devolución = multicruce), genera consecutivo + PDF
 router.post('/cruces', async (req, res) => {
   try {
-    const { prestamo_id, devolucion_id, tipo_cruce, observaciones } = req.body;
-    if (!prestamo_id || !devolucion_id)
-      return res.status(400).json({ error: 'prestamo_id y devolucion_id requeridos' });
+    let { pares, observaciones, prestamo_id, devolucion_id, tipo_cruce } = req.body;
+    if (!pares) {
+      // Compatibilidad con el formato anterior de un solo par
+      if (!prestamo_id || !devolucion_id)
+        return res.status(400).json({ error: 'prestamo_id y devolucion_id requeridos' });
+      pares = [{ prestamo_id, devolucion_id, tipo_cruce: tipo_cruce || 'total' }];
+    }
+    if (!Array.isArray(pares) || pares.length === 0)
+      return res.status(400).json({ error: 'Se requiere al menos un par préstamo/devolución' });
 
     const client = await pool.connect();
+    let numero, documentos = [];
     try {
       await client.query('BEGIN');
 
-      const { rows } = await client.query(`
-        INSERT INTO prestamo_cruces (prestamo_id, devolucion_id, tipo_cruce, observaciones)
-        VALUES ($1, $2, $3, $4) RETURNING *
-      `, [prestamo_id, devolucion_id, tipo_cruce || 'total', observaciones || null]);
+      const { rows: [{ n }] } = await client.query("SELECT nextval('cruce_consecutivo_seq') AS n");
+      numero = `CRU-${String(n).padStart(5, '0')}`;
 
-      // Recalcular estado del préstamo
-      const { rows: [prest] } = await client.query(
-        'SELECT items FROM prestamos WHERE id = $1', [prestamo_id]
-      );
-      const { rows: [devo] } = await client.query(
-        'SELECT items FROM prestamos WHERE id = $1', [devolucion_id]
+      const { rows: [grupo] } = await client.query(
+        `INSERT INTO cruce_grupos (numero, observaciones) VALUES ($1, $2) RETURNING *`,
+        [numero, observaciones || null]
       );
 
-      const itemsPrest = prest?.items || [];
-      const itemsDevo  = devo?.items  || [];
+      const cruceRows = [];
+      for (const par of pares) {
+        if (!par.prestamo_id || !par.devolucion_id) continue;
+        const { rows } = await client.query(`
+          INSERT INTO prestamo_cruces (prestamo_id, devolucion_id, tipo_cruce, observaciones, grupo_id)
+          VALUES ($1, $2, $3, $4, $5) RETURNING *
+        `, [par.prestamo_id, par.devolucion_id, par.tipo_cruce || 'total', par.observaciones || observaciones || null, grupo.id]);
+        cruceRows.push(rows[0]);
+      }
 
-      // Comparar por código y cantidad
-      const totalPrest = itemsPrest.reduce((s, i) => s + Number(i.cantidad), 0);
-      const totalDevo  = itemsDevo.reduce((s, i) => s + Number(i.cantidad), 0);
-      const nuevoEstado = totalDevo >= totalPrest ? 'cerrado' : 'parcial';
+      if (cruceRows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Ningún par válido para cruzar' });
+      }
 
-      await client.query('UPDATE prestamos SET estado = $1 WHERE id = $2', [nuevoEstado, prestamo_id]);
+      // Recalcular estado de cada documento único involucrado (en ambas direcciones)
+      const idsUnicos = Array.from(new Set(cruceRows.flatMap(c => [c.prestamo_id, c.devolucion_id])));
+      const estados = {};
+      for (const id of idsUnicos) estados[id] = await recalcularEstadoDocumento(client, id);
+
+      const { rows: docs } = await client.query(`SELECT * FROM prestamos WHERE id = ANY($1::int[])`, [idsUnicos]);
+      documentos = docs;
+
       await client.query('COMMIT');
-      res.status(201).json({ cruce: rows[0], estado: nuevoEstado });
+
+      // Generar y subir el PDF del cruce (fuera de la transacción — no bloquea si falla)
+      let pdf_url = null;
+      try {
+        const pdfBuffer = await generarPdfCruce({
+          numero, fecha: new Date().toISOString().substring(0, 10),
+          observaciones: observaciones || '', documentos,
+        });
+        pdf_url = `prestamos/cruces_grupos/${numero}.pdf`;
+        await storageService.subirArchivo(pdfBuffer, pdf_url, 'application/pdf');
+        await pool.query('UPDATE cruce_grupos SET pdf_url = $1 WHERE id = $2', [pdf_url, grupo.id]);
+      } catch (e) {
+        console.error('Error generando PDF de cruce:', e.message);
+      }
+
+      res.status(201).json({ grupo: { ...grupo, pdf_url }, cruces: cruceRows, estados });
     } catch (e) {
       await client.query('ROLLBACK');
       throw e;
@@ -427,6 +551,28 @@ router.post('/cruces', async (req, res) => {
       client.release();
     }
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Revertir (eliminar) un cruce individual — el o los documentos vuelven a recalcular su estado
+router.delete('/cruces/:id', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [cruce] } = await client.query('SELECT * FROM prestamo_cruces WHERE id = $1', [req.params.id]);
+    if (!cruce) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Cruce no encontrado' }); }
+
+    await client.query('DELETE FROM prestamo_cruces WHERE id = $1', [req.params.id]);
+    await recalcularEstadoDocumento(client, cruce.prestamo_id);
+    await recalcularEstadoDocumento(client, cruce.devolucion_id);
+
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 // Adjuntar PDF a un cruce (total o por item)
@@ -482,6 +628,714 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
