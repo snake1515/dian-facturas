@@ -776,9 +776,19 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
                   {c.tipo_cruce}
                 </span>
               </div>
+              {c.grupo_numero && (
+                <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                  <span style={{ fontWeight: 600, color: 'var(--t-text-primary)' }}>Cruce: </span>
+                  {c.grupo_numero}
+                  {c.grupo_pdf_url && (
+                    <a href={`${API_BASE}/prestamos/soporte/${c.grupo_pdf_url}`} target="_blank" rel="noreferrer"
+                      style={{ marginLeft: 8, color: 'var(--t-accent)' }}>📄 Ver PDF del cruce</a>
+                  )}
+                </div>
+              )}
               <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 10 }}>
                 <span style={{ fontWeight: 600, color: 'var(--t-text-primary)' }}>Descripción: </span>
-                {c.observaciones || 'Sin descripción'}
+                {c.observaciones || c.grupo_observaciones || 'Sin descripción'}
               </div>
               <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
                 Items cruzados
@@ -1556,8 +1566,8 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
     }
   }
 
-  const [selPrestamo,  setSelPrestamo]  = React.useState(null);
-  const [selDevolucion,setSelDevolucion]= React.useState(null);
+  const [selPrestamos,  setSelPrestamos]  = React.useState([]);
+  const [selDevoluciones,setSelDevoluciones]= React.useState([]);
   const [tipoCruce,    setTipoCruce]    = React.useState('total');
   const [obs,          setObs]          = React.useState('');
   const [saving,       setSaving]       = React.useState(false);
@@ -1634,19 +1644,25 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
 
   // Inicializar cantidades al seleccionar devolución
   React.useEffect(() => {
-    if (selDevolucion) {
+    if (selDevoluciones.length === 1) {
       const init = {};
-      (selDevolucion.items || []).forEach(i => { init[i.codigo] = i.cantidad; });
+      (selDevoluciones[0].items || []).forEach(i => { init[i.codigo] = i.cantidad; });
       setCantDevueltas(init);
     }
-  }, [selDevolucion]);
+  }, [selDevoluciones]);
+
+  function toggleSelPrestamo(p) {
+    setSelPrestamos(prev => prev.some(x => x.id === p.id) ? prev.filter(x => x.id !== p.id) : [...prev, p]);
+  }
+  function toggleSelDevolucion(d) {
+    setSelDevoluciones(prev => prev.some(x => x.id === d.id) ? prev.filter(x => x.id !== d.id) : [...prev, d]);
+  }
 
   const devolFiltradas = devoluciones.filter(p => {
-    if (selPrestamo) {
-      const compatible =
-        (selPrestamo.tipo === 'egreso'   && p.tipo === 'devolucion_ingreso') ||
-        (selPrestamo.tipo === 'ingreso'  && p.tipo === 'devolucion_egreso');
-      if (!compatible) return false;
+    if (selPrestamos.length > 0) {
+      const tiposRequeridos = new Set(selPrestamos.map(sp =>
+        sp.tipo === 'egreso' ? 'devolucion_ingreso' : 'devolucion_egreso'));
+      if (!tiposRequeridos.has(p.tipo)) return false;
     }
     return matchDoc(p, filtroDevol.toLowerCase()) && matchFecha(p, anioDevol, fDesdeDevol, fHastaDevol);
   });
@@ -1660,27 +1676,25 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   }
 
   async function cruzar() {
-    if (!selPrestamo || !selDevolucion) { setError('Selecciona préstamo y devolución'); return; }
+    if (selPrestamos.length === 0 || selDevoluciones.length === 0) {
+      setError('Selecciona al menos un préstamo y una devolución'); return;
+    }
     setSaving(true); setError('');
     try {
-      // Aplicar cantidades editadas a los items
-      const itemsCruce = (selDevolucion.items || []).map(i => ({
-        ...i, cantidad: cantDevueltas[i.codigo] ?? i.cantidad,
-      }));
+      // Multicruce: un documento con varios (o varios con varios) genera un par por cada combinación
+      const pares = selPrestamos.flatMap(p => selDevoluciones.map(d => ({
+        prestamo_id: p.id, devolucion_id: d.id, tipo_cruce: tipoCruce,
+      })));
+
       const result = await apiFetch('/prestamos/cruces', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prestamo_id: selPrestamo.id,
-          devolucion_id: selDevolucion.id,
-          tipo_cruce: tipoCruce,
-          observaciones: obs,
-          items_cruce: itemsCruce,
-        }),
+        body: JSON.stringify({ pares, observaciones: obs }),
       });
 
-      // Subir PDF usando el ID del cruce recién creado
-      const cruceId = result?.cruce?.id;
-      if (cruceId) {
+      // El soporte manual solo aplica cuando es un cruce simple 1 a 1
+      // (para multicruce, el PDF generado ya anexa los soportes de cada documento)
+      const cruceId = result?.cruces?.[0]?.id;
+      if (cruceId && pares.length === 1) {
         if (tipoCruce === 'total' && soporteFile) {
           const fd = new FormData();
           fd.append('soporte', soporteFile);
@@ -1698,7 +1712,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
       }
 
       onRefresh();
-      setSelPrestamo(null); setSelDevolucion(null);
+      setSelPrestamos([]); setSelDevoluciones([]);
       setObs(''); setSoporteFile(null); setSoporteItemFiles({}); setCantDevueltas({});
     } catch (e) { setError('Error: ' + e.message); }
     setSaving(false);
@@ -1738,10 +1752,12 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
           <div style={{ maxHeight: 400, overflowY: 'auto' }}>
             {prestFiltrados.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)', textAlign: 'center', padding: 20 }}>Sin préstamos</div>}
             {prestFiltrados.map(p => (
-              <div key={p.id} onClick={() => setSelPrestamo(selPrestamo?.id === p.id ? null : p)}
-                style={selPrestamo?.id === p.id ? selS : cardS}>
+              <div key={p.id} onClick={() => toggleSelPrestamo(p)}
+                style={selPrestamos.some(x => x.id === p.id) ? selS : cardS}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div>
+                    <input type="checkbox" checked={selPrestamos.some(x => x.id === p.id)} readOnly
+                      style={{ marginRight: 6 }} />
                     <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-primary)' }}>{p.documento_contable}</span>
                     <span style={{ marginLeft: 8, fontSize: 11, padding: '2px 7px', borderRadius: 10, background: p.tipo === 'egreso' ? '#ef4444' : '#3b82f6', color: '#fff' }}>
                       {p.tipo === 'egreso' ? 'EPO' : 'IPE'}
@@ -1796,7 +1812,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
         {/* Derecha — devoluciones */}
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
-            Devoluciones (IDP / ED) {selPrestamo && <span style={{ color: 'var(--t-accent)' }}>— compatibles con {selPrestamo.documento_contable}</span>}
+            Devoluciones (IDP / ED) {selPrestamos.length > 0 && <span style={{ color: 'var(--t-accent)' }}>— compatibles con {selPrestamos.map(p => p.documento_contable).join(', ')}</span>}
           </div>
           <input value={filtroDevol} onChange={e => setFiltroDevol(e.target.value)}
             placeholder="Buscar documento, clínica, producto o código…" style={{ ...inputS, marginBottom: 8 }} />
@@ -1818,13 +1834,15 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
           </div>
           <div style={{ maxHeight: 400, overflowY: 'auto' }}>
             {devolFiltradas.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)', textAlign: 'center', padding: 20 }}>
-              {selPrestamo ? 'Sin devoluciones compatibles' : 'Selecciona un préstamo para filtrar'}
+              {selPrestamos.length > 0 ? 'Sin devoluciones compatibles' : 'Selecciona un préstamo para filtrar'}
             </div>}
             {devolFiltradas.map(d => (
-              <div key={d.id} onClick={() => setSelDevolucion(selDevolucion?.id === d.id ? null : d)}
-                style={selDevolucion?.id === d.id ? selS : cardS}>
+              <div key={d.id} onClick={() => toggleSelDevolucion(d)}
+                style={selDevoluciones.some(x => x.id === d.id) ? selS : cardS}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div>
+                    <input type="checkbox" checked={selDevoluciones.some(x => x.id === d.id)} readOnly
+                      style={{ marginRight: 6 }} />
                     <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-primary)' }}>{d.documento_contable}</span>
                     <span style={{ marginLeft: 8, fontSize: 11, padding: '2px 7px', borderRadius: 10, background: d.tipo === 'devolucion_ingreso' ? '#3b82f6' : '#ef4444', color: '#fff' }}>
                       {d.tipo === 'devolucion_ingreso' ? 'IDP' : 'ED'}
@@ -1851,10 +1869,18 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
       </div>
 
       {/* Panel de acción cuando ambos seleccionados */}
-      {selPrestamo && selDevolucion && (
+      {selPrestamos.length > 0 && selDevoluciones.length > 0 && (
         <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 24 }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: 'var(--t-text-primary)' }}>
-            Cruzar <b>{selPrestamo.documento_contable}</b> con <b>{selDevolucion.documento_contable}</b>
+            {selPrestamos.length === 1 && selDevoluciones.length === 1 ? (
+              <>Cruzar <b>{selPrestamos[0].documento_contable}</b> con <b>{selDevoluciones[0].documento_contable}</b></>
+            ) : (
+              <>Multicruce: <b>{selPrestamos.map(p => p.documento_contable).join(', ')}</b> ↔ <b>{selDevoluciones.map(d => d.documento_contable).join(', ')}</b>
+                <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--t-text-muted)', fontWeight: 400 }}>
+                  ({selPrestamos.length * selDevoluciones.length} par{selPrestamos.length * selDevoluciones.length > 1 ? 'es' : ''} de cruce)
+                </span>
+              </>
+            )}
           </div>
 
           {/* Tipo de cruce */}
@@ -1869,20 +1895,20 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
             ))}
           </div>
 
-          {/* PDF total */}
-          {tipoCruce === 'total' && (
+          {/* PDF total — solo aplica en cruce simple 1 a 1; en multicruce el PDF generado ya anexa los soportes de cada documento */}
+          {tipoCruce === 'total' && selPrestamos.length === 1 && selDevoluciones.length === 1 && (
             <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', display: 'block', marginBottom: 4 }}>PDF soporte (opcional)</label>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', display: 'block', marginBottom: 4 }}>PDF soporte adicional (opcional)</label>
               <input type="file" accept=".pdf" onChange={e => setSoporteFile(e.target.files[0])}
                 style={{ fontSize: 12, color: 'var(--t-text-primary)' }} />
             </div>
           )}
 
-          {/* PDF por producto (parcial) */}
-          {tipoCruce === 'parcial' && (
+          {/* PDF por producto (parcial) — solo aplica en cruce simple 1 a 1 */}
+          {tipoCruce === 'parcial' && selPrestamos.length === 1 && selDevoluciones.length === 1 && (
             <div style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 8 }}>PDF por producto devuelto:</div>
-              {(selDevolucion.items || []).map(item => (
+              {(selDevoluciones[0].items || []).map(item => (
                 <div key={item.codigo} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 12, flexWrap: 'wrap' }}>
                   <span style={{ color: 'var(--t-text-primary)', minWidth: 110, fontFamily: 'monospace' }}>{item.codigo}</span>
                   <span style={{ color: 'var(--t-text-muted)', flex: 1, minWidth: 140 }}>{item.nombre}</span>
@@ -1902,7 +1928,13 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
             </div>
           )}
 
-          <input value={obs} onChange={e => setObs(e.target.value)} placeholder="Observaciones (opcional)" style={{ ...inputS, marginBottom: 12 }} />
+          {selPrestamos.length * selDevoluciones.length > 1 && (
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 12, background: 'var(--t-bg-inner)', padding: '6px 10px', borderRadius: 6 }}>
+              ℹ️ El PDF del cruce se genera automáticamente con un consecutivo y anexa el soporte ya cargado en cada uno de los documentos seleccionados.
+            </div>
+          )}
+
+          <input value={obs} onChange={e => setObs(e.target.value)} placeholder="Descripción del cruce (opcional)" style={{ ...inputS, marginBottom: 12 }} />
 
           {error && <div style={{ color: '#ef4444', fontSize: 12, marginBottom: 8 }}>{error}</div>}
 
@@ -1922,7 +1954,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-card)' }}>
-                {['Préstamo','Devolución','Tipo','Clínica','Fecha','Estado','Soporte',''].map(h => (
+                {['Cruce Nº','Préstamo','Devolución','Tipo','Clínica','Fecha','Estado','Soporte',''].map(h => (
                   <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                 ))}
               </tr>
@@ -1932,6 +1964,16 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                 <React.Fragment key={c.id}>
                 <tr onClick={() => setExpandedCruce(expandedCruce === c.id ? null : c.id)}
                   style={{ borderBottom: expandedCruce === c.id ? 'none' : '1px solid var(--t-border)', cursor: 'pointer' }}>
+                  <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
+                    {c.grupo_numero ? (
+                      c.grupo_pdf_url ? (
+                        <a href={`${API_BASE}/prestamos/soporte/${c.grupo_pdf_url}`} target="_blank" rel="noreferrer"
+                          style={{ color: 'var(--t-accent)', fontWeight: 600, fontSize: 11, textDecoration: 'none' }}>
+                          📄 {c.grupo_numero}
+                        </a>
+                      ) : <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{c.grupo_numero}</span>
+                    ) : <span style={{ color: 'var(--t-text-muted)' }}>—</span>}
+                  </td>
                   <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)', fontWeight: 600 }}>
                     <span style={{ display: 'inline-block', width: 12, color: 'var(--t-text-muted)', fontSize: 10 }}>
                       {expandedCruce === c.id ? '▼' : '▶'}
@@ -1964,10 +2006,20 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                 </tr>
                 {expandedCruce === c.id && (
                   <tr style={{ borderBottom: '1px solid var(--t-border)' }}>
-                    <td colSpan={8} style={{ padding: '4px 10px 14px 30px', background: 'var(--t-bg-inner)' }}>
+                    <td colSpan={9} style={{ padding: '4px 10px 14px 30px', background: 'var(--t-bg-inner)' }}>
+                      {c.grupo_numero && (
+                        <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                          <span style={{ fontWeight: 600, color: 'var(--t-text-primary)' }}>Cruce: </span>
+                          {c.grupo_numero}
+                          {c.grupo_pdf_url && (
+                            <a href={`${API_BASE}/prestamos/soporte/${c.grupo_pdf_url}`} target="_blank" rel="noreferrer"
+                              style={{ marginLeft: 8, color: 'var(--t-accent)' }}>📄 Ver PDF del cruce</a>
+                          )}
+                        </div>
+                      )}
                       <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 10 }}>
                         <span style={{ fontWeight: 600, color: 'var(--t-text-primary)' }}>Descripción: </span>
-                        {c.observaciones || 'Sin descripción'}
+                        {c.observaciones || c.grupo_observaciones || 'Sin descripción'}
                       </div>
                       <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
                         Items cruzados
@@ -2267,4 +2319,6 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
 
