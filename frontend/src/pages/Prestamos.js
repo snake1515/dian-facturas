@@ -1599,6 +1599,17 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [fHastaDevol,  setFHastaDevol]  = React.useState('');
   const [detalleCruce, setDetalleCruce] = React.useState(null);
   const [detalleCard,  setDetalleCard]  = React.useState(null);
+  const [filtroCruces, setFiltroCruces] = React.useState('');
+
+  function matchCruce(c, texto) {
+    if (!texto) return true;
+    const t = texto.toLowerCase().trim();
+    const campos = [c.grupo_numero, c.prestamo_doc, c.devolucion_doc, c.clinica_nombre, c.observaciones, c.grupo_observaciones]
+      .filter(Boolean).map(x => String(x).toLowerCase());
+    if (campos.some(x => x.includes(t))) return true;
+    const items = [...(c.prestamo_items || []), ...(c.devolucion_items || [])];
+    return items.some(i => (i.nombre || '').toLowerCase().includes(t) || (i.codigo || '').toLowerCase().includes(t));
+  }
 
   // Separar por tipo
   const prestamosBase  = prestamos.filter(p => ['ingreso','egreso'].includes(p.tipo));
@@ -1736,7 +1747,8 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const inputS = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', fontSize: 13, boxSizing: 'border-box' };
 
   return (
-    <div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 260px)', minHeight: 500 }}>
+    <div style={{ overflowY: 'auto', flex: '1 1 50%', minHeight: 0, paddingRight: 4 }}>
       {/* Panel de cruce */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 24 }}>
         {/* Izquierda — préstamos */}
@@ -1959,11 +1971,13 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
           </button>
         </div>
       )}
+    </div>
 
-      {/* Historial de cruces */}
-      {cruces.length > 0 && (
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+    {/* Historial de cruces — panel inferior fijo con scroll propio */}
+    {cruces.length > 0 && (
+      <div style={{ flex: '1 1 50%', minHeight: 0, display: 'flex', flexDirection: 'column', borderTop: '2px solid var(--t-border)', marginTop: 12 }}>
+        <div style={{ flex: '0 0 auto', paddingTop: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
             {cruces.some(c => !c.grupo_numero) && (
               <button onClick={repararCrucesAntiguos} disabled={reparando}
@@ -1973,16 +1987,24 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
               </button>
             )}
           </div>
+          <input value={filtroCruces} onChange={e => setFiltroCruces(e.target.value)}
+            placeholder="Buscar por Nº de cruce (ej. CRU-00092), documento (préstamo o devolución), producto o clínica…"
+            style={{ ...inputS, marginBottom: 10 }} />
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-card)' }}>
                 {['Cruce Nº','Préstamo','Devolución','Tipo','Clínica','Fecha','Estado','Soporte',''].map(h => (
-                  <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                  <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)', position: 'sticky', top: 0, background: 'var(--t-bg-card)', zIndex: 1 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {cruces.map(c => (
+              {cruces.filter(c => matchCruce(c, filtroCruces)).length === 0 && (
+                <tr><td colSpan={9} style={{ padding: '20px 10px', textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin resultados para "{filtroCruces}"</td></tr>
+              )}
+              {cruces.filter(c => matchCruce(c, filtroCruces)).map(c => (
                 <React.Fragment key={c.id}>
                 <tr onClick={() => setExpandedCruce(expandedCruce === c.id ? null : c.id)}
                   style={{ borderBottom: expandedCruce === c.id ? 'none' : '1px solid var(--t-border)', cursor: 'pointer' }}>
@@ -2074,6 +2096,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
             </tbody>
           </table>
         </div>
+      </div>
       )}
       {detalleCard && (
         <Modal onClose={() => setDetalleCard(null)} titulo={`Detalle ${detalleCard.documento_contable}`}>
@@ -2341,8 +2364,3 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
-
-
-
-
-
