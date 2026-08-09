@@ -1576,6 +1576,19 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [soporteItemFiles, setSoporteItemFiles] = React.useState({});
   const [cantDevueltas,    setCantDevueltas]    = React.useState({});
   const [expandedCruce,    setExpandedCruce]    = React.useState(null);
+  const [reparando,        setReparando]        = React.useState(false);
+
+  async function repararCrucesAntiguos() {
+    setReparando(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/backfill', { method: 'POST' });
+      alert(`Se repararon ${r.actualizados} cruce(s) antiguo(s): ahora tienen consecutivo, estado y PDF.`);
+      onRefresh();
+    } catch (e) {
+      alert('Error reparando cruces: ' + e.message);
+    }
+    setReparando(false);
+  }
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
   const [anioPrest,    setAnioPrest]    = React.useState('');
@@ -1950,7 +1963,16 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
       {/* Historial de cruces */}
       {cruces.length > 0 && (
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)', marginBottom: 10 }}>Cruces registrados</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
+            {cruces.some(c => !c.grupo_numero) && (
+              <button onClick={repararCrucesAntiguos} disabled={reparando}
+                title="Asigna consecutivo, recalcula el estado y genera el PDF de los cruces creados antes de esta función"
+                style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                {reparando ? 'Reparando…' : '🔧 Reparar cruces antiguos'}
+              </button>
+            )}
+          </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-card)' }}>
@@ -2319,6 +2341,8 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
 
 
 
