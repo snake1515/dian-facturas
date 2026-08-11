@@ -22,10 +22,20 @@ function useIsMobile() {
   return isMobile;
 }
 
-function PrivateRoute({ children, adminOnly = false }) {
-  const { user } = useAuth();
+function landingPathFor(puede) {
+  if (puede.verFacturas) return '/';
+  if (puede.verPrestamos) return '/prestamos';
+  if (puede.verPendientes) return '/pendientes';
+  if (puede.verValidadorInventario) return '/validador-inventario';
+  if (puede.verCruceDIAN) return '/cruce-dian';
+  return '/login';
+}
+
+function PrivateRoute({ children, adminOnly = false, perm }) {
+  const { user, puede } = useAuth();
   if (!user) return <Navigate to="/login" replace />;
-  if (adminOnly && user.rol !== 'admin') return <Navigate to="/" replace />;
+  if (adminOnly && user.rol !== 'admin') return <Navigate to={landingPathFor(puede)} replace />;
+  if (perm && !puede[perm]) return <Navigate to={landingPathFor(puede)} replace />;
   return children;
 }
 
@@ -49,7 +59,7 @@ function Layout({ children }) {
     textDecoration: 'none', transition: 'all .15s',
   });
 
-  const rolLabel = { admin: 'Administrador', editor: 'Editor', lector: 'Lector', obra: 'Obra' }[user?.rol] || user?.rol;
+  const rolLabel = { admin: 'Administrador', editor: 'Editor', lector: 'Lector', obra: 'Obra', regente: 'Regente' }[user?.rol] || user?.rol;
 
   const Sidebar = () => (
     <aside style={{
@@ -71,24 +81,30 @@ function Layout({ children }) {
       </div>
 
       <nav style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1 }}>
-        <NavLink to="/" end style={navStyle}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-          Facturas
-        </NavLink>
-        <NavLink to="/notas-credito" style={navStyle}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
-          Notas Crédito
-        </NavLink>
+        {puede.verFacturas && (
+          <NavLink to="/" end style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Facturas
+          </NavLink>
+        )}
+        {puede.verFacturas && (
+          <NavLink to="/notas-credito" style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+            Notas Crédito
+          </NavLink>
+        )}
         {puede.verUsuarios && (
           <NavLink to="/usuarios" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             Usuarios
           </NavLink>
         )}
-        <NavLink to="/cruce-dian" style={navStyle}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-          Cruce DIAN
-        </NavLink>
+        {puede.verCruceDIAN && (
+          <NavLink to="/cruce-dian" style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Cruce DIAN
+          </NavLink>
+        )}
         {puede.verPendientes && (
           <NavLink to="/pendientes" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
@@ -223,14 +239,14 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginGuard />} />
-          <Route path="/" element={<PrivateRoute><Layout><Facturas /></Layout></PrivateRoute>} />
-          <Route path="/notas-credito" element={<PrivateRoute><Layout><Facturas tipo="NC" /></Layout></PrivateRoute>} />
+          <Route path="/" element={<PrivateRoute perm="verFacturas"><Layout><Facturas /></Layout></PrivateRoute>} />
+          <Route path="/notas-credito" element={<PrivateRoute perm="verFacturas"><Layout><Facturas tipo="NC" /></Layout></PrivateRoute>} />
           <Route path="/usuarios" element={<PrivateRoute adminOnly><Layout><Usuarios /></Layout></PrivateRoute>} />
           <Route path="/configuracion" element={<PrivateRoute adminOnly><Layout><Configuracion /></Layout></PrivateRoute>} />
-          <Route path="/cruce-dian" element={<PrivateRoute><Layout><CruceDIAN /></Layout></PrivateRoute>} />
-          <Route path="/prestamos" element={<PrivateRoute><Layout><Prestamos /></Layout></PrivateRoute>} />
-          <Route path="/validador-inventario" element={<PrivateRoute><Layout><ValidadorInventario /></Layout></PrivateRoute>} />
-          <Route path="/pendientes" element={<PrivateRoute><Layout><Pendientes /></Layout></PrivateRoute>} />
+          <Route path="/cruce-dian" element={<PrivateRoute perm="verCruceDIAN"><Layout><CruceDIAN /></Layout></PrivateRoute>} />
+          <Route path="/prestamos" element={<PrivateRoute perm="verPrestamos"><Layout><Prestamos /></Layout></PrivateRoute>} />
+          <Route path="/validador-inventario" element={<PrivateRoute perm="verValidadorInventario"><Layout><ValidadorInventario /></Layout></PrivateRoute>} />
+          <Route path="/pendientes" element={<PrivateRoute perm="verPendientes"><Layout><Pendientes /></Layout></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
@@ -242,57 +258,3 @@ function LoginGuard() {
   const { user } = useAuth();
   return user ? <Navigate to="/" replace /> : <Login />;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
