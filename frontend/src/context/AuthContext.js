@@ -79,9 +79,9 @@ export function AuthProvider({ children }) {
 
   const puede = {
     // Facturas
-    verFacturas:            isLector && !isRegente,
-    descargarArchivos:      isLector && !isRegente,
-    reenviarFacturas:       isLector && !isRegente,
+    verFacturas:            isLector && !esRegente,
+    descargarArchivos:      isLector && !esRegente,
+    reenviarFacturas:       isLector && !esRegente,
     asignarResponsables:    isEditor,
     editarNotas:            isObra,                    // obra, editor, admin
     editarDocIngreso:       isObra,                    // obra, editor, admin
@@ -126,6 +126,10 @@ export function useAuth() {
 }
 
 export default AuthContext;
+
+
+
+
 
 
 
