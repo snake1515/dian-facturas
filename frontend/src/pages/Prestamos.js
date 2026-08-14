@@ -2397,16 +2397,21 @@ function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta)
     const pendientes = itemsPendientesDe(p, devoluciones);
     if (pendientes.length === 0) return;
     const clinica = p.clinica_nombre || 'Sin clínica';
-    if (!porClinica[clinica]) porClinica[clinica] = { productos: {}, valorTotal: 0 };
+    if (!porClinica[clinica]) porClinica[clinica] = { documentos: {}, valorTotal: 0 };
+
+    const docKey = p.documento_contable || p.id;
+    if (!porClinica[clinica].documentos[docKey]) {
+      porClinica[clinica].documentos[docKey] = {
+        documento: p.documento_contable, fecha: p.fecha, productos: [], valorTotal: 0,
+      };
+    }
 
     pendientes.forEach(i => {
-      const key = i.codigo || i.nombre;
-      if (!porClinica[clinica].productos[key]) {
-        porClinica[clinica].productos[key] = { codigo: i.codigo, nombre: i.nombre, cantidad: 0, valor: 0 };
-      }
       const valor = i.pendiente * Number(i.precio_unitario || 0);
-      porClinica[clinica].productos[key].cantidad += i.pendiente;
-      porClinica[clinica].productos[key].valor += valor;
+      porClinica[clinica].documentos[docKey].productos.push({
+        codigo: i.codigo, nombre: i.nombre, cantidad: i.pendiente, valor,
+      });
+      porClinica[clinica].documentos[docKey].valorTotal += valor;
       porClinica[clinica].valorTotal += valor;
       granTotal += valor;
     });
@@ -2440,7 +2445,7 @@ function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
         )}
         {clinicas.map(clinica => {
           const data = reporte.porClinica[clinica];
-          const productos = Object.values(data.productos).sort((a, b) => b.valor - a.valor);
+          const documentos = Object.values(data.documentos).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
           return (
             <div key={clinica} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 8, overflow: 'hidden' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--t-bg-inner)' }}>
@@ -2450,6 +2455,8 @@ function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left' }}>
+                    <th style={{ padding: '5px 12px', fontWeight: 500 }}>Documento</th>
+                    <th style={{ padding: '5px 12px', fontWeight: 500 }}>Fecha</th>
                     <th style={{ padding: '5px 12px', fontWeight: 500 }}>Producto</th>
                     <th style={{ padding: '5px 12px', fontWeight: 500 }}>Código</th>
                     <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Cant. pendiente</th>
@@ -2457,14 +2464,20 @@ function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {productos.map((prod, i) => (
-                    <tr key={i} style={{ borderTop: '1px solid var(--t-border)' }}>
+                  {documentos.map((doc, di) => doc.productos.map((prod, pi) => (
+                    <tr key={`${di}-${pi}`} style={{ borderTop: '1px solid var(--t-border)' }}>
+                      {pi === 0 && (
+                        <td rowSpan={doc.productos.length} style={{ padding: '5px 12px', fontWeight: 600, verticalAlign: 'top' }}>{doc.documento}</td>
+                      )}
+                      {pi === 0 && (
+                        <td rowSpan={doc.productos.length} style={{ padding: '5px 12px', color: 'var(--t-text-muted)', verticalAlign: 'top' }}>{fmtFecha(doc.fecha)}</td>
+                      )}
                       <td style={{ padding: '5px 12px' }}>{prod.nombre}</td>
                       <td style={{ padding: '5px 12px', color: 'var(--t-text-muted)' }}>{prod.codigo}</td>
                       <td style={{ padding: '5px 12px', textAlign: 'right' }}>{prod.cantidad}</td>
                       <td style={{ padding: '5px 12px', textAlign: 'right' }}>{fmt(prod.valor)}</td>
                     </tr>
-                  ))}
+                  )))}
                 </tbody>
               </table>
             </div>
@@ -2478,14 +2491,18 @@ function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
     const filas = (reporte, tipoLabel) => {
       const out = [];
       Object.keys(reporte.porClinica).sort().forEach(clinica => {
-        Object.values(reporte.porClinica[clinica].productos).forEach(prod => {
-          out.push({
-            Tipo: tipoLabel,
-            Clínica: clinica,
-            Producto: prod.nombre,
-            Código: prod.codigo,
-            'Cantidad pendiente': prod.cantidad,
-            'Valor pendiente': prod.valor,
+        Object.values(reporte.porClinica[clinica].documentos).forEach(doc => {
+          doc.productos.forEach(prod => {
+            out.push({
+              Tipo: tipoLabel,
+              Clínica: clinica,
+              Documento: doc.documento,
+              Fecha: fmtFecha(doc.fecha),
+              Producto: prod.nombre,
+              Código: prod.codigo,
+              'Cantidad pendiente': prod.cantidad,
+              'Valor pendiente': prod.valor,
+            });
           });
         });
       });
@@ -2541,5 +2558,8 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
 
 
