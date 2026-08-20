@@ -200,11 +200,15 @@ const procesarMensaje = async (gmail, messageId) => {
   }
 
   if (!xmlContent) {
-    // FIX: diagnóstico — antes no se sabía qué adjuntos traía un mensaje rechazado
+    // FIX: diagnóstico — antes no se sabía qué adjuntos traía un mensaje rechazado,
+    // ni a qué correo correspondía. Ahora se incluye el asunto para identificarlo
+    // sin tener que cruzar el ID hexadecimal con la URL de Gmail manualmente.
     const resumenAdjuntos = parts
       .map(p => `${p.filename || '(sin nombre)'} [${p.mimeType || 'sin mime'}]`)
       .join(', ') || 'ninguno';
-    console.log(`⚠️ Mensaje ${messageId} sin XML DIAN válido — adjuntos vistos: ${resumenAdjuntos}`);
+    const headers = msgRes.data.payload?.headers || [];
+    const asunto = headers.find(h => h.name === 'Subject')?.value || '(sin asunto)';
+    console.log(`⚠️ Mensaje ${messageId} sin XML DIAN válido — asunto: "${asunto}" — adjuntos vistos: ${resumenAdjuntos}`);
     return false;
   }
 
