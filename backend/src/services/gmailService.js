@@ -174,18 +174,37 @@ const procesarMensaje = async (gmail, messageId) => {
       continue;
     }
 
-    if (filename.endsWith('.xml') || mimeType.includes('xml')) {
+    // FIX: mimeType.includes('xml') hacía falso positivo con .xlsx/.docx
+    // (su mimeType real es "...openxmlformats-officedocument..." que contiene "xml").
+    // Ahora se exige extensión .xml O mimeType EXACTO de XML (no substring).
+    const esXmlReal =
+      filename.endsWith('.xml') ||
+      mimeType === 'text/xml' ||
+      mimeType === 'application/xml';
+
+    // FIX: excluir explícitamente formatos Office (xlsx/docx/pptx) del chequeo de PDF/XML
+    const esOfficeFormat =
+      mimeType.includes('openxmlformats') ||
+      filename.endsWith('.xlsx') ||
+      filename.endsWith('.docx') ||
+      filename.endsWith('.pptx');
+
+    if (esXmlReal && !esOfficeFormat) {
       xmlContent = data.toString('utf-8');
       xmlFilename = `${messageId}_${part.filename}`;
     }
-    if (filename.endsWith('.pdf') || mimeType.includes('pdf')) {
+    if (filename.endsWith('.pdf') || mimeType === 'application/pdf') {
       pdfBuffer = data;
       pdfFilename = `${messageId}_${part.filename}`;
     }
   }
 
   if (!xmlContent) {
-    console.log(`⚠️ Mensaje ${messageId} sin XML DIAN válido`);
+    // FIX: diagnóstico — antes no se sabía qué adjuntos traía un mensaje rechazado
+    const resumenAdjuntos = parts
+      .map(p => `${p.filename || '(sin nombre)'} [${p.mimeType || 'sin mime'}]`)
+      .join(', ') || 'ninguno';
+    console.log(`⚠️ Mensaje ${messageId} sin XML DIAN válido — adjuntos vistos: ${resumenAdjuntos}`);
     return false;
   }
 
@@ -311,6 +330,7 @@ const obtenerPartes = (payload, partes = []) => {
 };
 
 module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos };
+
 
 
 
