@@ -178,7 +178,7 @@ export default function Configuracion() {
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <button style={btnPrimary} onClick={() => sincronizarAhora(syncDesde, syncHasta)} disabled={syncing}>
+                  <button style={btnPrimary} onClick={() => sincronizarAhora(syncDesde || cfg.sync_desde, syncHasta || new Date().toISOString().split('T')[0])} disabled={syncing}>
                     {syncing ? 'Importando...' : 'Importar rango'}
                   </button>
 
@@ -366,4 +366,6 @@ const inputSt = { width: '100%', background: '#0f1117', border: '1px solid #2a33
 const btnPrimary = { background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' };
 const btnGhost = { background: '#1e2535', color: '#94a3b8', border: '1px solid #2a3348', borderRadius: 6, padding: '8px 16px', fontSize: 13, cursor: 'pointer' };
 const btnDanger = { background: 'rgba(239,68,68,.1)', color: '#f87171', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' };
+
+
 
