@@ -1565,6 +1565,8 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
 // ─── TAB CRUCES ──────────────────────────────────────────────────────────────
 
 function TabCruces({ prestamos, cruces, onRefresh }) {
+  const { isAdmin } = useAuth();
+
   async function revertirCruce(cruce, e) {
     e.stopPropagation();
     if (!window.confirm(`¿Revertir el cruce entre ${cruce.prestamo_doc} y ${cruce.devolucion_doc}? El préstamo volverá a estado abierto.`)) return;
@@ -1587,6 +1589,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [cantDevueltas,    setCantDevueltas]    = React.useState({});
   const [expandedCruce,    setExpandedCruce]    = React.useState(null);
   const [reparando,        setReparando]        = React.useState(false);
+  const [regenerandoPdfs,  setRegenerandoPdfs]   = React.useState(false);
 
   async function repararCrucesAntiguos() {
     setReparando(true);
@@ -1599,6 +1602,19 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
     }
     setReparando(false);
   }
+
+  async function regenerarPdfs() {
+    if (!window.confirm('¿Regenerar el PDF de todos los cruces ya emitidos con el formato actual? Los archivos existentes se sobrescriben (el enlace no cambia).')) return;
+    setRegenerandoPdfs(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/regenerar-pdfs', { method: 'POST' });
+      alert(`Se regeneraron ${r.regenerados} PDF(s).${r.errores > 0 ? ` ${r.errores} con error.` : ''}`);
+      onRefresh();
+    } catch (e) {
+      alert('Error regenerando PDFs: ' + e.message);
+    }
+    setRegenerandoPdfs(false);
+  }
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
   const [anioPrest,    setAnioPrest]    = React.useState('');
@@ -1610,6 +1626,33 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [detalleCruce, setDetalleCruce] = React.useState(null);
   const [detalleCard,  setDetalleCard]  = React.useState(null);
   const [filtroCruces, setFiltroCruces] = React.useState('');
+  const [editandoCruce, setEditandoCruce] = React.useState(null);
+  const [editTipo,       setEditTipo]      = React.useState('total');
+  const [editObs,        setEditObs]       = React.useState('');
+  const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
+
+  function abrirEdicionCruce(c, e) {
+    e.stopPropagation();
+    setEditandoCruce(c);
+    setEditTipo(c.tipo_cruce || 'total');
+    setEditObs(c.observaciones || c.grupo_observaciones || '');
+  }
+
+  async function guardarEdicionCruce() {
+    setGuardandoEdicion(true);
+    try {
+      await apiFetch(`/prestamos/cruces/${editandoCruce.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tipo_cruce: editTipo, observaciones: editObs }),
+      });
+      setEditandoCruce(null);
+      onRefresh();
+    } catch (err) {
+      alert('Error editando cruce: ' + err.message);
+    }
+    setGuardandoEdicion(false);
+  }
 
   function matchCruce(c, texto) {
     if (!texto) return true;
@@ -1989,13 +2032,22 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
         <div style={{ flex: '0 0 auto', paddingTop: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
-            {cruces.some(c => !c.grupo_numero) && (
-              <button onClick={repararCrucesAntiguos} disabled={reparando}
-                title="Asigna consecutivo, recalcula el estado y genera el PDF de los cruces creados antes de esta función"
-                style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
-                {reparando ? 'Reparando…' : '🔧 Reparar cruces antiguos'}
-              </button>
-            )}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {isAdmin && (
+                <button onClick={regenerarPdfs} disabled={regenerandoPdfs}
+                  title="Regenera el PDF de todos los cruces ya emitidos con el formato actual (código, cantidad y fecha por producto)"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                  {regenerandoPdfs ? 'Regenerando…' : '🔄 Actualizar PDFs al nuevo formato'}
+                </button>
+              )}
+              {cruces.some(c => !c.grupo_numero) && (
+                <button onClick={repararCrucesAntiguos} disabled={reparando}
+                  title="Asigna consecutivo, recalcula el estado y genera el PDF de los cruces creados antes de esta función"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                  {reparando ? 'Reparando…' : '🔧 Reparar cruces antiguos'}
+                </button>
+              )}
+            </div>
           </div>
           <input value={filtroCruces} onChange={e => setFiltroCruces(e.target.value)}
             placeholder="Buscar por Nº de cruce (ej. CRU-00092), documento (préstamo o devolución), producto o clínica…"
@@ -2050,7 +2102,14 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                   <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
                     <CruceSoportes cruce={c} />
                   </td>
-                  <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
+                  <td style={{ padding: '8px 10px', display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+                    {isAdmin && (
+                      <button onClick={e => abrirEdicionCruce(c, e)}
+                        title="Editar cruce (solo admin)"
+                        style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+                        ✏️ Editar
+                      </button>
+                    )}
                     <button onClick={e => revertirCruce(c, e)}
                       title="Revertir cruce"
                       style={{ padding: '3px 8px', fontSize: 11, border: '1px solid #ef444455', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: '#ef4444' }}>
@@ -2111,6 +2170,38 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
       {detalleCard && (
         <Modal onClose={() => setDetalleCard(null)} titulo={`Detalle ${detalleCard.documento_contable}`}>
           <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]} />
+        </Modal>
+      )}
+      {editandoCruce && (
+        <Modal onClose={() => setEditandoCruce(null)} titulo={`Editar cruce ${editandoCruce.grupo_numero || ''}`}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 320 }}>
+            <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+              {editandoCruce.prestamo_doc} ↔ {editandoCruce.devolucion_doc}
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Tipo</label>
+              <select value={editTipo} onChange={e => setEditTipo(e.target.value)}
+                style={{ display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                <option value="total">total</option>
+                <option value="parcial">parcial</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Observaciones</label>
+              <input value={editObs} onChange={e => setEditObs(e.target.value)}
+                style={{ display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+              <button onClick={() => setEditandoCruce(null)}
+                style={{ padding: '8px 16px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+                Cancelar
+              </button>
+              <button onClick={guardarEdicionCruce} disabled={guardandoEdicion}
+                style={{ padding: '8px 18px', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-accent)', color: '#fff', fontWeight: 500 }}>
+                {guardandoEdicion ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>
@@ -2826,26 +2917,4 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
