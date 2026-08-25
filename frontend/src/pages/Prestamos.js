@@ -282,7 +282,7 @@ export default function Prestamos() {
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
-          {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} />}
+          {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
         </>
       )}
     </div>
@@ -2289,7 +2289,7 @@ function TabProductos({ productos: productosProp, onRefresh }) {
 
 // ─── TAB REPORTES ───────────────────────────────────────────────────────────────
 
-function TabReportes({ prestamos, devoluciones }) {
+function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
   function exportar(filtro, nombre) {
     const datos = prestamos.filter(filtro).map(p => ({
       Documento:   p.documento_contable,
@@ -2309,6 +2309,7 @@ function TabReportes({ prestamos, devoluciones }) {
   }
 
   const [verPendientes, setVerPendientes] = useState(false);
+  const [verPorPrestamo, setVerPorPrestamo] = useState(false);
 
   const cardStyle = {
     background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10,
@@ -2355,12 +2356,258 @@ function TabReportes({ prestamos, devoluciones }) {
             Qué producto falta por devolver en cada clínica (y qué nos falta devolver a nosotros), con valor y filtro de fecha de corte
           </div>
         </div>
+        <div style={{ ...cardStyle, gridColumn: '1 / -1' }} onClick={() => setVerPorPrestamo(true)}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
+            <span style={{ fontSize: 18 }}>🔗</span>
+            <span style={{ fontWeight: 500, fontSize: 13 }}>Préstamo por préstamo — devoluciones, pagos y pendientes</span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+            Por cada IPE/EPO: qué devoluciones (IDP/ED) tiene cruzadas, qué productos ya se pagaron y qué falta
+          </div>
+        </div>
       </div>
 
       {verPendientes && (
         <ModalReportePendientes prestamos={prestamos} devoluciones={devoluciones} onClose={() => setVerPendientes(false)} />
       )}
+      {verPorPrestamo && (
+        <ModalReportePorPrestamo prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerPorPrestamo(false)} />
+      )}
     </div>
+  );
+}
+
+// ─── Reporte préstamo por préstamo (devoluciones cruzadas, pagos y pendientes) ──
+
+function construirDetallePrestamo(prestamo, cruces) {
+  const crucesDe = (cruces || []).filter(c => c.prestamo_id === prestamo.id);
+
+  const devolucionesDoc = crucesDe.map(c => ({
+    id: c.devolucion_id,
+    documento: c.devolucion_doc,
+    tipo_cruce: c.tipo_cruce,
+    soporte_url: c.devolucion_soporte_url,
+    items: c.devolucion_items || [],
+  }));
+
+  // Deduplicar por documento (una devolución puede tener varios cruces parciales)
+  const pagadoPorCodigo = {};
+  devolucionesDoc.forEach(d => {
+    (d.items || []).forEach(i => {
+      pagadoPorCodigo[i.codigo] = (pagadoPorCodigo[i.codigo] || 0) + Number(i.cantidad);
+    });
+  });
+
+  const productosPagados = [];
+  const productosPendientes = [];
+  (prestamo.items || []).forEach(i => {
+    const disponible = pagadoPorCodigo[i.codigo] || 0;
+    const pagado = Math.min(Number(i.cantidad), disponible);
+    const pendiente = Math.max(0, Number(i.cantidad) - pagado);
+    if (pagado > 0) {
+      productosPagados.push({ codigo: i.codigo, nombre: i.nombre, cantidad: pagado, valor: pagado * Number(i.precio_unitario || 0) });
+    }
+    if (pendiente > 0) {
+      productosPendientes.push({ codigo: i.codigo, nombre: i.nombre, cantidad: pendiente, valor: pendiente * Number(i.precio_unitario || 0) });
+    }
+  });
+
+  // Documentos de devolución únicos, para mostrar en el encabezado
+  const documentosDevolucion = Array.from(new Set(devolucionesDoc.map(d => d.documento).filter(Boolean)));
+
+  return { devolucionesDoc, documentosDevolucion, productosPagados, productosPendientes };
+}
+
+function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
+  const [tipo, setTipo] = useState('todos');       // todos | egreso | ingreso
+  const [clinica, setClinica] = useState('');
+  const [estado, setEstado] = useState('todos');    // todos | abierto | parcial | cerrado
+  const [texto, setTexto] = useState('');
+  const [expandido, setExpandido] = useState(null);
+
+  const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
+
+  const base = (prestamos || []).filter(p => ['ingreso', 'egreso'].includes(p.tipo));
+
+  const filtrados = base.filter(p => {
+    if (tipo !== 'todos' && p.tipo !== tipo) return false;
+    if (estado !== 'todos' && p.estado !== estado) return false;
+    if (clinica && p.clinica_nombre !== clinica) return false;
+    if (texto) {
+      const t = texto.toLowerCase();
+      const enDoc = (p.documento_contable || '').toLowerCase().includes(t);
+      const enClinica = (p.clinica_nombre || '').toLowerCase().includes(t);
+      const enItems = (p.items || []).some(i => (i.codigo || '').toLowerCase().includes(t) || (i.nombre || '').toLowerCase().includes(t));
+      if (!enDoc && !enClinica && !enItems) return false;
+    }
+    return true;
+  }).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+
+  const clinicasDisponibles = Array.from(new Set(base.map(p => p.clinica_nombre).filter(Boolean))).sort();
+
+  function exportarExcel() {
+    const filas = [];
+    filtrados.forEach(p => {
+      const det = construirDetallePrestamo(p, cruces);
+      const devolucionesTxt = det.documentosDevolucion.join(', ') || '—';
+
+      const filaBase = {
+        Documento: p.documento_contable,
+        Tipo: p.tipo === 'egreso' ? 'EPO' : 'IPE',
+        Clínica: p.clinica_nombre,
+        Fecha: fmtFecha(p.fecha),
+        Estado: p.estado,
+        Devoluciones: devolucionesTxt,
+      };
+
+      if (det.productosPagados.length === 0 && det.productosPendientes.length === 0) {
+        filas.push({ ...filaBase, Situación: 'Pagado', Producto: '', Código: '', Cantidad: '', Valor: '' });
+        return;
+      }
+      det.productosPagados.forEach(prod => {
+        filas.push({ ...filaBase, Situación: 'Pagado', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor });
+      });
+      det.productosPendientes.forEach(prod => {
+        filas.push({ ...filaBase, Situación: 'Pendiente', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor });
+      });
+    });
+
+    const ws = XLSX.utils.json_to_sheet(filas);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Prestamo por prestamo');
+    XLSX.writeFile(wb, `prestamo_por_prestamo_${new Date().toISOString().substring(0, 10)}.xlsx`);
+  }
+
+  return (
+    <Modal onClose={onClose} titulo="Préstamo por préstamo — devoluciones, pagos y pendientes">
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Tipo</div>
+          <select value={tipo} onChange={e => setTipo(e.target.value)} style={inputS}>
+            <option value="todos">Todos</option>
+            <option value="egreso">EPO (dados)</option>
+            <option value="ingreso">IPE (recibidos)</option>
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Clínica</div>
+          <select value={clinica} onChange={e => setClinica(e.target.value)} style={inputS}>
+            <option value="">Todas</option>
+            {clinicasDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Estado</div>
+          <select value={estado} onChange={e => setEstado(e.target.value)} style={inputS}>
+            <option value="todos">Todos</option>
+            <option value="abierto">Abierto</option>
+            <option value="parcial">Parcial</option>
+            <option value="cerrado">Cerrado</option>
+          </select>
+        </div>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Buscar</div>
+          <input value={texto} onChange={e => setTexto(e.target.value)} placeholder="Documento, clínica, producto o código…" style={{ ...inputS, width: '100%', boxSizing: 'border-box' }} />
+        </div>
+        <button onClick={exportarExcel}
+          style={{ padding: '8px 14px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+          ↓ Exportar a Excel
+        </button>
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 10 }}>{filtrados.length} préstamo(s)</div>
+
+      {filtrados.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--t-text-muted)', padding: 20, textAlign: 'center' }}>Sin resultados para el filtro seleccionado</div>
+      )}
+
+      {filtrados.map(p => {
+        const det = construirDetallePrestamo(p, cruces);
+        const abierto = expandido === p.id;
+        const badgeTipo = p.tipo === 'egreso' ? 'EPO' : 'IPE';
+        const badgeDevol = p.tipo === 'egreso' ? 'IDP' : 'ED';
+        return (
+          <div key={p.id} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 8, overflow: 'hidden' }}>
+            <div onClick={() => setExpandido(abierto ? null : p.id)}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: 'var(--t-bg-inner)', cursor: 'pointer' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: p.tipo === 'egreso' ? '#ef4444' : '#3b82f6', color: '#fff', fontWeight: 600 }}>{badgeTipo}</span>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{p.documento_contable}</span>
+                <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{p.clinica_nombre} · {fmtFecha(p.fecha)}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: p.estado === 'cerrado' ? '#22c55e' : p.estado === 'parcial' ? '#f59e0b' : 'var(--t-text-muted)' }}>{p.estado}</span>
+                <span style={{ fontSize: 12 }}>{abierto ? '▾' : '▸'}</span>
+              </div>
+            </div>
+
+            {abierto && (
+              <div style={{ padding: '10px 12px' }}>
+                <div style={{ fontSize: 12, marginBottom: 10 }}>
+                  <span style={{ color: 'var(--t-text-muted)' }}>Devoluciones ({badgeDevol}) cruzadas: </span>
+                  {det.documentosDevolucion.length > 0
+                    ? det.documentosDevolucion.map((d, i) => (
+                        <span key={d} style={{ fontWeight: 600 }}>{d}{i < det.documentosDevolucion.length - 1 ? ', ' : ''}</span>
+                      ))
+                    : <span style={{ color: 'var(--t-text-muted)' }}>Sin devoluciones cruzadas</span>}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: '#22c55e' }}>✓ Productos pagados</div>
+                    {det.productosPagados.length === 0 && <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Ninguno</div>}
+                    {det.productosPagados.length > 0 && (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                        <thead>
+                          <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left' }}>
+                            <th style={{ padding: '3px 6px', fontWeight: 500 }}>Producto</th>
+                            <th style={{ padding: '3px 6px', fontWeight: 500 }}>Código</th>
+                            <th style={{ padding: '3px 6px', fontWeight: 500, textAlign: 'right' }}>Cant.</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {det.productosPagados.map((prod, i) => (
+                            <tr key={i} style={{ borderTop: '1px solid var(--t-border)' }}>
+                              <td style={{ padding: '3px 6px' }}>{prod.nombre}</td>
+                              <td style={{ padding: '3px 6px', color: 'var(--t-text-muted)' }}>{prod.codigo}</td>
+                              <td style={{ padding: '3px 6px', textAlign: 'right' }}>{prod.cantidad}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: '#f59e0b' }}>⏳ Productos pendientes</div>
+                    {det.productosPendientes.length === 0 && <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Ninguno</div>}
+                    {det.productosPendientes.length > 0 && (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                        <thead>
+                          <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left' }}>
+                            <th style={{ padding: '3px 6px', fontWeight: 500 }}>Producto</th>
+                            <th style={{ padding: '3px 6px', fontWeight: 500 }}>Código</th>
+                            <th style={{ padding: '3px 6px', fontWeight: 500, textAlign: 'right' }}>Cant.</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {det.productosPendientes.map((prod, i) => (
+                            <tr key={i} style={{ borderTop: '1px solid var(--t-border)' }}>
+                              <td style={{ padding: '3px 6px' }}>{prod.nombre}</td>
+                              <td style={{ padding: '3px 6px', color: 'var(--t-text-muted)' }}>{prod.codigo}</td>
+                              <td style={{ padding: '3px 6px', textAlign: 'right' }}>{prod.cantidad}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </Modal>
   );
 }
 
@@ -2558,6 +2805,12 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
 
 
 
