@@ -389,57 +389,171 @@ async function recalcularEstadoDocumento(client, documentoId) {
   return nuevoEstado;
 }
 
-// Genera el PDF del cruce: portada con consecutivo/descripción/documentos + soportes anexados
+// Genera el PDF del cruce con tablas y bordes
 async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
   const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
-  const pdfDoc = await PDFDocument.create();
+  const pdfDoc   = await PDFDocument.create();
   const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  let page = pdfDoc.addPage([612, 792]);
-  let y = 740;
-  const linea = (texto, size, f, color) => { page.drawText(texto, { x: 50, y, size, font: f || font, color: color || rgb(0.1,0.1,0.1) }); y -= size + 6; };
+  // ── Paleta de colores ──
+  const AZUL      = rgb(0.07, 0.33, 0.65);
+  const AZUL_LIGHT= rgb(0.87, 0.93, 0.98);
+  const GRIS_HD   = rgb(0.93, 0.93, 0.93);
+  const GRIS_LIN  = rgb(0.82, 0.82, 0.82);
+  const NEGRO     = rgb(0.08, 0.08, 0.08);
+  const BLANCO    = rgb(1, 1, 1);
 
-  linea('CRUCE DE PRÉSTAMOS', 18, fontBold);
-  linea(`Consecutivo: ${numero}`, 12, fontBold, rgb(0.1,0.4,0.8));
-  linea(`Fecha: ${fecha}`, 11);
-  y -= 6;
+  const W = 612, H = 792;
+  const ML = 45, MR = 45;  // márgenes izq/der
+  const CW = W - ML - MR;  // ancho útil = 522
 
-  if (observaciones) {
-    linea('Descripción:', 11, fontBold);
+  let page = pdfDoc.addPage([W, H]);
+  let y = H - 48;
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+  function texto(t, x, cy, size, f, color, maxW) {
+    if (!t) return;
+    const str = String(t);
+    // Truncar si es necesario para no salir del margen
+    let s = str;
+    if (maxW) {
+      while (s.length > 0 && (f || font).widthOfTextAtSize(s, size) > maxW) s = s.slice(0, -1);
+      if (s.length < str.length) s = s.slice(0, -1) + '…';
+    }
+    page.drawText(s, { x, y: cy, size, font: f || font, color: color || NEGRO });
+  }
+
+  function rect(x, cy, w, h, fillColor, borderColor, borderWidth) {
+    if (fillColor) page.drawRectangle({ x, y: cy, width: w, height: h, color: fillColor });
+    if (borderColor) page.drawRectangle({ x, y: cy, width: w, height: h, borderColor, borderWidth: borderWidth || 0.5, color: fillColor || undefined });
+  }
+
+  function linH(cy, x1, x2, color) {
+    page.drawLine({ start: { x: x1, y: cy }, end: { x: x2, y: cy }, thickness: 0.5, color: color || GRIS_LIN });
+  }
+
+  function nuevaPagina() {
+    page = pdfDoc.addPage([W, H]);
+    y = H - 48;
+    // Encabezado mini en páginas adicionales
+    rect(ML, y - 2, CW, 18, AZUL_LIGHT);
+    texto(`CRUCE DE PRÉSTAMOS  ·  ${numero}`, ML + 6, y + 4, 9, fontBold, AZUL);
+    y -= 28;
+  }
+
+  function checkY(needed) {
+    if (y - needed < 55) { nuevaPagina(); }
+  }
+
+  // ── ENCABEZADO ────────────────────────────────────────────────────────────
+  // Barra azul título
+  rect(ML, y - 4, CW, 28, AZUL);
+  texto('CRUCE DE PRÉSTAMOS', ML + 10, y + 6, 16, fontBold, BLANCO);
+  y -= 36;
+
+  // Recuadro consecutivo + fecha
+  rect(ML, y - 22, CW, 28, AZUL_LIGHT, AZUL, 0.8);
+  texto(`Consecutivo: ${numero}`, ML + 10, y - 8, 11, fontBold, AZUL);
+  texto(`Fecha: ${fecha}`, ML + 280, y - 8, 10, font, NEGRO);
+  y -= 38;
+
+  // Descripción
+  if (observaciones && observaciones.trim()) {
+    checkY(30);
+    rect(ML, y - 4, CW, 16, GRIS_HD);
+    texto('Descripción:', ML + 6, y + 4, 9, fontBold, NEGRO);
+    y -= 18;
+    // Partir en líneas de hasta 95 chars
     const palabras = observaciones.split(' ');
     let renglon = '';
     for (const w of palabras) {
-      if ((renglon + w).length > 95) { linea(renglon, 10); renglon = ''; }
+      if ((renglon + w).length > 100) {
+        checkY(14);
+        texto(renglon.trim(), ML + 6, y, 9, font, NEGRO);
+        y -= 13;
+        renglon = '';
+      }
       renglon += w + ' ';
     }
-    if (renglon) linea(renglon, 10);
+    if (renglon.trim()) {
+      checkY(14);
+      texto(renglon.trim(), ML + 6, y, 9, font, NEGRO);
+      y -= 13;
+    }
     y -= 6;
   }
 
-  linea('Documentos incluidos en este cruce:', 11, fontBold);
-  y -= 2;
+  // ── Sección "Documentos incluidos" ───────────────────────────────────────
+  checkY(20);
+  rect(ML, y - 4, CW, 16, AZUL);
+  texto('Documentos incluidos en este cruce', ML + 6, y + 4, 9, fontBold, BLANCO);
+  y -= 22;
+
+  // Anchos de columnas tabla documentos: Doc | Tipo | Clínica | Fecha | Valor
+  const DC = [0, 80, 145, 345, 425, 522]; // posiciones relativas al ML
 
   for (const d of documentos) {
-    if (y < 110) { page = pdfDoc.addPage([612, 792]); y = 740; }
     const valor = (d.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
     const fechaDoc = d.fecha ? String(d.fecha).substring(0, 10) : '—';
+    const nItems = (d.items || []).length;
+    const altoCabDoc = 18;
+    const altoTabla = nItems > 0 ? 16 + nItems * 14 : 0;
+    checkY(altoCabDoc + altoTabla + 8);
 
-    linea(`${d.documento_contable || ''}  ·  ${d.tipo || ''}  ·  ${(d.clinica_nombre || '').substring(0, 40)}`, 10, fontBold, rgb(0.1,0.4,0.8));
-    linea(`Fecha: ${fechaDoc}   Valor total: $${valor.toLocaleString('es-CO')}`, 9);
+    // Cabecera del documento — fondo azul claro con borde
+    rect(ML, y - altoCabDoc + 4, CW, altoCabDoc, AZUL_LIGHT, AZUL, 0.6);
+    texto(d.documento_contable || '', ML + DC[0] + 4, y - 10, 9, fontBold, AZUL, 74);
+    texto(d.tipo || '', ML + DC[1] + 4, y - 10, 8, font, NEGRO, 60);
+    texto(d.clinica_nombre || '', ML + DC[2] + 4, y - 10, 8, font, NEGRO, 195);
+    texto(fechaDoc, ML + DC[3] + 4, y - 10, 8, font, NEGRO, 75);
+    texto('$' + valor.toLocaleString('es-CO'), ML + DC[4] + 4, y - 10, 8, fontBold, NEGRO, 90);
+    y -= altoCabDoc + 2;
 
-    if ((d.items || []).length > 0) {
-      linea('   Código          Producto                                     Cant.', 8, fontBold, rgb(0.45,0.45,0.45));
+    // Tabla de items del documento
+    if (nItems > 0) {
+      // Header columnas items
+      rect(ML, y - 14, CW, 14, GRIS_HD, GRIS_LIN, 0.5);
+      texto('Código', ML + 4, y - 10, 7.5, fontBold, NEGRO);
+      texto('Producto', ML + 90, y - 10, 7.5, fontBold, NEGRO);
+      texto('Cant.', ML + CW - 38, y - 10, 7.5, fontBold, NEGRO);
+      y -= 14;
+
       for (const item of d.items) {
-        if (y < 70) { page = pdfDoc.addPage([612, 792]); y = 740; }
-        const nombreProd = (item.nombre || '').substring(0, 40);
-        linea(`   ${(item.codigo || '').padEnd(15)} ${nombreProd.padEnd(45)} ${item.cantidad}`, 8);
+        checkY(14);
+        // Fila con borde inferior
+        rect(ML, y - 12, CW, 13, null, GRIS_LIN, 0.3);
+        linH(y - 12, ML, ML + CW, GRIS_LIN);
+        texto(String(item.codigo || ''), ML + 4, y - 9, 7.5, font, NEGRO, 82);
+        texto(item.nombre || '', ML + 90, y - 9, 7.5, font, NEGRO, 340);
+        texto(String(item.cantidad ?? ''), ML + CW - 38, y - 9, 7.5, fontBold, NEGRO);
+        y -= 13;
       }
+      // Borde exterior de la tabla
+      rect(ML, y, CW, nItems * 13 + 14, null, GRIS_LIN, 0.5);
     }
-    y -= 8;
+    y -= 10;
   }
 
-  // Anexar el soporte (PDF o imagen) de cada documento involucrado
+  // ── Total general ─────────────────────────────────────────────────────────
+  checkY(22);
+  const totalGeneral = documentos.reduce((s, d) =>
+    s + (d.items || []).reduce((ss, i) => ss + Number(i.cantidad) * Number(i.precio_unitario || 0), 0), 0);
+  rect(ML, y - 18, CW, 18, GRIS_HD, GRIS_LIN, 0.5);
+  texto('VALOR TOTAL DEL CRUCE', ML + 6, y - 12, 9, fontBold, NEGRO);
+  texto('$' + totalGeneral.toLocaleString('es-CO'), ML + CW - 100, y - 12, 10, fontBold, AZUL);
+  y -= 28;
+
+  // ── Pie de página en todas las páginas ────────────────────────────────────
+  const totalPags = pdfDoc.getPageCount();
+  for (let pi = 0; pi < totalPags; pi++) {
+    const pg = pdfDoc.getPage(pi);
+    pg.drawLine({ start: { x: ML, y: 38 }, end: { x: W - MR, y: 38 }, thickness: 0.5, color: GRIS_LIN });
+    pg.drawText(`Documento generado automáticamente — ${numero}`, { x: ML, y: 24, size: 7, font, color: GRIS_LIN });
+    pg.drawText(`Página ${pi + 1} de ${totalPags}`, { x: W - MR - 60, y: 24, size: 7, font, color: GRIS_LIN });
+  }
+
+  // ── Anexar soportes ───────────────────────────────────────────────────────
   for (const d of documentos) {
     if (!d.soporte_url) continue;
     try {
@@ -448,12 +562,12 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
       if (ext === '.pdf') {
         const donante = await PDFDocument.load(buffer, { ignoreEncryption: true });
         const paginas = await pdfDoc.copyPages(donante, donante.getPageIndices());
-        paginas.forEach(p => pdfDoc.addPage(p));
+        paginas.forEach(pg => pdfDoc.addPage(pg));
       } else if (['.jpg', '.jpeg', '.png'].includes(ext)) {
         const img = ext === '.png' ? await pdfDoc.embedPng(buffer) : await pdfDoc.embedJpg(buffer);
-        const pImg = pdfDoc.addPage([612, 792]);
-        const scale = Math.min(500 / img.width, 700 / img.height, 1);
-        pImg.drawImage(img, { x: 56, y: 792 - 60 - img.height * scale, width: img.width * scale, height: img.height * scale });
+        const pImg = pdfDoc.addPage([W, H]);
+        const scale = Math.min((CW) / img.width, (H - 100) / img.height, 1);
+        pImg.drawImage(img, { x: ML, y: H - 60 - img.height * scale, width: img.width * scale, height: img.height * scale });
       }
     } catch (e) {
       console.error(`No se pudo anexar el soporte de ${d.documento_contable}:`, e.message);
@@ -757,3 +871,4 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
