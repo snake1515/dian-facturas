@@ -2487,6 +2487,7 @@ function construirDetallePrestamo(prestamo, cruces) {
     id: c.devolucion_id,
     documento: c.devolucion_doc,
     tipo_cruce: c.tipo_cruce,
+    grupo_numero: c.grupo_numero || '',   // número de cruce CRU-xxxxx
     soporte_url: c.devolucion_soporte_url,
     items: c.devolucion_items || [],
   }));
@@ -2499,14 +2500,29 @@ function construirDetallePrestamo(prestamo, cruces) {
     });
   });
 
+  // Mapear qué cruce y devolución cubrió cada producto (para el Excel)
+  const crucePorCodigo = {};   // codigo -> { documento_devolucion, grupo_numero }
+  devolucionesDoc.forEach(d => {
+    (d.items || []).forEach(i => {
+      if (!crucePorCodigo[i.codigo]) {
+        crucePorCodigo[i.codigo] = { documento_devolucion: d.documento, grupo_numero: d.grupo_numero };
+      }
+    });
+  });
+
   const productosPagados = [];
   const productosPendientes = [];
   (prestamo.items || []).forEach(i => {
     const disponible = pagadoPorCodigo[i.codigo] || 0;
     const pagado = Math.min(Number(i.cantidad), disponible);
     const pendiente = Math.max(0, Number(i.cantidad) - pagado);
+    const info = crucePorCodigo[i.codigo] || {};
     if (pagado > 0) {
-      productosPagados.push({ codigo: i.codigo, nombre: i.nombre, cantidad: pagado, valor: pagado * Number(i.precio_unitario || 0) });
+      productosPagados.push({
+        codigo: i.codigo, nombre: i.nombre, cantidad: pagado, valor: pagado * Number(i.precio_unitario || 0),
+        documento_devolucion: info.documento_devolucion || '',
+        numero_cruce: info.grupo_numero || '',
+      });
     }
     if (pendiente > 0) {
       productosPendientes.push({ codigo: i.codigo, nombre: i.nombre, cantidad: pendiente, valor: pendiente * Number(i.precio_unitario || 0) });
@@ -2562,14 +2578,14 @@ function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
       };
 
       if (det.productosPagados.length === 0 && det.productosPendientes.length === 0) {
-        filas.push({ ...filaBase, Situación: 'Pagado', Producto: '', Código: '', Cantidad: '', Valor: '' });
+        filas.push({ ...filaBase, Situación: 'Sin movimiento', Producto: '', Código: '', Cantidad: '', Valor: '', 'Doc. devolución': '', 'N° cruce': '' });
         return;
       }
       det.productosPagados.forEach(prod => {
-        filas.push({ ...filaBase, Situación: 'Pagado', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor });
+        filas.push({ ...filaBase, Situación: 'Pagado', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor, 'Doc. devolución': prod.documento_devolucion || '', 'N° cruce': prod.numero_cruce || '' });
       });
       det.productosPendientes.forEach(prod => {
-        filas.push({ ...filaBase, Situación: 'Pendiente', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor });
+        filas.push({ ...filaBase, Situación: 'Pendiente', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor, 'Doc. devolución': '', 'N° cruce': '' });
       });
     });
 
@@ -2917,4 +2933,6 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
 
