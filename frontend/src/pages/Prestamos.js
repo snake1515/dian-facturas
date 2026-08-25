@@ -1153,7 +1153,13 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
           body: JSON.stringify({ precio_unitario: precioUnit }),
         }).catch(() => {});
       }
-      if (!documentos[docKey].items.find(i => i.codigo === codigo)) {
+      // Un mismo código puede repetirse en varias filas cuando llega en distintos
+      // lotes — sumamos la cantidad en vez de descartar las filas siguientes,
+      // que antes se perdían silenciosamente.
+      const itemExistente = documentos[docKey].items.find(i => i.codigo === codigo);
+      if (itemExistente) {
+        itemExistente.cantidad += cantidad;
+      } else {
         documentos[docKey].items.push({
           codigo, nombre: nombre || prodMaestro?.nombre || '',
           cantidad, precio_unitario: precioUnit || prodMaestro?.precio_unitario || 0,
@@ -1239,16 +1245,13 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
 
     // Procesar productos
     const codigosNuevos = [];
-    const vistos = new Set();
-    const nuevosItems = [];
+    const nuevosItemsPorCodigo = {};
 
     console.log('Procesando', filas.length, 'filas para productos');
     for (const r of filas) {
       const codigoRaw = String(r[5] || '').trim();
       if (!codigoRaw) continue;
-      const codigo    = codigoRaw.padStart(10, '0');
-      if (vistos.has(codigo)) continue;
-      vistos.add(codigo);
+      const codigo = codigoRaw.padStart(10, '0');
 
       const cantidad   = Number(r[6]) || 0;
       const totalCosto = Math.abs(Number(String(r[7]).replace(/[^0-9.-]/g, '')) || 0);
@@ -1258,7 +1261,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       const fechaVenc  = r[20] ? String(r[20]).substring(0, 10) : '';
 
       const prodMaestro = productos.find(p => p.codigo === codigo);
-      if (!prodMaestro) codigosNuevos.push(codigo);
+      if (!prodMaestro && !nuevosItemsPorCodigo[codigo]) codigosNuevos.push(codigo);
 
       // Actualizar precio en maestro si difiere
       if (prodMaestro && precioUnit > 0 &&
@@ -1270,17 +1273,24 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
         }).catch(() => {});
       }
 
-      nuevosItems.push({
-        codigo,
-        nombre:            nombre || prodMaestro?.nombre || '',
-        cantidad,
-        precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
-        categoria:         prodMaestro?.categoria || '',
-        cuenta_contable:   prodMaestro?.cuenta_contable || '',
-        lote,
-        fecha_vencimiento: fechaVenc,
-      });
+      // Un mismo código puede repetirse en varias filas (distintos lotes) —
+      // sumamos la cantidad en vez de descartar las filas repetidas.
+      if (nuevosItemsPorCodigo[codigo]) {
+        nuevosItemsPorCodigo[codigo].cantidad += cantidad;
+      } else {
+        nuevosItemsPorCodigo[codigo] = {
+          codigo,
+          nombre:            nombre || prodMaestro?.nombre || '',
+          cantidad,
+          precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
+          categoria:         prodMaestro?.categoria || '',
+          cuenta_contable:   prodMaestro?.cuenta_contable || '',
+          lote,
+          fecha_vencimiento: fechaVenc,
+        };
+      }
     }
+    const nuevosItems = Object.values(nuevosItemsPorCodigo);
 
     if (codigosNuevos.length > 0) {
       setError(`⚠️ Códigos no registrados en maestro (asignar categoría/cuenta): ${codigosNuevos.join(', ')}`);
@@ -2368,7 +2378,7 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
       </div>
 
       {verPendientes && (
-        <ModalReportePendientes prestamos={prestamos} devoluciones={devoluciones} onClose={() => setVerPendientes(false)} />
+        <ModalReportePendientes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} onClose={() => setVerPendientes(false)} />
       )}
       {verPorPrestamo && (
         <ModalReportePorPrestamo prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerPorPrestamo(false)} />
@@ -2613,10 +2623,21 @@ function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
 
 // ─── Reporte detallado de pendientes por devolver (por producto y clínica) ─────
 
-function itemsPendientesDe(p, devoluciones) {
-  const devueltoPorCodigo = {};
+function itemsPendientesDe(p, devoluciones, cruces = []) {
+  // Junta devoluciones por dos vías: el flujo directo (d.prestamo_id) y el
+  // flujo de multicruce (prestamo_cruces), deduplicando por id de devolución
+  // para no contar dos veces si una devolución aparece en ambas fuentes.
+  const devMap = {};
   devoluciones.filter(d => d.prestamo_id === p.id).forEach(d => {
-    (d.items || []).forEach(i => {
+    devMap[d.id] = d.items || [];
+  });
+  (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
+    devMap[c.devolucion_id] = c.devolucion_items || [];
+  });
+
+  const devueltoPorCodigo = {};
+  Object.values(devMap).forEach(items => {
+    (items || []).forEach(i => {
       devueltoPorCodigo[i.codigo] = (devueltoPorCodigo[i.codigo] || 0) + Number(i.cantidad);
     });
   });
@@ -2627,7 +2648,7 @@ function itemsPendientesDe(p, devoluciones) {
   }).filter(i => i.pendiente > 0);
 }
 
-function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta) {
+function construirReportePendientes(prestamos, devoluciones, cruces, tipo, desde, hasta) {
   const filtrados = prestamos.filter(p => {
     if (p.tipo !== tipo) return false;
     if (p.estado === 'cerrado') return false;
@@ -2641,7 +2662,7 @@ function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta)
   let granTotal = 0;
 
   filtrados.forEach(p => {
-    const pendientes = itemsPendientesDe(p, devoluciones);
+    const pendientes = itemsPendientesDe(p, devoluciones, cruces);
     if (pendientes.length === 0) return;
     const clinica = p.clinica_nombre || 'Sin clínica';
     if (!porClinica[clinica]) porClinica[clinica] = { documentos: {}, valorTotal: 0 };
@@ -2667,12 +2688,12 @@ function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta)
   return { porClinica, granTotal };
 }
 
-function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
+function ModalReportePendientes({ prestamos, devoluciones, cruces, onClose }) {
   const [desde, setDesde] = useState('2020-01-01');
   const [hasta, setHasta] = useState(new Date().toISOString().substring(0, 10));
 
-  const reporteEgresos = construirReportePendientes(prestamos, devoluciones, 'egreso', desde, hasta);
-  const reporteIngresos = construirReportePendientes(prestamos, devoluciones, 'ingreso', desde, hasta);
+  const reporteEgresos = construirReportePendientes(prestamos, devoluciones, cruces, 'egreso', desde, hasta);
+  const reporteIngresos = construirReportePendientes(prestamos, devoluciones, cruces, 'ingreso', desde, hasta);
 
   const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
 
@@ -2805,6 +2826,18 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
