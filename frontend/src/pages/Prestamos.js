@@ -278,7 +278,7 @@ export default function Prestamos() {
       ) : (
         <>
           {activeTab === 'resumen'     && <TabResumen prestamos={prestamos} devoluciones={devoluciones} onRefresh={cargarDatos} />}
-          {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} cruces={cruces} onRefresh={cargarDatos} />}
+          {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} productos={productos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
@@ -430,7 +430,9 @@ function TabResumen({ prestamos, devoluciones, onRefresh }) {
 
 // ─── TAB MOVIMIENTOS ────────────────────────────────────────────────────────────
 
-function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefresh }) {
+function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cruces = [], onRefresh }) {
+  const { isAdmin } = useAuth();
+
   function saldoPend(p) {
     const totalPrestado = (p.items || []).reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
     const totalDevuelto = devoluciones
@@ -550,6 +552,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
   const [detalle,     setDetalle]     = useState(null);
   const [devModal,    setDevModal]    = useState(null);
   const [crucesModal, setCrucesModal] = useState(null); // array de cruces del documento clickeado
+  const [editModal,   setEditModal]   = useState(null); // movimiento en edición (solo admin)
 
   const MESES = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -734,6 +737,13 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
                         ↩ Devolución
                       </button>
                     )}
+                    {isAdmin && (
+                      <button onClick={e => { e.stopPropagation(); setEditModal(p); }}
+                        title='Editar movimiento (solo admin)'
+                        style={{ marginLeft: 6, padding: '4px 10px', fontSize: 12, border: '1px solid var(--t-border)', borderRadius: 6, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                        ✏️ Editar
+                      </button>
+                    )}
                     {devs.length > 0 && (
                       <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--t-text-muted)' }}>{devs.length} dev.</span>
                     )}
@@ -824,6 +834,18 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
             prestamo={devModal}
             devoluciones={devoluciones.filter(d => d.prestamo_id === devModal.id)}
             onSaved={() => { setDevModal(null); onRefresh(); }}
+          />
+        </Modal>
+      )}
+
+      {editModal && (
+        <Modal onClose={() => setEditModal(null)} titulo={`Editar movimiento — ${editModal.documento_contable}`}>
+          <FormEditarMovimiento
+            movimiento={editModal}
+            clinicas={clinicas}
+            productos={productos}
+            onSaved={() => { setEditModal(null); onRefresh(); }}
+            onCancel={() => setEditModal(null)}
           />
         </Modal>
       )}
@@ -1035,6 +1057,213 @@ function FormDevolucion({ prestamo, devoluciones, onSaved }) {
         <button onClick={guardar} disabled={saving}
           style={{ padding: '8px 16px', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-accent)', color: '#fff', fontWeight: 500 }}>
           {saving ? 'Guardando…' : 'Guardar devolución'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── EDITAR MOVIMIENTO (solo admin) ─────────────────────────────────────────────
+// Permite modificar todos los campos de un movimiento ya registrado: tipo,
+// clínica, bodega, fecha, documento contable, observaciones, y los productos
+// (agregar, quitar, cambiar cantidad/precio). El backend valida que solo un
+// usuario con rol admin pueda invocar este PATCH.
+
+const TIPOS_MOVIMIENTO = [
+  { value: 'ingreso',            label: 'Ingreso (IPE) — recibimos préstamo' },
+  { value: 'egreso',             label: 'Egreso (EPO) — damos préstamo' },
+  { value: 'devolucion_ingreso', label: 'Devolución de ingreso (IDP)' },
+  { value: 'devolucion_egreso',  label: 'Devolución de egreso (ED)' },
+];
+
+function FormEditarMovimiento({ movimiento, clinicas, productos, onSaved, onCancel }) {
+  const [tipo,          setTipo]          = useState(movimiento.tipo || 'ingreso');
+  const [clinicaId,     setClinicaId]     = useState(movimiento.clinica_id != null ? String(movimiento.clinica_id) : '');
+  const [bodega,        setBodega]        = useState(movimiento.bodega_codigo || '');
+  const [fecha,         setFecha]         = useState(movimiento.fecha ? String(movimiento.fecha).substring(0, 10) : '');
+  const [docContable,   setDocContable]   = useState(movimiento.documento_contable || '');
+  const [observaciones, setObs]           = useState(movimiento.observaciones || '');
+  const [items,         setItems]         = useState((movimiento.items || []).map(i => ({ ...i })));
+  const [busqProd,      setBusqProd]      = useState('');
+  const [saving,        setSaving]        = useState(false);
+  const [error,         setError]         = useState('');
+
+  const prodsFiltrados = productos.filter(p => {
+    const q = busqProd.toLowerCase();
+    return !q || p.codigo?.toLowerCase().includes(q) || p.nombre?.toLowerCase().includes(q);
+  }).slice(0, 8);
+
+  function agregarProducto(prod) {
+    if (items.find(i => i.codigo === prod.codigo)) return;
+    const grupo = getCategoriaFromCodigo(prod.codigo);
+    setItems(prev => [...prev, {
+      codigo: prod.codigo, nombre: prod.nombre,
+      cantidad: 1, precio_unitario: prod.precio_unitario,
+      categoria:       grupo?.categoria || prod.categoria || '',
+      cuenta_contable: grupo?.cuenta || '',
+    }]);
+    setBusqProd('');
+  }
+
+  function actualizarItem(codigo, campo, val) {
+    setItems(prev => prev.map(i => i.codigo === codigo
+      ? { ...i, [campo]: campo === 'cantidad' || campo === 'precio_unitario' ? Number(val) : val }
+      : i));
+  }
+
+  function quitarItem(codigo) {
+    setItems(prev => prev.filter(i => i.codigo !== codigo));
+  }
+
+  const total = items.reduce((s, i) => s + Number(i.cantidad || 0) * Number(i.precio_unitario || 0), 0);
+
+  async function guardar() {
+    setError('');
+    if (!fecha)       return setError('La fecha es requerida');
+    if (!docContable) return setError('El documento contable es requerido');
+    if (items.length === 0) return setError('Debe haber al menos un producto');
+
+    setSaving(true);
+    try {
+      const clinica = clinicas.find(c => String(c.id) === String(clinicaId));
+      const bod     = BODEGAS.find(b => b.codigo === bodega);
+
+      await apiFetch(`/prestamos/${movimiento.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tipo,
+          clinica_id:         clinicaId || null,
+          clinica_nombre:     clinica?.nombre || movimiento.clinica_nombre || '',
+          bodega_codigo:      bodega,
+          bodega_nombre:      bod?.nombre || movimiento.bodega_nombre || '',
+          fecha,
+          documento_contable: docContable,
+          observaciones,
+          items,
+        }),
+      });
+      onSaved();
+    } catch (e) {
+      setError('Error guardando: ' + e.message);
+    }
+    setSaving(false);
+  }
+
+  const inputS = { display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', boxSizing: 'border-box' };
+  const labelS = { fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 };
+
+  return (
+    <div style={{ minWidth: 640, maxWidth: 820 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <label style={labelS}>Tipo de movimiento</label>
+          <select value={tipo} onChange={e => setTipo(e.target.value)} style={inputS}>
+            {TIPOS_MOVIMIENTO.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelS}>Clínica</label>
+          <select value={clinicaId} onChange={e => setClinicaId(e.target.value)} style={inputS}>
+            <option value=''>— seleccionar —</option>
+            {clinicas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelS}>Bodega</label>
+          <select value={bodega} onChange={e => setBodega(e.target.value)} style={inputS}>
+            <option value=''>— seleccionar —</option>
+            {BODEGAS.map(b => <option key={b.codigo} value={b.codigo}>{b.nombre} ({b.codigo})</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelS}>Fecha</label>
+          <input type='date' value={fecha} onChange={e => setFecha(e.target.value)} style={inputS} />
+        </div>
+        <div>
+          <label style={labelS}>Documento contable</label>
+          <input value={docContable} onChange={e => setDocContable(e.target.value)} style={inputS} />
+        </div>
+        <div style={{ gridColumn: '2 / -1' }}>
+          <label style={labelS}>Observaciones</label>
+          <input value={observaciones} onChange={e => setObs(e.target.value)} placeholder='Opcional' style={inputS} />
+        </div>
+      </div>
+
+      {/* Buscador de productos para agregar nuevos items */}
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>Productos</div>
+      <div style={{ position: 'relative', marginBottom: 10 }}>
+        <input value={busqProd} onChange={e => setBusqProd(e.target.value)}
+          placeholder='Buscar por código (10 dígitos) o nombre para agregar…'
+          style={{ ...inputS, marginTop: 0 }} />
+        {busqProd && prodsFiltrados.length > 0 && (
+          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, zIndex: 50, maxHeight: 220, overflowY: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,.3)' }}>
+            {prodsFiltrados.map(p => (
+              <div key={p.codigo} onClick={() => agregarProducto(p)}
+                style={{ padding: '9px 12px', cursor: 'pointer', fontSize: 13, borderBottom: '1px solid var(--t-border)', display: 'flex', gap: 10, alignItems: 'center' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--t-bg-inner)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                <span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--t-text-muted)' }}>{p.codigo}</span>
+                <span style={{ flex: 1 }}>{p.nombre}</span>
+                <CatTag categoria={getCategoriaFromCodigo(p.codigo)?.categoria || p.categoria} />
+                <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>{fmt(p.precio_unitario)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Tabla de items — cantidad, precio y nombre editables directamente */}
+      <div style={{ border: '1px solid var(--t-border)', borderRadius: 9, overflow: 'hidden', marginBottom: 10 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead style={{ background: 'var(--t-bg-card)' }}>
+            <tr>{['Código','Categoría','Nombre','Cant.','Precio unit.','Total',''].map(h => (
+              <th key={h} style={{ textAlign: 'left', padding: '8px 10px', fontSize: 11, color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{h}</th>
+            ))}</tr>
+          </thead>
+          <tbody>
+            {items.map(item => (
+              <tr key={item.codigo}>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontFamily: 'monospace', fontSize: 12 }}>{item.codigo}</td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}><CatTag categoria={item.categoria} /></td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                  <input value={item.nombre} onChange={e => actualizarItem(item.codigo, 'nombre', e.target.value)}
+                    style={{ width: '100%', padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                </td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                  <input type='number' min={1} value={item.cantidad} onChange={e => actualizarItem(item.codigo, 'cantidad', e.target.value)}
+                    style={{ width: 65, padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                </td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                  <input type='number' min={0} value={item.precio_unitario} onChange={e => actualizarItem(item.codigo, 'precio_unitario', e.target.value)}
+                    style={{ width: 90, padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                </td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{fmt(item.cantidad * item.precio_unitario)}</td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                  <button onClick={() => quitarItem(item.codigo)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t-text-muted)', fontSize: 16 }}>✕</button>
+                </td>
+              </tr>
+            ))}
+            {items.length === 0 && (
+              <tr><td colSpan={7} style={{ padding: '20px 10px', textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 13 }}>Sin productos — busca arriba para agregar</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ textAlign: 'right', fontSize: 13, marginBottom: 16 }}>
+        Total: <span style={{ fontWeight: 600, fontSize: 15 }}>{fmt(total)}</span>
+      </div>
+
+      {error && <div style={{ color: '#c0392b', fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button onClick={onCancel} style={{ padding: '8px 16px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+          Cancelar
+        </button>
+        <button onClick={guardar} disabled={saving}
+          style={{ padding: '8px 18px', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-accent)', color: '#fff', fontWeight: 500 }}>
+          {saving ? 'Guardando…' : 'Guardar cambios'}
         </button>
       </div>
     </div>
@@ -3280,6 +3509,11 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
 
 
 
