@@ -85,11 +85,11 @@ const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 async function apiFetch(path, options = {}) {
   const token = localStorage.getItem('token');
   const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
     headers: {
       'Authorization': `Bearer ${token}`,
       ...options.headers,
     },
-    ...options,
   });
   if (!res.ok) {
     const err = await res.text();
@@ -3509,6 +3509,10 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
 
 
 
