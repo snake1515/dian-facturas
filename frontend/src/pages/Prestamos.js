@@ -2372,7 +2372,7 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
             <span style={{ fontWeight: 500, fontSize: 13 }}>Dashboard interactivo — pagado vs. pendiente</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-            Filtra por clínica, año y estado; alterna entre valor y cantidad; descárgalo como HTML visualizable en el navegador
+            Filtra por clínica, año, tipo (EPO/IPE) y estado; alterna entre valor y cantidad; descárgalo como HTML visualizable en el navegador
           </div>
         </div>
       </div>
@@ -2820,6 +2820,7 @@ function construirRegistroDashboard(p, cruces) {
     id: p.id,
     documento: p.documento_contable,
     tipo: p.tipo,
+    tipoLabel: p.tipo === 'egreso' ? 'EPO' : 'IPE',
     clinica: p.clinica_nombre || 'Sin clínica',
     bodega: p.bodega_nombre || 'Sin bodega',
     bodega_codigo: p.bodega_codigo || '',
@@ -2898,10 +2899,94 @@ function agregarPor(campo, registros, metrica) {
     .sort((x, y) => (y.a + y.b) - (x.a + x.b));
 }
 
+// Antigüedad de la cartera pendiente: cuánto tiempo llevan abiertos los
+// préstamos que aún tienen saldo por devolver (útil para priorizar gestión de cobro).
+function agregarAntiguedad(registros, metrica) {
+  const hoy = new Date();
+  const buckets = [
+    { label: '0-30 días', min: 0, max: 30 },
+    { label: '31-60 días', min: 31, max: 60 },
+    { label: '61-90 días', min: 61, max: 90 },
+    { label: '+90 días', min: 91, max: Infinity },
+  ].map(b => ({ ...b, a: 0, b: 0 }));
+
+  registros.forEach(r => {
+    if (!r.fecha) return;
+    if (r.valorPendiente <= 0 && r.cantidadPendiente <= 0) return;
+    const dias = Math.floor((hoy - new Date(r.fecha)) / 86400000);
+    const bucket = buckets.find(b => dias >= b.min && dias <= b.max) || buckets[buckets.length - 1];
+    bucket.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
+    bucket.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
+  });
+
+  return buckets.map(({ label, a, b }) => ({ label, a, b }));
+}
+
+// Desglose fijo por tipo (EPO/IPE) x estado (abierto/parcial/cerrado), para ver
+// de un vistazo cuánto hay pagado/pendiente en cada combinación, sin importar
+// cuál esté seleccionada en el filtro de Estado.
+function agregarPorTipoYEstado(registros, metrica) {
+  const combos = [
+    { tipoLabel: 'EPO', estado: 'abierto' },
+    { tipoLabel: 'EPO', estado: 'parcial' },
+    { tipoLabel: 'EPO', estado: 'cerrado' },
+    { tipoLabel: 'IPE', estado: 'abierto' },
+    { tipoLabel: 'IPE', estado: 'parcial' },
+    { tipoLabel: 'IPE', estado: 'cerrado' },
+  ].map(c => ({ ...c, a: 0, b: 0 }));
+
+  registros.forEach(r => {
+    const combo = combos.find(c => c.tipoLabel === r.tipoLabel && c.estado === r.estado);
+    if (!combo) return;
+    combo.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
+    combo.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
+  });
+
+  return combos.map(({ tipoLabel, estado, a, b }) => ({
+    label: `${tipoLabel} · ${estado.charAt(0).toUpperCase() + estado.slice(1)}`,
+    a, b,
+  }));
+}
+
+// Envuelve una sección del dashboard: si hay un tipo (EPO/IPE) específico
+// seleccionado muestra una sola gráfica; si es "Todos" divide en dos paneles,
+// uno solo con EPO y otro solo con IPE, sin mezclar los datos.
+function SeccionGraficaTipo({ titulo, subtitulo, filtrados, filtroTipo, metrica, formatter, calcular, height = 240 }) {
+  if (filtroTipo !== 'todos') {
+    const data = calcular(filtrados, metrica);
+    return (
+      <>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{titulo}</div>
+        {subtitulo && <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>{subtitulo}</div>}
+        <div style={{ marginBottom: 22 }}><BarChartApilado data={data} formatter={formatter} height={height} /></div>
+      </>
+    );
+  }
+  const epo = calcular(filtrados.filter(r => r.tipo === 'egreso'), metrica);
+  const ipe = calcular(filtrados.filter(r => r.tipo === 'ingreso'), metrica);
+  return (
+    <>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{titulo}</div>
+      {subtitulo && <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>{subtitulo}</div>}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 22 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#ef4444' }}>EPO (dados)</div>
+          <BarChartApilado data={epo} formatter={formatter} height={height} />
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#3b82f6' }}>IPE (recibidos)</div>
+          <BarChartApilado data={ipe} formatter={formatter} height={height} />
+        </div>
+      </div>
+    </>
+  );
+}
+
 function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
   const [filtroClinica, setFiltroClinica] = useState('');
   const [filtroAnio, setFiltroAnio] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('todos');
+  const [filtroTipo, setFiltroTipo] = useState('todos');   // todos | egreso (EPO) | ingreso (IPE)
   const [metrica, setMetrica] = useState('valor'); // 'valor' | 'cantidad'
 
   const datosCompletos = React.useMemo(() => construirDatosDashboard(prestamos, cruces), [prestamos, cruces]);
@@ -2919,8 +3004,18 @@ function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
     if (filtroClinica && r.clinica !== filtroClinica) return false;
     if (filtroAnio && r.anio !== filtroAnio) return false;
     if (filtroEstado !== 'todos' && r.estado !== filtroEstado) return false;
+    if (filtroTipo !== 'todos' && r.tipo !== filtroTipo) return false;
     return true;
-  }), [datosCompletos, filtroClinica, filtroAnio, filtroEstado]);
+  }), [datosCompletos, filtroClinica, filtroAnio, filtroEstado, filtroTipo]);
+
+  // Igual que "filtrados" pero sin aplicar el filtro de Estado, para poder
+  // mostrar los 3 estados desglosados en la gráfica "Por estado".
+  const filtradosSinEstado = React.useMemo(() => datosCompletos.filter(r => {
+    if (filtroClinica && r.clinica !== filtroClinica) return false;
+    if (filtroAnio && r.anio !== filtroAnio) return false;
+    if (filtroTipo !== 'todos' && r.tipo !== filtroTipo) return false;
+    return true;
+  }), [datosCompletos, filtroClinica, filtroAnio, filtroTipo]);
 
   const formatter = (n, corto) => {
     if (metrica === 'valor') {
@@ -2931,12 +3026,8 @@ function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
     return Number(n || 0).toLocaleString('es-CO') + (corto ? '' : ' u.');
   };
 
-  const porTercero = React.useMemo(() => agregarPor('clinica', filtrados, metrica).slice(0, 15), [filtrados, metrica]);
-  const porBodega  = React.useMemo(() => agregarPor('bodega', filtrados, metrica), [filtrados, metrica]);
-  const porAnioMes = React.useMemo(() => {
-    const agr = agregarPor('mes', filtrados, metrica);
-    return agr.sort((x, y) => String(x.label).localeCompare(String(y.label)));
-  }, [filtrados, metrica]);
+  const porTipo    = React.useMemo(() => agregarPor('tipoLabel', filtrados, metrica), [filtrados, metrica]);
+  const porTipoEstado = React.useMemo(() => agregarPorTipoYEstado(filtradosSinEstado, metrica), [filtradosSinEstado, metrica]);
 
   const kpis = React.useMemo(() => {
     const valorPagado = filtrados.reduce((s, r) => s + r.valorPagado, 0);
@@ -2975,6 +3066,14 @@ function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
           </select>
         </div>
         <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Tipo</div>
+          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} style={inputS}>
+            <option value="todos">EPO + IPE</option>
+            <option value="egreso">Solo EPO (dados)</option>
+            <option value="ingreso">Solo IPE (recibidos)</option>
+          </select>
+        </div>
+        <div>
           <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Estado</div>
           <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)} style={inputS}>
             <option value="todos">Todos</option>
@@ -2997,7 +3096,7 @@ function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <button onClick={() => descargarDashboardHTML(datosCompletos, { filtroClinica, filtroAnio, filtroEstado, metrica })}
+        <button onClick={() => descargarDashboardHTML(datosCompletos, { filtroClinica, filtroAnio, filtroEstado, filtroTipo, metrica })}
           style={{ padding: '8px 14px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
           ⬇ Descargar dashboard en HTML
         </button>
@@ -3017,14 +3116,53 @@ function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
         <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Pendiente</span>
       </div>
 
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Por tercero (clínica)</div>
-      <div style={{ marginBottom: 22 }}><BarChartApilado data={porTercero} formatter={formatter} /></div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>EPO vs. IPE</div>
+      <div style={{ marginBottom: 22 }}><BarChartApilado data={porTipo} formatter={formatter} height={200} /></div>
 
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Por bodega</div>
-      <div style={{ marginBottom: 22 }}><BarChartApilado data={porBodega} formatter={formatter} /></div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+        Por estado (abierto / parcial / cerrado) — EPO vs. IPE
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+        Esta gráfica siempre muestra los 3 estados, sin importar lo que elijas en el filtro "Estado" de arriba
+      </div>
+      <div style={{ marginBottom: 22 }}><BarChartApilado data={porTipoEstado} formatter={formatter} height={220} /></div>
 
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Por año-mes</div>
-      <div><BarChartApilado data={porAnioMes} formatter={formatter} /></div>
+      <SeccionGraficaTipo
+        titulo="Por tercero (clínica)"
+        filtrados={filtrados}
+        filtroTipo={filtroTipo}
+        metrica={metrica}
+        formatter={formatter}
+        calcular={(regs, m) => agregarPor('clinica', regs, m).slice(0, 15)}
+      />
+
+      <SeccionGraficaTipo
+        titulo="Por bodega"
+        filtrados={filtrados}
+        filtroTipo={filtroTipo}
+        metrica={metrica}
+        formatter={formatter}
+        calcular={(regs, m) => agregarPor('bodega', regs, m)}
+      />
+
+      <SeccionGraficaTipo
+        titulo="Antigüedad de la cartera pendiente"
+        filtrados={filtrados}
+        filtroTipo={filtroTipo}
+        metrica={metrica}
+        formatter={formatter}
+        height={200}
+        calcular={(regs, m) => agregarAntiguedad(regs, m)}
+      />
+
+      <SeccionGraficaTipo
+        titulo="Por año-mes"
+        filtrados={filtrados}
+        filtroTipo={filtroTipo}
+        metrica={metrica}
+        formatter={formatter}
+        calcular={(regs, m) => agregarPor('mes', regs, m).sort((x, y) => String(x.label).localeCompare(String(y.label)))}
+      />
     </Modal>
   );
 }
@@ -3062,6 +3200,9 @@ function descargarDashboardHTML(datosCompletos, filtrosIniciales) {
   .sw { width:10px; height:10px; border-radius:3px; display:inline-block; }
   .titulo-grafica { font-size:13px; font-weight:600; margin:18px 0 6px; }
   .chart-wrap { overflow-x:auto; }
+  .split-tipo { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .split-tipo > div { overflow-x:auto; }
+  .split-tipo .sub-titulo { font-size:12px; font-weight:600; margin-bottom:4px; }
   svg text { fill: var(--muted); }
 </style>
 </head>
@@ -3075,6 +3216,14 @@ function descargarDashboardHTML(datosCompletos, filtrosIniciales) {
     <div>
       <label>Año</label>
       <select id="fAnio"></select>
+    </div>
+    <div>
+      <label>Tipo</label>
+      <select id="fTipo">
+        <option value="todos">EPO + IPE</option>
+        <option value="egreso">Solo EPO (dados)</option>
+        <option value="ingreso">Solo IPE (recibidos)</option>
+      </select>
     </div>
     <div>
       <label>Estado</label>
@@ -3101,14 +3250,25 @@ function descargarDashboardHTML(datosCompletos, filtrosIniciales) {
     <span class="sw" style="background:var(--amber)"></span> Pendiente
   </div>
 
+  <div class="titulo-grafica">EPO vs. IPE</div>
+  <div class="chart-wrap" id="chartTipo"></div>
+
+  <div class="titulo-grafica">Por estado (abierto / parcial / cerrado) — EPO vs. IPE</div>
+  <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Esta gráfica siempre muestra los 3 estados, sin importar lo que elijas en el filtro "Estado" de arriba</div>
+  <div class="chart-wrap" id="chartTipoEstado"></div>
+
   <div class="titulo-grafica">Por tercero (clínica)</div>
-  <div class="chart-wrap" id="chartTercero"></div>
+  <div id="secTercero"></div>
 
   <div class="titulo-grafica">Por bodega</div>
-  <div class="chart-wrap" id="chartBodega"></div>
+  <div id="secBodega"></div>
+
+  <div class="titulo-grafica">Antigüedad de la cartera pendiente</div>
+  <div id="secAntiguedad"></div>
 
   <div class="titulo-grafica">Por año-mes</div>
-  <div class="chart-wrap" id="chartMes"></div>
+  <div id="secMes"></div>
+
 
 <script>
 const DATA = ${dataJson};
@@ -3135,10 +3295,26 @@ function filtrarDatos() {
   const fClinica = document.getElementById('fClinica').value;
   const fAnio = document.getElementById('fAnio').value;
   const fEstado = document.getElementById('fEstado').value;
+  const fTipo = document.getElementById('fTipo').value;
   return DATA.filter(r => {
     if (fClinica && r.clinica !== fClinica) return false;
     if (fAnio && r.anio !== fAnio) return false;
     if (fEstado !== 'todos' && r.estado !== fEstado) return false;
+    if (fTipo !== 'todos' && r.tipo !== fTipo) return false;
+    return true;
+  });
+}
+
+// Igual que filtrarDatos() pero ignora el filtro de Estado, para la gráfica
+// "Por estado" que siempre debe mostrar abierto/parcial/cerrado a la vez.
+function filtrarDatosSinEstado() {
+  const fClinica = document.getElementById('fClinica').value;
+  const fAnio = document.getElementById('fAnio').value;
+  const fTipo = document.getElementById('fTipo').value;
+  return DATA.filter(r => {
+    if (fClinica && r.clinica !== fClinica) return false;
+    if (fAnio && r.anio !== fAnio) return false;
+    if (fTipo !== 'todos' && r.tipo !== fTipo) return false;
     return true;
   });
 }
@@ -3155,6 +3331,49 @@ function agregarPor(campo, registros) {
   return Array.from(mapa.entries()).map(([label, v]) => ({ label, a: v.a, b: v.b }))
     .sort((x,y) => (y.a+y.b) - (x.a+x.b));
 }
+
+function agregarPorTipoYEstado(registros) {
+  const combos = [
+    { tipoLabel: 'EPO', estado: 'abierto' },
+    { tipoLabel: 'EPO', estado: 'parcial' },
+    { tipoLabel: 'EPO', estado: 'cerrado' },
+    { tipoLabel: 'IPE', estado: 'abierto' },
+    { tipoLabel: 'IPE', estado: 'parcial' },
+    { tipoLabel: 'IPE', estado: 'cerrado' },
+  ].map(c => ({ ...c, a: 0, b: 0 }));
+
+  registros.forEach(r => {
+    const combo = combos.find(c => c.tipoLabel === r.tipoLabel && c.estado === r.estado);
+    if (!combo) return;
+    combo.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
+    combo.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
+  });
+
+  return combos.map(({ tipoLabel, estado, a, b }) => ({
+    label: tipoLabel + ' · ' + (estado.charAt(0).toUpperCase() + estado.slice(1)),
+    a, b,
+  }));
+}
+
+function agregarAntiguedad(registros) {
+  const hoy = new Date();
+  const buckets = [
+    { label: '0-30 días', min:0, max:30, a:0, b:0 },
+    { label: '31-60 días', min:31, max:60, a:0, b:0 },
+    { label: '61-90 días', min:61, max:90, a:0, b:0 },
+    { label: '+90 días', min:91, max:Infinity, a:0, b:0 },
+  ];
+  registros.forEach(r => {
+    if (!r.fecha) return;
+    if (r.valorPendiente <= 0 && r.cantidadPendiente <= 0) return;
+    const dias = Math.floor((hoy - new Date(r.fecha)) / 86400000);
+    const bucket = buckets.find(b => dias >= b.min && dias <= b.max) || buckets[buckets.length-1];
+    bucket.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
+    bucket.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
+  });
+  return buckets.map(({label,a,b}) => ({label,a,b}));
+}
+
 
 function svgBarChart(data, height) {
   height = height || 240;
@@ -3204,19 +3423,39 @@ function render() {
     ['% pagado', pct + '%', 'color:var(--blue)'],
   ].map(([l,v,style]) => '<div class="kpi"><div class="l">'+l+'</div><div class="v" style="'+style+'">'+v+'</div></div>').join('');
 
-  const porTercero = agregarPor('clinica', filtrados).slice(0, 15);
-  const porBodega  = agregarPor('bodega', filtrados);
-  const porMes     = agregarPor('mes', filtrados).sort((x,y) => String(x.label).localeCompare(String(y.label)));
+  const porTipo    = agregarPor('tipoLabel', filtrados);
+  const porTipoEstado = agregarPorTipoYEstado(filtrarDatosSinEstado());
 
-  document.getElementById('chartTercero').innerHTML = svgBarChart(porTercero);
-  document.getElementById('chartBodega').innerHTML  = svgBarChart(porBodega);
-  document.getElementById('chartMes').innerHTML     = svgBarChart(porMes);
+  document.getElementById('chartTipo').innerHTML       = svgBarChart(porTipo, 200);
+  document.getElementById('chartTipoEstado').innerHTML = svgBarChart(porTipoEstado, 220);
+
+  const fTipo = document.getElementById('fTipo').value;
+  function pintarSeccionTipo(containerId, calcularFn, height) {
+    const el = document.getElementById(containerId);
+    if (fTipo !== 'todos') {
+      el.innerHTML = svgBarChart(calcularFn(filtrados), height);
+      return;
+    }
+    const epo = calcularFn(filtrados.filter(r => r.tipo === 'egreso'));
+    const ipe = calcularFn(filtrados.filter(r => r.tipo === 'ingreso'));
+    el.innerHTML =
+      '<div class="split-tipo">' +
+        '<div><div class="sub-titulo" style="color:#ef4444">EPO (dados)</div>' + svgBarChart(epo, height) + '</div>' +
+        '<div><div class="sub-titulo" style="color:#3b82f6">IPE (recibidos)</div>' + svgBarChart(ipe, height) + '</div>' +
+      '</div>';
+  }
+
+  pintarSeccionTipo('secTercero', regs => agregarPor('clinica', regs).slice(0, 15), 240);
+  pintarSeccionTipo('secBodega', regs => agregarPor('bodega', regs), 240);
+  pintarSeccionTipo('secAntiguedad', regs => agregarAntiguedad(regs), 200);
+  pintarSeccionTipo('secMes', regs => agregarPor('mes', regs).sort((x,y) => String(x.label).localeCompare(String(y.label))), 240);
 }
 
 function init() {
   poblarSelect('fClinica', Array.from(new Set(DATA.map(r => r.clinica))).sort(), FILTROS_INICIALES.filtroClinica);
   poblarSelect('fAnio', Array.from(new Set(DATA.map(r => r.anio))).sort().reverse(), FILTROS_INICIALES.filtroAnio);
   if (FILTROS_INICIALES.filtroEstado) document.getElementById('fEstado').value = FILTROS_INICIALES.filtroEstado;
+  if (FILTROS_INICIALES.filtroTipo) document.getElementById('fTipo').value = FILTROS_INICIALES.filtroTipo;
   if (metrica === 'cantidad') {
     document.getElementById('btnCantidad').classList.add('activo');
     document.getElementById('btnValor').classList.remove('activo');
@@ -3225,6 +3464,7 @@ function init() {
   document.getElementById('fClinica').addEventListener('change', render);
   document.getElementById('fAnio').addEventListener('change', render);
   document.getElementById('fEstado').addEventListener('change', render);
+  document.getElementById('fTipo').addEventListener('change', render);
   document.getElementById('btnValor').addEventListener('click', () => {
     metrica = 'valor';
     document.getElementById('btnValor').classList.add('activo');
@@ -3269,6 +3509,11 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
 
 
 
