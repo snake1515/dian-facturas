@@ -185,13 +185,42 @@ router.delete('/productos/clear', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/:id', async (req, res) => {
+// Edición completa de un movimiento (préstamo/devolución) — solo admin.
+// Acepta cualquier subconjunto de los campos editables; solo se actualizan
+// los que vienen presentes en el body (permite tanto ediciones parciales,
+// como el cambio de estado que ya usaban otras partes del sistema).
+const CAMPOS_EDITABLES_PRESTAMO = [
+  'tipo', 'clinica_id', 'clinica_nombre', 'bodega_codigo', 'bodega_nombre',
+  'fecha', 'documento_contable', 'observaciones', 'estado', 'items',
+];
+
+router.patch('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const { estado } = req.body;
+    const sets = [];
+    const values = [];
+    let i = 1;
+
+    for (const campo of CAMPOS_EDITABLES_PRESTAMO) {
+      if (!(campo in req.body)) continue;
+      let valor = req.body[campo];
+      if (campo === 'items') {
+        valor = JSON.stringify(typeof valor === 'string' ? JSON.parse(valor) : (valor || []));
+      }
+      sets.push(`${campo} = $${i}`);
+      values.push(valor);
+      i++;
+    }
+
+    if (sets.length === 0) {
+      return res.status(400).json({ error: 'No se enviaron campos para actualizar' });
+    }
+
+    values.push(req.params.id);
     const { rows } = await pool.query(
-      'UPDATE prestamos SET estado = $1 WHERE id = $2 RETURNING *',
-      [estado, req.params.id]
+      `UPDATE prestamos SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+      values
     );
+    if (rows.length === 0) return res.status(404).json({ error: 'Movimiento no encontrado' });
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -871,4 +900,5 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
 
