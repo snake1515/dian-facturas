@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import * as XLSX from 'xlsx';
 
@@ -1153,7 +1153,13 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
           body: JSON.stringify({ precio_unitario: precioUnit }),
         }).catch(() => {});
       }
-      if (!documentos[docKey].items.find(i => i.codigo === codigo)) {
+      // Un mismo código puede repetirse en varias filas cuando llega en distintos
+      // lotes — sumamos la cantidad en vez de descartar las filas siguientes,
+      // que antes se perdían silenciosamente.
+      const itemExistente = documentos[docKey].items.find(i => i.codigo === codigo);
+      if (itemExistente) {
+        itemExistente.cantidad += cantidad;
+      } else {
         documentos[docKey].items.push({
           codigo, nombre: nombre || prodMaestro?.nombre || '',
           cantidad, precio_unitario: precioUnit || prodMaestro?.precio_unitario || 0,
@@ -1239,16 +1245,13 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
 
     // Procesar productos
     const codigosNuevos = [];
-    const vistos = new Set();
-    const nuevosItems = [];
+    const nuevosItemsPorCodigo = {};
 
     console.log('Procesando', filas.length, 'filas para productos');
     for (const r of filas) {
       const codigoRaw = String(r[5] || '').trim();
       if (!codigoRaw) continue;
-      const codigo    = codigoRaw.padStart(10, '0');
-      if (vistos.has(codigo)) continue;
-      vistos.add(codigo);
+      const codigo = codigoRaw.padStart(10, '0');
 
       const cantidad   = Number(r[6]) || 0;
       const totalCosto = Math.abs(Number(String(r[7]).replace(/[^0-9.-]/g, '')) || 0);
@@ -1258,7 +1261,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       const fechaVenc  = r[20] ? String(r[20]).substring(0, 10) : '';
 
       const prodMaestro = productos.find(p => p.codigo === codigo);
-      if (!prodMaestro) codigosNuevos.push(codigo);
+      if (!prodMaestro && !nuevosItemsPorCodigo[codigo]) codigosNuevos.push(codigo);
 
       // Actualizar precio en maestro si difiere
       if (prodMaestro && precioUnit > 0 &&
@@ -1270,17 +1273,24 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
         }).catch(() => {});
       }
 
-      nuevosItems.push({
-        codigo,
-        nombre:            nombre || prodMaestro?.nombre || '',
-        cantidad,
-        precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
-        categoria:         prodMaestro?.categoria || '',
-        cuenta_contable:   prodMaestro?.cuenta_contable || '',
-        lote,
-        fecha_vencimiento: fechaVenc,
-      });
+      // Un mismo código puede repetirse en varias filas (distintos lotes) —
+      // sumamos la cantidad en vez de descartar las filas repetidas.
+      if (nuevosItemsPorCodigo[codigo]) {
+        nuevosItemsPorCodigo[codigo].cantidad += cantidad;
+      } else {
+        nuevosItemsPorCodigo[codigo] = {
+          codigo,
+          nombre:            nombre || prodMaestro?.nombre || '',
+          cantidad,
+          precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
+          categoria:         prodMaestro?.categoria || '',
+          cuenta_contable:   prodMaestro?.cuenta_contable || '',
+          lote,
+          fecha_vencimiento: fechaVenc,
+        };
+      }
     }
+    const nuevosItems = Object.values(nuevosItemsPorCodigo);
 
     if (codigosNuevos.length > 0) {
       setError(`⚠️ Códigos no registrados en maestro (asignar categoría/cuenta): ${codigosNuevos.join(', ')}`);
@@ -1555,6 +1565,8 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
 // ─── TAB CRUCES ──────────────────────────────────────────────────────────────
 
 function TabCruces({ prestamos, cruces, onRefresh }) {
+  const { isAdmin } = useAuth();
+
   async function revertirCruce(cruce, e) {
     e.stopPropagation();
     if (!window.confirm(`¿Revertir el cruce entre ${cruce.prestamo_doc} y ${cruce.devolucion_doc}? El préstamo volverá a estado abierto.`)) return;
@@ -1577,6 +1589,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [cantDevueltas,    setCantDevueltas]    = React.useState({});
   const [expandedCruce,    setExpandedCruce]    = React.useState(null);
   const [reparando,        setReparando]        = React.useState(false);
+  const [regenerandoPdfs,  setRegenerandoPdfs]   = React.useState(false);
 
   async function repararCrucesAntiguos() {
     setReparando(true);
@@ -1589,6 +1602,19 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
     }
     setReparando(false);
   }
+
+  async function regenerarPdfs() {
+    if (!window.confirm('¿Regenerar el PDF de todos los cruces ya emitidos con el formato actual? Los archivos existentes se sobrescriben (el enlace no cambia).')) return;
+    setRegenerandoPdfs(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/regenerar-pdfs', { method: 'POST' });
+      alert(`Se regeneraron ${r.regenerados} PDF(s).${r.errores > 0 ? ` ${r.errores} con error.` : ''}`);
+      onRefresh();
+    } catch (e) {
+      alert('Error regenerando PDFs: ' + e.message);
+    }
+    setRegenerandoPdfs(false);
+  }
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
   const [anioPrest,    setAnioPrest]    = React.useState('');
@@ -1600,6 +1626,33 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [detalleCruce, setDetalleCruce] = React.useState(null);
   const [detalleCard,  setDetalleCard]  = React.useState(null);
   const [filtroCruces, setFiltroCruces] = React.useState('');
+  const [editandoCruce, setEditandoCruce] = React.useState(null);
+  const [editTipo,       setEditTipo]      = React.useState('total');
+  const [editObs,        setEditObs]       = React.useState('');
+  const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
+
+  function abrirEdicionCruce(c, e) {
+    e.stopPropagation();
+    setEditandoCruce(c);
+    setEditTipo(c.tipo_cruce || 'total');
+    setEditObs(c.observaciones || c.grupo_observaciones || '');
+  }
+
+  async function guardarEdicionCruce() {
+    setGuardandoEdicion(true);
+    try {
+      await apiFetch(`/prestamos/cruces/${editandoCruce.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tipo_cruce: editTipo, observaciones: editObs }),
+      });
+      setEditandoCruce(null);
+      onRefresh();
+    } catch (err) {
+      alert('Error editando cruce: ' + err.message);
+    }
+    setGuardandoEdicion(false);
+  }
 
   function matchCruce(c, texto) {
     if (!texto) return true;
@@ -1979,13 +2032,22 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
         <div style={{ flex: '0 0 auto', paddingTop: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
-            {cruces.some(c => !c.grupo_numero) && (
-              <button onClick={repararCrucesAntiguos} disabled={reparando}
-                title="Asigna consecutivo, recalcula el estado y genera el PDF de los cruces creados antes de esta función"
-                style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
-                {reparando ? 'Reparando…' : '🔧 Reparar cruces antiguos'}
-              </button>
-            )}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {isAdmin && (
+                <button onClick={regenerarPdfs} disabled={regenerandoPdfs}
+                  title="Regenera el PDF de todos los cruces ya emitidos con el formato actual (código, cantidad y fecha por producto)"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                  {regenerandoPdfs ? 'Regenerando…' : '🔄 Actualizar PDFs al nuevo formato'}
+                </button>
+              )}
+              {cruces.some(c => !c.grupo_numero) && (
+                <button onClick={repararCrucesAntiguos} disabled={reparando}
+                  title="Asigna consecutivo, recalcula el estado y genera el PDF de los cruces creados antes de esta función"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                  {reparando ? 'Reparando…' : '🔧 Reparar cruces antiguos'}
+                </button>
+              )}
+            </div>
           </div>
           <input value={filtroCruces} onChange={e => setFiltroCruces(e.target.value)}
             placeholder="Buscar por Nº de cruce (ej. CRU-00092), documento (préstamo o devolución), producto o clínica…"
@@ -2040,7 +2102,14 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                   <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
                     <CruceSoportes cruce={c} />
                   </td>
-                  <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
+                  <td style={{ padding: '8px 10px', display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+                    {isAdmin && (
+                      <button onClick={e => abrirEdicionCruce(c, e)}
+                        title="Editar cruce (solo admin)"
+                        style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+                        ✏️ Editar
+                      </button>
+                    )}
                     <button onClick={e => revertirCruce(c, e)}
                       title="Revertir cruce"
                       style={{ padding: '3px 8px', fontSize: 11, border: '1px solid #ef444455', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: '#ef4444' }}>
@@ -2101,6 +2170,38 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
       {detalleCard && (
         <Modal onClose={() => setDetalleCard(null)} titulo={`Detalle ${detalleCard.documento_contable}`}>
           <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]} />
+        </Modal>
+      )}
+      {editandoCruce && (
+        <Modal onClose={() => setEditandoCruce(null)} titulo={`Editar cruce ${editandoCruce.grupo_numero || ''}`}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 320 }}>
+            <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+              {editandoCruce.prestamo_doc} ↔ {editandoCruce.devolucion_doc}
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Tipo</label>
+              <select value={editTipo} onChange={e => setEditTipo(e.target.value)}
+                style={{ display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                <option value="total">total</option>
+                <option value="parcial">parcial</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Observaciones</label>
+              <input value={editObs} onChange={e => setEditObs(e.target.value)}
+                style={{ display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+              <button onClick={() => setEditandoCruce(null)}
+                style={{ padding: '8px 16px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+                Cancelar
+              </button>
+              <button onClick={guardarEdicionCruce} disabled={guardandoEdicion}
+                style={{ padding: '8px 18px', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-accent)', color: '#fff', fontWeight: 500 }}>
+                {guardandoEdicion ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>
@@ -2310,7 +2411,6 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
 
   const [verPendientes, setVerPendientes] = useState(false);
   const [verPorPrestamo, setVerPorPrestamo] = useState(false);
-  const [verDashboard, setVerDashboard] = useState(false);
 
   const cardStyle = {
     background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10,
@@ -2366,28 +2466,359 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
             Por cada IPE/EPO: qué devoluciones (IDP/ED) tiene cruzadas, qué productos ya se pagaron y qué falta
           </div>
         </div>
-        <div style={{ ...cardStyle, gridColumn: '1 / -1' }} onClick={() => setVerDashboard(true)}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
-            <span style={{ fontSize: 18 }}>📈</span>
-            <span style={{ fontWeight: 500, fontSize: 13 }}>Dashboard interactivo — pagado vs. pendiente</span>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-            Filtra por clínica, año, tipo (EPO/IPE) y estado; alterna entre valor y cantidad; descárgalo como HTML visualizable en el navegador
-          </div>
-        </div>
       </div>
 
       {verPendientes && (
-        <ModalReportePendientes prestamos={prestamos} devoluciones={devoluciones} onClose={() => setVerPendientes(false)} />
+        <ModalReportePendientes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} onClose={() => setVerPendientes(false)} />
       )}
       {verPorPrestamo && (
         <ModalReportePorPrestamo prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerPorPrestamo(false)} />
       )}
-      {verDashboard && (
-        <ModalDashboard prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerDashboard(false)} />
-      )}
+
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--t-border)' }}>
+        <DashboardPrestamosInteractivo prestamos={prestamos} clinicas={clinicas} />
+      </div>
     </div>
   );
+}
+
+// ─── Dashboard interactivo (EPO e IPE por separado, por tercero/año/estado) ─────
+
+const ESTADO_COLORES = { abierto: '#ef4444', parcial: '#f59e0b', cerrado: '#22c55e' };
+const ESTADO_LABELS  = { abierto: 'Abierto', parcial: 'Parcial', cerrado: 'Cerrado / Total' };
+const MESES_NOMBRES  = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+function valorPrestamoDoc(p, modo) {
+  const items = p.items || [];
+  if (modo === 'cantidad') return items.reduce((s, i) => s + Number(i.cantidad || 0), 0);
+  return items.reduce((s, i) => s + Number(i.cantidad || 0) * Number(i.precio_unitario || 0), 0);
+}
+
+function formatearValorDash(v, modo) {
+  if (modo === 'cantidad') return `${Math.round(v).toLocaleString('es-CO')} u.`;
+  return v.toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+}
+
+// Barra horizontal con 3 segmentos (abierto/parcial/cerrado) proporcional al total
+function BarraTresEstados({ label, valores, max, modo }) {
+  const total = valores.abierto + valores.parcial + valores.cerrado;
+  if (total <= 0 && max <= 0) return null;
+  const pct = (v) => (max > 0 ? (v / max) * 100 : 0);
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+        <span style={{ fontWeight: 500 }}>{label}</span>
+        <span style={{ color: 'var(--t-text-muted)' }}>{formatearValorDash(total, modo)}</span>
+      </div>
+      <div style={{ display: 'flex', height: 16, borderRadius: 4, overflow: 'hidden', background: 'rgba(128,128,128,0.15)' }}>
+        {(['abierto', 'parcial', 'cerrado']).map(k => valores[k] > 0 && (
+          <div key={k} title={`${ESTADO_LABELS[k]}: ${formatearValorDash(valores[k], modo)}`}
+               style={{ width: `${pct(valores[k])}%`, background: ESTADO_COLORES[k] }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PanelDashboard({ titulo, filas, modo }) {
+  const max = Math.max(1, ...filas.map(f => f.abierto + f.parcial + f.cerrado));
+  return (
+    <div style={{ ...cardStyle, cursor: 'default' }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>{titulo}</div>
+      {filas.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin datos para este filtro.</div>}
+      {filas.map(f => (
+        <BarraTresEstados key={f.label} label={f.label} valores={f} max={max} modo={modo} />
+      ))}
+    </div>
+  );
+}
+
+function DashboardPrestamosInteractivo({ prestamos, clinicas }) {
+  const [tipoDoc, setTipoDoc] = useState('egreso'); // 'egreso' = EPO (damos) | 'ingreso' = IPE (nos dan)
+  const [filtroClinica, setFiltroClinica] = useState('todas');
+  const [filtroAnio, setFiltroAnio] = useState('todos');
+  const [filtroEstado, setFiltroEstado] = useState('todos');
+  const [modo, setModo] = useState('valor'); // 'valor' | 'cantidad'
+
+  const porTipo = useMemo(() => (prestamos || []).filter(p => p.tipo === tipoDoc), [prestamos, tipoDoc]);
+
+  const anios = useMemo(() => {
+    const set = new Set(porTipo.map(p => String(new Date(p.fecha).getFullYear())));
+    return Array.from(set).sort((a, b) => b - a);
+  }, [porTipo]);
+
+  const clinicasDelTipo = useMemo(() => {
+    const set = new Set(porTipo.map(p => p.clinica_nombre || 'Sin clínica'));
+    return Array.from(set).sort();
+  }, [porTipo]);
+
+  const filtrados = useMemo(() => porTipo.filter(p =>
+    (filtroClinica === 'todas' || p.clinica_nombre === filtroClinica) &&
+    (filtroAnio === 'todos' || String(new Date(p.fecha).getFullYear()) === filtroAnio) &&
+    (filtroEstado === 'todos' || p.estado === filtroEstado)
+  ), [porTipo, filtroClinica, filtroAnio, filtroEstado]);
+
+  function agrupar(claveFn) {
+    const mapa = {};
+    filtrados.forEach(p => {
+      const key = claveFn(p);
+      if (!key) return;
+      if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
+      const v = valorPrestamoDoc(p, modo);
+      mapa[key][p.estado] = (mapa[key][p.estado] || 0) + v;
+    });
+    return Object.values(mapa).sort((a, b) => (b.abierto + b.parcial + b.cerrado) - (a.abierto + a.parcial + a.cerrado));
+  }
+
+  const porTercero = useMemo(() => agrupar(p => p.clinica_nombre || 'Sin clínica'), [filtrados, modo]);
+  const porAnio = useMemo(() => {
+    const filas = agrupar(p => String(new Date(p.fecha).getFullYear()));
+    return filas.sort((a, b) => a.label.localeCompare(b.label));
+  }, [filtrados, modo]);
+  const porMes = useMemo(() => {
+    const filas = agrupar(p => {
+      const d = new Date(p.fecha);
+      return filtroAnio === 'todos' ? MESES_NOMBRES[d.getMonth()] : `${MESES_NOMBRES[d.getMonth()]} ${d.getFullYear()}`;
+    });
+    // orden cronológico por mes cuando no hay filtro de año fijo, si no por aparición
+    const ordenMes = (l) => MESES_NOMBRES.findIndex(m => l.startsWith(m));
+    return filas.sort((a, b) => ordenMes(a.label) - ordenMes(b.label));
+  }, [filtrados, modo, filtroAnio]);
+  const porBodega = useMemo(() => agrupar(p => p.bodega_nombre || p.bodega_codigo || 'Sin bodega'), [filtrados, modo]);
+
+  const totales = useMemo(() => {
+    const t = { abierto: 0, parcial: 0, cerrado: 0 };
+    filtrados.forEach(p => { t[p.estado] = (t[p.estado] || 0) + valorPrestamoDoc(p, modo); });
+    return t;
+  }, [filtrados, modo]);
+  const totalGeneral = totales.abierto + totales.parcial + totales.cerrado;
+
+  function descargarHTML() {
+    const datos = filtrados.map(p => ({
+      documento: p.documento_contable,
+      clinica: p.clinica_nombre || 'Sin clínica',
+      bodega: p.bodega_nombre || p.bodega_codigo || 'Sin bodega',
+      estado: p.estado,
+      fecha: p.fecha,
+      valor: valorPrestamoDoc(p, 'valor'),
+      cantidad: valorPrestamoDoc(p, 'cantidad'),
+    }));
+    const tipoLabel = tipoDoc === 'egreso' ? 'EPO (préstamos que hacemos)' : 'IPE (préstamos que nos hacen)';
+    const html = generarHTMLDashboardPrestamos(datos, tipoLabel);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dashboard_prestamos_${tipoDoc === 'egreso' ? 'EPO' : 'IPE'}_${new Date().toISOString().slice(0, 10)}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const selectStyle = { padding: '6px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-card)', color: 'var(--t-text-primary)', fontSize: 12 };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ fontWeight: 600, fontSize: 15 }}>📊 Dashboard interactivo de préstamos</div>
+        <button onClick={descargarHTML} style={{ ...selectStyle, cursor: 'pointer', fontWeight: 500 }}>⬇ Descargar HTML</button>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <button onClick={() => { setTipoDoc('egreso'); setFiltroClinica('todas'); }}
+          style={{ ...selectStyle, cursor: 'pointer', fontWeight: tipoDoc === 'egreso' ? 700 : 400, background: tipoDoc === 'egreso' ? 'var(--t-accent)' : 'var(--t-bg-card)' }}>
+          EPO — préstamos que hacemos
+        </button>
+        <button onClick={() => { setTipoDoc('ingreso'); setFiltroClinica('todas'); }}
+          style={{ ...selectStyle, cursor: 'pointer', fontWeight: tipoDoc === 'ingreso' ? 700 : 400, background: tipoDoc === 'ingreso' ? 'var(--t-accent)' : 'var(--t-bg-card)' }}>
+          IPE — préstamos que nos hacen
+        </button>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        <select value={filtroClinica} onChange={e => setFiltroClinica(e.target.value)} style={selectStyle}>
+          <option value="todas">Todas las clínicas</option>
+          {clinicasDelTipo.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={selectStyle}>
+          <option value="todos">Todos los años</option>
+          {anios.map(a => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)} style={selectStyle}>
+          <option value="todos">Todos los estados</option>
+          <option value="abierto">Abierto</option>
+          <option value="parcial">Parcial</option>
+          <option value="cerrado">Cerrado / Total</option>
+        </select>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button onClick={() => setModo('valor')} style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'valor' ? 700 : 400 }}>$ Valor</button>
+          <button onClick={() => setModo('cantidad')} style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'cantidad' ? 700 : 400 }}>Cantidad</button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, marginBottom: 18, flexWrap: 'wrap' }}>
+        {(['abierto', 'parcial', 'cerrado']).map(k => (
+          <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: ESTADO_COLORES[k], display: 'inline-block' }} />
+            <span>{ESTADO_LABELS[k]}: <strong>{formatearValorDash(totales[k] || 0, modo)}</strong></span>
+          </div>
+        ))}
+        <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+          Total: <strong>{formatearValorDash(totalGeneral, modo)}</strong> · {filtrados.length} documento(s)
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+        <PanelDashboard titulo="Por tercero (clínica)" filas={porTercero} modo={modo} />
+        <PanelDashboard titulo="Por bodega" filas={porBodega} modo={modo} />
+        <PanelDashboard titulo="Por año" filas={porAnio} modo={modo} />
+        <PanelDashboard titulo="Por mes" filas={porMes} modo={modo} />
+      </div>
+    </div>
+  );
+}
+
+function generarHTMLDashboardPrestamos(datos, tipoLabel) {
+  const dataJson = JSON.stringify(datos);
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard de préstamos — ${tipoLabel}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #f8fafc; color: #1e293b; padding: 24px; margin: 0; }
+  h1 { font-size: 20px; margin-bottom: 2px; }
+  .sub { color: #64748b; font-size: 13px; margin-bottom: 18px; }
+  .filtros { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+  select, button { padding: 6px 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; font-size: 12px; }
+  .leyenda { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; font-size: 12px; }
+  .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 6px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; }
+  .card h3 { font-size: 13px; margin: 0 0 12px 0; }
+  .fila { margin-bottom: 12px; }
+  .fila-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  .barra { display: flex; height: 16px; border-radius: 4px; overflow: hidden; background: rgba(128,128,128,0.15); }
+  .seg { height: 100%; }
+</style>
+</head>
+<body>
+  <h1>📊 Dashboard de préstamos</h1>
+  <div class="sub">${tipoLabel} · generado ${new Date().toLocaleDateString('es-CO')}</div>
+
+  <div class="filtros">
+    <select id="fClinica"><option value="todas">Todas las clínicas</option></select>
+    <select id="fAnio"><option value="todos">Todos los años</option></select>
+    <select id="fEstado">
+      <option value="todos">Todos los estados</option>
+      <option value="abierto">Abierto</option>
+      <option value="parcial">Parcial</option>
+      <option value="cerrado">Cerrado / Total</option>
+    </select>
+    <button id="bValor">$ Valor</button>
+    <button id="bCantidad">Cantidad</button>
+  </div>
+
+  <div class="leyenda" id="leyenda"></div>
+  <div class="grid">
+    <div class="card"><h3>Por tercero (clínica)</h3><div id="pTercero"></div></div>
+    <div class="card"><h3>Por bodega</h3><div id="pBodega"></div></div>
+    <div class="card"><h3>Por año</h3><div id="pAnio"></div></div>
+    <div class="card"><h3>Por mes</h3><div id="pMes"></div></div>
+  </div>
+
+<script>
+const DATOS = ${dataJson};
+const COLORES = { abierto: '#ef4444', parcial: '#f59e0b', cerrado: '#22c55e' };
+const LABELS  = { abierto: 'Abierto', parcial: 'Parcial', cerrado: 'Cerrado / Total' };
+const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+let modo = 'valor';
+
+function fmt(v) {
+  if (modo === 'cantidad') return Math.round(v).toLocaleString('es-CO') + ' u.';
+  return v.toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+}
+
+function poblarSelects() {
+  const clinicas = [...new Set(DATOS.map(d => d.clinica))].sort();
+  const anios = [...new Set(DATOS.map(d => new Date(d.fecha).getFullYear()))].sort((a,b)=>b-a);
+  const selC = document.getElementById('fClinica');
+  clinicas.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; selC.appendChild(o); });
+  const selA = document.getElementById('fAnio');
+  anios.forEach(a => { const o = document.createElement('option'); o.value = a; o.textContent = a; selA.appendChild(o); });
+}
+
+function filtrar() {
+  const c = document.getElementById('fClinica').value;
+  const a = document.getElementById('fAnio').value;
+  const e = document.getElementById('fEstado').value;
+  return DATOS.filter(d =>
+    (c === 'todas' || d.clinica === c) &&
+    (a === 'todos' || String(new Date(d.fecha).getFullYear()) === a) &&
+    (e === 'todos' || d.estado === e)
+  );
+}
+
+function agrupar(filas, claveFn) {
+  const mapa = {};
+  filas.forEach(d => {
+    const key = claveFn(d);
+    if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
+    mapa[key][d.estado] = (mapa[key][d.estado] || 0) + d[modo];
+  });
+  return Object.values(mapa).sort((x, y) => (y.abierto+y.parcial+y.cerrado) - (x.abierto+x.parcial+x.cerrado));
+}
+
+function renderPanel(elId, filas) {
+  const el = document.getElementById(elId);
+  el.innerHTML = '';
+  const max = Math.max(1, ...filas.map(f => f.abierto + f.parcial + f.cerrado));
+  if (filas.length === 0) { el.innerHTML = '<div style="font-size:12px;color:#94a3b8">Sin datos.</div>'; return; }
+  filas.forEach(f => {
+    const total = f.abierto + f.parcial + f.cerrado;
+    const div = document.createElement('div');
+    div.className = 'fila';
+    let segs = '';
+    ['abierto','parcial','cerrado'].forEach(k => {
+      if (f[k] > 0) {
+        const pct = (f[k] / max) * 100;
+        segs += '<div class="seg" style="width:' + pct + '%;background:' + COLORES[k] + '" title="' + LABELS[k] + ': ' + fmt(f[k]) + '"></div>';
+      }
+    });
+    div.innerHTML = '<div class="fila-head"><span>' + f.label + '</span><span style="color:#64748b">' + fmt(total) + '</span></div><div class="barra">' + segs + '</div>';
+    el.appendChild(div);
+  });
+}
+
+function renderLeyenda(filas) {
+  const t = { abierto: 0, parcial: 0, cerrado: 0 };
+  filas.forEach(d => { t[d.estado] += d[modo]; });
+  const el = document.getElementById('leyenda');
+  el.innerHTML = ['abierto','parcial','cerrado'].map(k =>
+    '<span><span class="dot" style="background:' + COLORES[k] + '"></span>' + LABELS[k] + ': <strong>' + fmt(t[k]) + '</strong></span>'
+  ).join('') + '<span style="color:#64748b">Total: <strong>' + fmt(t.abierto+t.parcial+t.cerrado) + '</strong> · ' + filas.length + ' documento(s)</span>';
+}
+
+function actualizar() {
+  const filas = filtrar();
+  renderLeyenda(filas);
+  renderPanel('pTercero', agrupar(filas, d => d.clinica));
+  renderPanel('pBodega', agrupar(filas, d => d.bodega));
+  renderPanel('pAnio', agrupar(filas, d => String(new Date(d.fecha).getFullYear())).sort((a,b)=>a.label.localeCompare(b.label)));
+  renderPanel('pMes', agrupar(filas, d => MESES[new Date(d.fecha).getMonth()]).sort((a,b)=> MESES.indexOf(a.label)-MESES.indexOf(b.label)));
+}
+
+document.getElementById('fClinica').addEventListener('change', actualizar);
+document.getElementById('fAnio').addEventListener('change', actualizar);
+document.getElementById('fEstado').addEventListener('change', actualizar);
+document.getElementById('bValor').addEventListener('click', () => { modo = 'valor'; actualizar(); });
+document.getElementById('bCantidad').addEventListener('click', () => { modo = 'cantidad'; actualizar(); });
+
+poblarSelects();
+actualizar();
+</script>
+</body>
+</html>`;
 }
 
 // ─── Reporte préstamo por préstamo (devoluciones cruzadas, pagos y pendientes) ──
@@ -2399,6 +2830,7 @@ function construirDetallePrestamo(prestamo, cruces) {
     id: c.devolucion_id,
     documento: c.devolucion_doc,
     tipo_cruce: c.tipo_cruce,
+    grupo_numero: c.grupo_numero || '',   // número de cruce CRU-xxxxx
     soporte_url: c.devolucion_soporte_url,
     items: c.devolucion_items || [],
   }));
@@ -2411,14 +2843,29 @@ function construirDetallePrestamo(prestamo, cruces) {
     });
   });
 
+  // Mapear qué cruce y devolución cubrió cada producto (para el Excel)
+  const crucePorCodigo = {};   // codigo -> { documento_devolucion, grupo_numero }
+  devolucionesDoc.forEach(d => {
+    (d.items || []).forEach(i => {
+      if (!crucePorCodigo[i.codigo]) {
+        crucePorCodigo[i.codigo] = { documento_devolucion: d.documento, grupo_numero: d.grupo_numero };
+      }
+    });
+  });
+
   const productosPagados = [];
   const productosPendientes = [];
   (prestamo.items || []).forEach(i => {
     const disponible = pagadoPorCodigo[i.codigo] || 0;
     const pagado = Math.min(Number(i.cantidad), disponible);
     const pendiente = Math.max(0, Number(i.cantidad) - pagado);
+    const info = crucePorCodigo[i.codigo] || {};
     if (pagado > 0) {
-      productosPagados.push({ codigo: i.codigo, nombre: i.nombre, cantidad: pagado, valor: pagado * Number(i.precio_unitario || 0) });
+      productosPagados.push({
+        codigo: i.codigo, nombre: i.nombre, cantidad: pagado, valor: pagado * Number(i.precio_unitario || 0),
+        documento_devolucion: info.documento_devolucion || '',
+        numero_cruce: info.grupo_numero || '',
+      });
     }
     if (pendiente > 0) {
       productosPendientes.push({ codigo: i.codigo, nombre: i.nombre, cantidad: pendiente, valor: pendiente * Number(i.precio_unitario || 0) });
@@ -2474,14 +2921,14 @@ function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
       };
 
       if (det.productosPagados.length === 0 && det.productosPendientes.length === 0) {
-        filas.push({ ...filaBase, Situación: 'Pagado', Producto: '', Código: '', Cantidad: '', Valor: '' });
+        filas.push({ ...filaBase, Situación: 'Sin movimiento', Producto: '', Código: '', Cantidad: '', Valor: '', 'Doc. devolución': '', 'N° cruce': '' });
         return;
       }
       det.productosPagados.forEach(prod => {
-        filas.push({ ...filaBase, Situación: 'Pagado', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor });
+        filas.push({ ...filaBase, Situación: 'Pagado', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor, 'Doc. devolución': prod.documento_devolucion || '', 'N° cruce': prod.numero_cruce || '' });
       });
       det.productosPendientes.forEach(prod => {
-        filas.push({ ...filaBase, Situación: 'Pendiente', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor });
+        filas.push({ ...filaBase, Situación: 'Pendiente', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor, 'Doc. devolución': '', 'N° cruce': '' });
       });
     });
 
@@ -2626,10 +3073,21 @@ function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
 
 // ─── Reporte detallado de pendientes por devolver (por producto y clínica) ─────
 
-function itemsPendientesDe(p, devoluciones) {
-  const devueltoPorCodigo = {};
+function itemsPendientesDe(p, devoluciones, cruces = []) {
+  // Junta devoluciones por dos vías: el flujo directo (d.prestamo_id) y el
+  // flujo de multicruce (prestamo_cruces), deduplicando por id de devolución
+  // para no contar dos veces si una devolución aparece en ambas fuentes.
+  const devMap = {};
   devoluciones.filter(d => d.prestamo_id === p.id).forEach(d => {
-    (d.items || []).forEach(i => {
+    devMap[d.id] = d.items || [];
+  });
+  (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
+    devMap[c.devolucion_id] = c.devolucion_items || [];
+  });
+
+  const devueltoPorCodigo = {};
+  Object.values(devMap).forEach(items => {
+    (items || []).forEach(i => {
       devueltoPorCodigo[i.codigo] = (devueltoPorCodigo[i.codigo] || 0) + Number(i.cantidad);
     });
   });
@@ -2640,7 +3098,7 @@ function itemsPendientesDe(p, devoluciones) {
   }).filter(i => i.pendiente > 0);
 }
 
-function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta) {
+function construirReportePendientes(prestamos, devoluciones, cruces, tipo, desde, hasta) {
   const filtrados = prestamos.filter(p => {
     if (p.tipo !== tipo) return false;
     if (p.estado === 'cerrado') return false;
@@ -2654,7 +3112,7 @@ function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta)
   let granTotal = 0;
 
   filtrados.forEach(p => {
-    const pendientes = itemsPendientesDe(p, devoluciones);
+    const pendientes = itemsPendientesDe(p, devoluciones, cruces);
     if (pendientes.length === 0) return;
     const clinica = p.clinica_nombre || 'Sin clínica';
     if (!porClinica[clinica]) porClinica[clinica] = { documentos: {}, valorTotal: 0 };
@@ -2680,12 +3138,12 @@ function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta)
   return { porClinica, granTotal };
 }
 
-function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
+function ModalReportePendientes({ prestamos, devoluciones, cruces, onClose }) {
   const [desde, setDesde] = useState('2020-01-01');
   const [hasta, setHasta] = useState(new Date().toISOString().substring(0, 10));
 
-  const reporteEgresos = construirReportePendientes(prestamos, devoluciones, 'egreso', desde, hasta);
-  const reporteIngresos = construirReportePendientes(prestamos, devoluciones, 'ingreso', desde, hasta);
+  const reporteEgresos = construirReportePendientes(prestamos, devoluciones, cruces, 'egreso', desde, hasta);
+  const reporteIngresos = construirReportePendientes(prestamos, devoluciones, cruces, 'ingreso', desde, hasta);
 
   const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
 
@@ -2805,705 +3263,10 @@ function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
 
 // ─── MODAL genérico ─────────────────────────────────────────────────────────────
 
-// ─── Dashboard interactivo de préstamos (pagado vs pendiente) ──────────────────
-
-function construirRegistroDashboard(p, cruces) {
-  const det = construirDetallePrestamo(p, cruces);
-  const valorTotal     = (p.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
-  const cantidadTotal  = (p.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
-  const valorPagado    = det.productosPagados.reduce((s, x) => s + x.valor, 0);
-  const cantidadPagada = det.productosPagados.reduce((s, x) => s + x.cantidad, 0);
-  const valorPendiente = det.productosPendientes.reduce((s, x) => s + x.valor, 0);
-  const cantidadPendiente = det.productosPendientes.reduce((s, x) => s + x.cantidad, 0);
-  const fecha = p.fecha ? String(p.fecha).substring(0, 10) : '';
-  return {
-    id: p.id,
-    documento: p.documento_contable,
-    tipo: p.tipo,
-    tipoLabel: p.tipo === 'egreso' ? 'EPO' : 'IPE',
-    clinica: p.clinica_nombre || 'Sin clínica',
-    bodega: p.bodega_nombre || 'Sin bodega',
-    bodega_codigo: p.bodega_codigo || '',
-    estado: p.estado || 'abierto',
-    fecha,
-    anio: fecha ? fecha.substring(0, 4) : 'Sin fecha',
-    mes: fecha ? fecha.substring(0, 7) : 'Sin fecha',
-    valorTotal, cantidadTotal, valorPagado, cantidadPagada, valorPendiente, cantidadPendiente,
-  };
-}
-
-function construirDatosDashboard(prestamos, cruces) {
-  return (prestamos || [])
-    .filter(p => ['ingreso', 'egreso'].includes(p.tipo))
-    .map(p => construirRegistroDashboard(p, cruces));
-}
-
-// Gráfica de barras apiladas (pagado + pendiente) en SVG puro, sin dependencias.
-function BarChartApilado({ data, formatter, height = 240, colorA = '#22c55e', colorB = '#f59e0b', labelA = 'Pagado', labelB = 'Pendiente' }) {
-  if (!data || data.length === 0) {
-    return <div style={{ fontSize: 12, color: 'var(--t-text-muted)', padding: 16, textAlign: 'center' }}>Sin datos para este filtro</div>;
-  }
-  const width = Math.max(560, data.length * 78);
-  const max = Math.max(1, ...data.map(d => d.a + d.b));
-  const gap = (width - 60) / data.length;
-  const barW = Math.min(42, gap - 16);
-  const chartH = height - 46;
-
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <svg width={width} height={height} style={{ display: 'block' }}>
-        <line x1={40} y1={height - 26} x2={width - 10} y2={height - 26} style={{ stroke: 'var(--t-border)' }} strokeWidth="1" />
-        {[0.25, 0.5, 0.75, 1].map(f => (
-          <line key={f} x1={40} y1={height - 26 - chartH * f} x2={width - 10} y2={height - 26 - chartH * f}
-            style={{ stroke: 'var(--t-border)' }} strokeWidth="1" strokeDasharray="3,4" opacity="0.5" />
-        ))}
-        {data.map((d, i) => {
-          const x = 44 + i * gap + (gap - barW) / 2;
-          const hA = max ? (d.a / max) * chartH : 0;
-          const hB = max ? (d.b / max) * chartH : 0;
-          const yA = height - 26 - hA;
-          const yB = yA - hB;
-          const total = d.a + d.b;
-          return (
-            <g key={i}>
-              <title>{`${d.label}\n${labelA}: ${formatter(d.a)}\n${labelB}: ${formatter(d.b)}\nTotal: ${formatter(total)}`}</title>
-              {hB > 0 && <rect x={x} y={yB} width={barW} height={Math.max(hB, 1)} fill={colorB} rx={2} />}
-              {hA > 0 && <rect x={x} y={yA} width={barW} height={Math.max(hA, 1)} fill={colorA} rx={2} />}
-              {total > 0 && (
-                <text x={x + barW / 2} y={yB - 4} textAnchor="middle" fontSize="10" style={{ fill: 'var(--t-text-muted)' }}>
-                  {formatter(total, true)}
-                </text>
-              )}
-              <text x={x + barW / 2} y={height - 10} textAnchor="middle" fontSize="10" style={{ fill: 'var(--t-text-muted)' }}>
-                {d.label.length > 11 ? d.label.slice(0, 10) + '…' : d.label}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
-
-function agregarPor(campo, registros, metrica) {
-  const mapa = new Map();
-  registros.forEach(r => {
-    const key = r[campo] || '—';
-    if (!mapa.has(key)) mapa.set(key, { a: 0, b: 0 });
-    const acc = mapa.get(key);
-    acc.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    acc.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-  return Array.from(mapa.entries())
-    .map(([label, v]) => ({ label, a: v.a, b: v.b }))
-    .sort((x, y) => (y.a + y.b) - (x.a + x.b));
-}
-
-// Antigüedad de la cartera pendiente: cuánto tiempo llevan abiertos los
-// préstamos que aún tienen saldo por devolver (útil para priorizar gestión de cobro).
-function agregarAntiguedad(registros, metrica) {
-  const hoy = new Date();
-  const buckets = [
-    { label: '0-30 días', min: 0, max: 30 },
-    { label: '31-60 días', min: 31, max: 60 },
-    { label: '61-90 días', min: 61, max: 90 },
-    { label: '+90 días', min: 91, max: Infinity },
-  ].map(b => ({ ...b, a: 0, b: 0 }));
-
-  registros.forEach(r => {
-    if (!r.fecha) return;
-    if (r.valorPendiente <= 0 && r.cantidadPendiente <= 0) return;
-    const dias = Math.floor((hoy - new Date(r.fecha)) / 86400000);
-    const bucket = buckets.find(b => dias >= b.min && dias <= b.max) || buckets[buckets.length - 1];
-    bucket.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    bucket.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-
-  return buckets.map(({ label, a, b }) => ({ label, a, b }));
-}
-
-// Desglose fijo por tipo (EPO/IPE) x estado (abierto/parcial/cerrado), para ver
-// de un vistazo cuánto hay pagado/pendiente en cada combinación, sin importar
-// cuál esté seleccionada en el filtro de Estado.
-function agregarPorTipoYEstado(registros, metrica) {
-  const combos = [
-    { tipoLabel: 'EPO', estado: 'abierto' },
-    { tipoLabel: 'EPO', estado: 'parcial' },
-    { tipoLabel: 'EPO', estado: 'cerrado' },
-    { tipoLabel: 'IPE', estado: 'abierto' },
-    { tipoLabel: 'IPE', estado: 'parcial' },
-    { tipoLabel: 'IPE', estado: 'cerrado' },
-  ].map(c => ({ ...c, a: 0, b: 0 }));
-
-  registros.forEach(r => {
-    const combo = combos.find(c => c.tipoLabel === r.tipoLabel && c.estado === r.estado);
-    if (!combo) return;
-    combo.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    combo.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-
-  return combos.map(({ tipoLabel, estado, a, b }) => ({
-    label: `${tipoLabel} · ${estado.charAt(0).toUpperCase() + estado.slice(1)}`,
-    a, b,
-  }));
-}
-
-// Siempre divide EPO e IPE en dos columnas separadas.
-// Si el filtro de tipo es solo EPO o solo IPE, muestra solo esa columna.
-function SeccionGraficaTipo({ titulo, subtitulo, filtrados, filtroTipo, metrica, formatter, calcular, height = 240 }) {
-  const mostrarEpo = filtroTipo !== 'ingreso';
-  const mostrarIpe = filtroTipo !== 'egreso';
-  const epo = mostrarEpo ? calcular(filtrados.filter(r => r.tipo === 'egreso'), metrica) : [];
-  const ipe = mostrarIpe ? calcular(filtrados.filter(r => r.tipo === 'ingreso'), metrica) : [];
-  const cols = mostrarEpo && mostrarIpe ? '1fr 1fr' : '1fr';
-  return (
-    <>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{titulo}</div>
-      {subtitulo && <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>{subtitulo}</div>}
-      <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 16, marginBottom: 22 }}>
-        {mostrarEpo && (
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#ef4444' }}>EPO (dados)</div>
-            <BarChartApilado data={epo} formatter={formatter} height={height} />
-          </div>
-        )}
-        {mostrarIpe && (
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#3b82f6' }}>IPE (recibidos)</div>
-            <BarChartApilado data={ipe} formatter={formatter} height={height} />
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
-
-function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
-  const [filtroClinica, setFiltroClinica] = useState('');
-  const [filtroAnio, setFiltroAnio] = useState('');
-  const [filtroEstado, setFiltroEstado] = useState('todos');
-  const [filtroTipo, setFiltroTipo] = useState('todos');   // todos | egreso (EPO) | ingreso (IPE)
-  const [metrica, setMetrica] = useState('valor'); // 'valor' | 'cantidad'
-
-  const datosCompletos = React.useMemo(() => construirDatosDashboard(prestamos, cruces), [prestamos, cruces]);
-
-  const cliniasDisponibles = React.useMemo(
-    () => Array.from(new Set(datosCompletos.map(r => r.clinica))).sort(),
-    [datosCompletos]
-  );
-  const aniosDisponibles = React.useMemo(
-    () => Array.from(new Set(datosCompletos.map(r => r.anio))).sort().reverse(),
-    [datosCompletos]
-  );
-
-  const filtrados = React.useMemo(() => datosCompletos.filter(r => {
-    if (filtroClinica && r.clinica !== filtroClinica) return false;
-    if (filtroAnio && r.anio !== filtroAnio) return false;
-    if (filtroEstado !== 'todos' && r.estado !== filtroEstado) return false;
-    if (filtroTipo !== 'todos' && r.tipo !== filtroTipo) return false;
-    return true;
-  }), [datosCompletos, filtroClinica, filtroAnio, filtroEstado, filtroTipo]);
-
-  // Igual que "filtrados" pero sin aplicar el filtro de Estado, para poder
-  // mostrar los 3 estados desglosados en la gráfica "Por estado".
-  const filtradosSinEstado = React.useMemo(() => datosCompletos.filter(r => {
-    if (filtroClinica && r.clinica !== filtroClinica) return false;
-    if (filtroAnio && r.anio !== filtroAnio) return false;
-    if (filtroTipo !== 'todos' && r.tipo !== filtroTipo) return false;
-    return true;
-  }), [datosCompletos, filtroClinica, filtroAnio, filtroTipo]);
-
-  const formatter = (n, corto) => {
-    if (metrica === 'valor') {
-      if (corto && Math.abs(n) >= 1000000) return '$' + (n / 1000000).toFixed(1) + 'M';
-      if (corto && Math.abs(n) >= 1000) return '$' + (n / 1000).toFixed(0) + 'K';
-      return fmt(n);
-    }
-    return Number(n || 0).toLocaleString('es-CO') + (corto ? '' : ' u.');
-  };
-
-  const porTipoEstado = React.useMemo(() => agregarPorTipoYEstado(filtradosSinEstado, metrica), [filtradosSinEstado, metrica]);
-
-  const kpis = React.useMemo(() => {
-    const valorPagado = filtrados.reduce((s, r) => s + r.valorPagado, 0);
-    const valorPendiente = filtrados.reduce((s, r) => s + r.valorPendiente, 0);
-    const cantidadPagada = filtrados.reduce((s, r) => s + r.cantidadPagada, 0);
-    const cantidadPendiente = filtrados.reduce((s, r) => s + r.cantidadPendiente, 0);
-    const total = valorPagado + valorPendiente;
-    const pct = total > 0 ? Math.round((valorPagado / total) * 100) : 0;
-    return { valorPagado, valorPendiente, cantidadPagada, cantidadPendiente, pct, nPrestamos: filtrados.length };
-  }, [filtrados]);
-
-  const kpiCard = (label, valor, color) => (
-    <div style={{ background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 130 }}>
-      <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 17, fontWeight: 700, color: color || 'var(--t-text-primary)' }}>{valor}</div>
-    </div>
-  );
-
-  const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
-
-  return (
-    <Modal onClose={onClose} titulo="📈 Dashboard de préstamos — pagado vs. pendiente" maxWidth={1180}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Clínica / tercero</div>
-          <select value={filtroClinica} onChange={e => setFiltroClinica(e.target.value)} style={inputS}>
-            <option value="">Todas</option>
-            {cliniasDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Año</div>
-          <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={inputS}>
-            <option value="">Todos</option>
-            {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Tipo</div>
-          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} style={inputS}>
-            <option value="todos">EPO + IPE</option>
-            <option value="egreso">Solo EPO (dados)</option>
-            <option value="ingreso">Solo IPE (recibidos)</option>
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Estado</div>
-          <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)} style={inputS}>
-            <option value="todos">Todos</option>
-            <option value="abierto">Abierto</option>
-            <option value="parcial">Parcial</option>
-            <option value="cerrado">Cerrado</option>
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Ver por</div>
-          <div style={{ display: 'flex', border: '1px solid var(--t-border)', borderRadius: 7, overflow: 'hidden' }}>
-            <button onClick={() => setMetrica('valor')}
-              style={{ padding: '7px 12px', fontSize: 13, border: 'none', cursor: 'pointer', background: metrica === 'valor' ? '#3b82f6' : 'var(--t-bg-inner)', color: metrica === 'valor' ? '#fff' : 'var(--t-text-primary)' }}>
-              Valor ($)
-            </button>
-            <button onClick={() => setMetrica('cantidad')}
-              style={{ padding: '7px 12px', fontSize: 13, border: 'none', cursor: 'pointer', background: metrica === 'cantidad' ? '#3b82f6' : 'var(--t-bg-inner)', color: metrica === 'cantidad' ? '#fff' : 'var(--t-text-primary)' }}>
-              Cantidad (u.)
-            </button>
-          </div>
-        </div>
-        <div style={{ flex: 1 }} />
-        <button onClick={() => descargarDashboardHTML(datosCompletos, { filtroClinica, filtroAnio, filtroEstado, filtroTipo, metrica })}
-          style={{ padding: '8px 14px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
-          ⬇ Descargar dashboard en HTML
-        </button>
-      </div>
-
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
-        {kpiCard('Préstamos (IPE/EPO)', kpis.nPrestamos)}
-        {kpiCard('Pagado', metrica === 'valor' ? fmt(kpis.valorPagado) : `${kpis.cantidadPagada.toLocaleString('es-CO')} u.`, '#22c55e')}
-        {kpiCard('Pendiente', metrica === 'valor' ? fmt(kpis.valorPendiente) : `${kpis.cantidadPendiente.toLocaleString('es-CO')} u.`, '#f59e0b')}
-        {kpiCard('% pagado', `${kpis.pct}%`, '#3b82f6')}
-      </div>
-
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ width: 10, height: 10, borderRadius: 3, background: '#22c55e', display: 'inline-block' }} />
-        <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Pagado</span>
-        <span style={{ width: 10, height: 10, borderRadius: 3, background: '#f59e0b', display: 'inline-block', marginLeft: 8 }} />
-        <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Pendiente</span>
-      </div>
-
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
-        Por estado (abierto / parcial / cerrado) — EPO vs. IPE
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
-        Esta gráfica siempre muestra los 3 estados, sin importar lo que elijas en el filtro "Estado" de arriba
-      </div>
-      <div style={{ marginBottom: 22 }}><BarChartApilado data={porTipoEstado} formatter={formatter} height={220} /></div>
-
-      <SeccionGraficaTipo
-        titulo="Por tercero (clínica)"
-        filtrados={filtrados}
-        filtroTipo={filtroTipo}
-        metrica={metrica}
-        formatter={formatter}
-        calcular={(regs, m) => agregarPor('clinica', regs, m).slice(0, 15)}
-      />
-
-      <SeccionGraficaTipo
-        titulo="Por bodega"
-        filtrados={filtrados}
-        filtroTipo={filtroTipo}
-        metrica={metrica}
-        formatter={formatter}
-        calcular={(regs, m) => agregarPor('bodega', regs, m)}
-      />
-
-      <SeccionGraficaTipo
-        titulo="Antigüedad de la cartera pendiente"
-        filtrados={filtrados}
-        filtroTipo={filtroTipo}
-        metrica={metrica}
-        formatter={formatter}
-        height={200}
-        calcular={(regs, m) => agregarAntiguedad(regs, m)}
-      />
-
-      <SeccionGraficaTipo
-        titulo="Por año"
-        filtrados={filtrados}
-        filtroTipo={filtroTipo}
-        metrica={metrica}
-        formatter={formatter}
-        height={220}
-        calcular={(regs, m) => agregarPor('anio', regs, m).sort((x, y) => String(x.label).localeCompare(String(y.label)))}
-      />
-
-      <SeccionGraficaTipo
-        titulo="Por año-mes"
-        filtrados={filtrados}
-        filtroTipo={filtroTipo}
-        metrica={metrica}
-        formatter={formatter}
-        calcular={(regs, m) => agregarPor('mes', regs, m).sort((x, y) => String(x.label).localeCompare(String(y.label)))}
-      />
-    </Modal>
-  );
-}
-
-// Genera un archivo HTML autónomo (sin dependencias externas) con el mismo
-// dashboard interactivo, para verlo directamente en cualquier navegador.
-function descargarDashboardHTML(datosCompletos, filtrosIniciales) {
-  const dataJson = JSON.stringify(datosCompletos).replace(/</g, '\\u003c');
-  const filtrosJson = JSON.stringify(filtrosIniciales);
-
-  const html = `<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8" />
-<title>Dashboard de préstamos</title>
-<style>
-  :root {
-    --bg-app:#0f1117; --bg-card:#1e2535; --bg-inner:#0a0d14; --border:#2a3348;
-    --text:#e2e8f0; --muted:#64748b; --green:#22c55e; --amber:#f59e0b; --blue:#3b82f6;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg-app); color:var(--text); padding:24px; }
-  h1 { font-size:18px; margin:0 0 18px; }
-  .filtros { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:18px; }
-  .filtros label { display:block; font-size:11px; color:var(--muted); margin-bottom:3px; }
-  select, .toggle button { padding:7px 10px; border:1px solid var(--border); border-radius:7px; font-size:13px; background:var(--bg-inner); color:var(--text); }
-  .toggle { display:flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
-  .toggle button { border:none; cursor:pointer; border-radius:0; }
-  .toggle button.activo { background:var(--blue); color:#fff; }
-  .kpis { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:22px; }
-  .kpi { background:var(--bg-inner); border:1px solid var(--border); border-radius:8px; padding:10px 14px; flex:1; min-width:130px; }
-  .kpi .l { font-size:11px; color:var(--muted); margin-bottom:4px; }
-  .kpi .v { font-size:17px; font-weight:700; }
-  .leyenda { display:flex; gap:8px; align-items:center; margin-bottom:8px; font-size:12px; color:var(--muted); }
-  .sw { width:10px; height:10px; border-radius:3px; display:inline-block; }
-  .titulo-grafica { font-size:13px; font-weight:600; margin:18px 0 6px; }
-  .chart-wrap { overflow-x:auto; }
-  .split-tipo { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  .split-tipo > div { overflow-x:auto; }
-  .split-tipo .sub-titulo { font-size:12px; font-weight:600; margin-bottom:4px; }
-  svg text { fill: var(--muted); }
-</style>
-</head>
-<body>
-  <h1>📈 Dashboard de préstamos — pagado vs. pendiente</h1>
-  <div class="filtros">
-    <div>
-      <label>Clínica / tercero</label>
-      <select id="fClinica"></select>
-    </div>
-    <div>
-      <label>Año</label>
-      <select id="fAnio"></select>
-    </div>
-    <div>
-      <label>Tipo</label>
-      <select id="fTipo">
-        <option value="todos">EPO + IPE</option>
-        <option value="egreso">Solo EPO (dados)</option>
-        <option value="ingreso">Solo IPE (recibidos)</option>
-      </select>
-    </div>
-    <div>
-      <label>Estado</label>
-      <select id="fEstado">
-        <option value="todos">Todos</option>
-        <option value="abierto">Abierto</option>
-        <option value="parcial">Parcial</option>
-        <option value="cerrado">Cerrado</option>
-      </select>
-    </div>
-    <div>
-      <label>Ver por</label>
-      <div class="toggle">
-        <button id="btnValor" class="activo">Valor ($)</button>
-        <button id="btnCantidad">Cantidad (u.)</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="kpis" id="kpis"></div>
-
-  <div class="leyenda">
-    <span class="sw" style="background:var(--green)"></span> Pagado
-    <span class="sw" style="background:var(--amber)"></span> Pendiente
-  </div>
-
-  <div class="titulo-grafica">Por estado (abierto / parcial / cerrado) — EPO vs. IPE</div>
-  <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Esta gráfica siempre muestra los 3 estados, sin importar lo que elijas en el filtro "Estado" de arriba</div>
-  <div class="chart-wrap" id="chartTipoEstado"></div>
-
-  <div class="titulo-grafica">Por tercero (clínica)</div>
-  <div id="secTercero"></div>
-
-  <div class="titulo-grafica">Por bodega</div>
-  <div id="secBodega"></div>
-
-  <div class="titulo-grafica">Antigüedad de la cartera pendiente</div>
-  <div id="secAntiguedad"></div>
-
-  <div class="titulo-grafica">Por año</div>
-  <div id="secAnio"></div>
-
-  <div class="titulo-grafica">Por año-mes</div>
-  <div id="secMes"></div>
-
-
-<script>
-const DATA = ${dataJson};
-const FILTROS_INICIALES = ${filtrosJson};
-let metrica = FILTROS_INICIALES.metrica || 'valor';
-
-function fmtMoneda(n) { return '$' + Math.round(n||0).toLocaleString('es-CO'); }
-function fmtCorto(n, corto) {
-  if (metrica === 'valor') {
-    if (corto && Math.abs(n) >= 1000000) return '$' + (n/1000000).toFixed(1) + 'M';
-    if (corto && Math.abs(n) >= 1000) return '$' + (n/1000).toFixed(0) + 'K';
-    return fmtMoneda(n);
-  }
-  return Math.round(n||0).toLocaleString('es-CO') + (corto ? '' : ' u.');
-}
-
-function poblarSelect(id, valores, seleccionado) {
-  const el = document.getElementById(id);
-  el.innerHTML = '<option value="">Todos</option>' + valores.map(v => '<option value="'+v+'">'+v+'</option>').join('');
-  if (seleccionado) el.value = seleccionado;
-}
-
-function filtrarDatos() {
-  const fClinica = document.getElementById('fClinica').value;
-  const fAnio = document.getElementById('fAnio').value;
-  const fEstado = document.getElementById('fEstado').value;
-  const fTipo = document.getElementById('fTipo').value;
-  return DATA.filter(r => {
-    if (fClinica && r.clinica !== fClinica) return false;
-    if (fAnio && r.anio !== fAnio) return false;
-    if (fEstado !== 'todos' && r.estado !== fEstado) return false;
-    if (fTipo !== 'todos' && r.tipo !== fTipo) return false;
-    return true;
-  });
-}
-
-// Igual que filtrarDatos() pero ignora el filtro de Estado, para la gráfica
-// "Por estado" que siempre debe mostrar abierto/parcial/cerrado a la vez.
-function filtrarDatosSinEstado() {
-  const fClinica = document.getElementById('fClinica').value;
-  const fAnio = document.getElementById('fAnio').value;
-  const fTipo = document.getElementById('fTipo').value;
-  return DATA.filter(r => {
-    if (fClinica && r.clinica !== fClinica) return false;
-    if (fAnio && r.anio !== fAnio) return false;
-    if (fTipo !== 'todos' && r.tipo !== fTipo) return false;
-    return true;
-  });
-}
-
-function agregarPor(campo, registros) {
-  const mapa = new Map();
-  registros.forEach(r => {
-    const key = r[campo] || '—';
-    if (!mapa.has(key)) mapa.set(key, { a:0, b:0 });
-    const acc = mapa.get(key);
-    acc.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    acc.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-  return Array.from(mapa.entries()).map(([label, v]) => ({ label, a: v.a, b: v.b }))
-    .sort((x,y) => (y.a+y.b) - (x.a+x.b));
-}
-
-function agregarPorTipoYEstado(registros) {
-  const combos = [
-    { tipoLabel: 'EPO', estado: 'abierto' },
-    { tipoLabel: 'EPO', estado: 'parcial' },
-    { tipoLabel: 'EPO', estado: 'cerrado' },
-    { tipoLabel: 'IPE', estado: 'abierto' },
-    { tipoLabel: 'IPE', estado: 'parcial' },
-    { tipoLabel: 'IPE', estado: 'cerrado' },
-  ].map(c => ({ ...c, a: 0, b: 0 }));
-
-  registros.forEach(r => {
-    const combo = combos.find(c => c.tipoLabel === r.tipoLabel && c.estado === r.estado);
-    if (!combo) return;
-    combo.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    combo.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-
-  return combos.map(({ tipoLabel, estado, a, b }) => ({
-    label: tipoLabel + ' · ' + (estado.charAt(0).toUpperCase() + estado.slice(1)),
-    a, b,
-  }));
-}
-
-function agregarAntiguedad(registros) {
-  const hoy = new Date();
-  const buckets = [
-    { label: '0-30 días', min:0, max:30, a:0, b:0 },
-    { label: '31-60 días', min:31, max:60, a:0, b:0 },
-    { label: '61-90 días', min:61, max:90, a:0, b:0 },
-    { label: '+90 días', min:91, max:Infinity, a:0, b:0 },
-  ];
-  registros.forEach(r => {
-    if (!r.fecha) return;
-    if (r.valorPendiente <= 0 && r.cantidadPendiente <= 0) return;
-    const dias = Math.floor((hoy - new Date(r.fecha)) / 86400000);
-    const bucket = buckets.find(b => dias >= b.min && dias <= b.max) || buckets[buckets.length-1];
-    bucket.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    bucket.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-  return buckets.map(({label,a,b}) => ({label,a,b}));
-}
-
-
-function svgBarChart(data, height) {
-  height = height || 240;
-  if (!data.length) return '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center;">Sin datos para este filtro</div>';
-  const width = Math.max(560, data.length * 78);
-  const max = Math.max(1, ...data.map(d => d.a + d.b));
-  const gap = (width - 60) / data.length;
-  const barW = Math.min(42, gap - 16);
-  const chartH = height - 46;
-  let bars = '';
-  data.forEach((d, i) => {
-    const x = 44 + i*gap + (gap-barW)/2;
-    const hA = max ? (d.a/max)*chartH : 0;
-    const hB = max ? (d.b/max)*chartH : 0;
-    const yA = height - 26 - hA;
-    const yB = yA - hB;
-    const total = d.a + d.b;
-    const label = d.label.length > 11 ? d.label.slice(0,10)+'…' : d.label;
-    const tip = d.label + '\\n Pagado: ' + fmtCorto(d.a) + '\\n Pendiente: ' + fmtCorto(d.b) + '\\n Total: ' + fmtCorto(total);
-    bars += '<g><title>'+tip+'</title>';
-    if (hB > 0) bars += '<rect x="'+x+'" y="'+yB+'" width="'+barW+'" height="'+Math.max(hB,1)+'" fill="var(--amber)" rx="2" />';
-    if (hA > 0) bars += '<rect x="'+x+'" y="'+yA+'" width="'+barW+'" height="'+Math.max(hA,1)+'" fill="var(--green)" rx="2" />';
-    if (total > 0) bars += '<text x="'+(x+barW/2)+'" y="'+(yB-4)+'" text-anchor="middle" font-size="10">'+fmtCorto(total,true)+'</text>';
-    bars += '<text x="'+(x+barW/2)+'" y="'+(height-10)+'" text-anchor="middle" font-size="10">'+label+'</text></g>';
-  });
-  let grid = '<line x1="40" y1="'+(height-26)+'" x2="'+(width-10)+'" y2="'+(height-26)+'" stroke="var(--border)" stroke-width="1" />';
-  [0.25,0.5,0.75,1].forEach(f => {
-    grid += '<line x1="40" y1="'+(height-26-chartH*f)+'" x2="'+(width-10)+'" y2="'+(height-26-chartH*f)+'" stroke="var(--border)" stroke-width="1" stroke-dasharray="3,4" opacity="0.5" />';
-  });
-  return '<svg width="'+width+'" height="'+height+'" style="display:block">'+grid+bars+'</svg>';
-}
-
-function render() {
-  const filtrados = filtrarDatos();
-
-  const valorPagado = filtrados.reduce((s,r) => s + r.valorPagado, 0);
-  const valorPendiente = filtrados.reduce((s,r) => s + r.valorPendiente, 0);
-  const cantidadPagada = filtrados.reduce((s,r) => s + r.cantidadPagada, 0);
-  const cantidadPendiente = filtrados.reduce((s,r) => s + r.cantidadPendiente, 0);
-  const total = valorPagado + valorPendiente;
-  const pct = total > 0 ? Math.round((valorPagado/total)*100) : 0;
-
-  document.getElementById('kpis').innerHTML = [
-    ['Préstamos (IPE/EPO)', filtrados.length, ''],
-    ['Pagado', metrica === 'valor' ? fmtMoneda(valorPagado) : cantidadPagada.toLocaleString('es-CO')+' u.', 'color:var(--green)'],
-    ['Pendiente', metrica === 'valor' ? fmtMoneda(valorPendiente) : cantidadPendiente.toLocaleString('es-CO')+' u.', 'color:var(--amber)'],
-    ['% pagado', pct + '%', 'color:var(--blue)'],
-  ].map(([l,v,style]) => '<div class="kpi"><div class="l">'+l+'</div><div class="v" style="'+style+'">'+v+'</div></div>').join('');
-
-  const porTipoEstado = agregarPorTipoYEstado(filtrarDatosSinEstado());
-
-  document.getElementById('chartTipoEstado').innerHTML = svgBarChart(porTipoEstado, 220);
-
-  const fTipo = document.getElementById('fTipo').value;
-  function pintarSeccionTipo(containerId, calcularFn, height) {
-    const el = document.getElementById(containerId);
-    const mostrarEpo = fTipo !== 'ingreso';
-    const mostrarIpe = fTipo !== 'egreso';
-    if (!mostrarEpo || !mostrarIpe) {
-      const data = calcularFn(filtrados);
-      el.innerHTML = svgBarChart(data, height);
-      return;
-    }
-    const epo = calcularFn(filtrados.filter(r => r.tipo === 'egreso'));
-    const ipe = calcularFn(filtrados.filter(r => r.tipo === 'ingreso'));
-    el.innerHTML =
-      '<div class="split-tipo">' +
-        '<div><div class="sub-titulo" style="color:#ef4444">EPO (dados)</div>' + svgBarChart(epo, height) + '</div>' +
-        '<div><div class="sub-titulo" style="color:#3b82f6">IPE (recibidos)</div>' + svgBarChart(ipe, height) + '</div>' +
-      '</div>';
-  }
-
-  pintarSeccionTipo('secTercero', regs => agregarPor('clinica', regs).slice(0, 15), 240);
-  pintarSeccionTipo('secBodega', regs => agregarPor('bodega', regs), 240);
-  pintarSeccionTipo('secAntiguedad', regs => agregarAntiguedad(regs), 200);
-  pintarSeccionTipo('secAnio', regs => agregarPor('anio', regs).sort((x,y) => String(x.label).localeCompare(String(y.label))), 220);
-  pintarSeccionTipo('secMes', regs => agregarPor('mes', regs).sort((x,y) => String(x.label).localeCompare(String(y.label))), 240);
-}
-
-function init() {
-  poblarSelect('fClinica', Array.from(new Set(DATA.map(r => r.clinica))).sort(), FILTROS_INICIALES.filtroClinica);
-  poblarSelect('fAnio', Array.from(new Set(DATA.map(r => r.anio))).sort().reverse(), FILTROS_INICIALES.filtroAnio);
-  if (FILTROS_INICIALES.filtroEstado) document.getElementById('fEstado').value = FILTROS_INICIALES.filtroEstado;
-  if (FILTROS_INICIALES.filtroTipo) document.getElementById('fTipo').value = FILTROS_INICIALES.filtroTipo;
-  if (metrica === 'cantidad') {
-    document.getElementById('btnCantidad').classList.add('activo');
-    document.getElementById('btnValor').classList.remove('activo');
-  }
-
-  document.getElementById('fClinica').addEventListener('change', render);
-  document.getElementById('fAnio').addEventListener('change', render);
-  document.getElementById('fEstado').addEventListener('change', render);
-  document.getElementById('fTipo').addEventListener('change', render);
-  document.getElementById('btnValor').addEventListener('click', () => {
-    metrica = 'valor';
-    document.getElementById('btnValor').classList.add('activo');
-    document.getElementById('btnCantidad').classList.remove('activo');
-    render();
-  });
-  document.getElementById('btnCantidad').addEventListener('click', () => {
-    metrica = 'cantidad';
-    document.getElementById('btnCantidad').classList.add('activo');
-    document.getElementById('btnValor').classList.remove('activo');
-    render();
-  });
-
-  render();
-}
-init();
-</script>
-</body>
-</html>`;
-
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `dashboard_prestamos_${new Date().toISOString().substring(0, 10)}.html`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function Modal({ onClose, titulo, children, maxWidth = 760 }) {
+function Modal({ onClose, titulo, children }) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div style={{ background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 12, width: '100%', maxWidth, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 12, width: '100%', maxWidth: 760, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: '1px solid var(--t-border)' }}>
           <span style={{ fontWeight: 600, fontSize: 15 }}>{titulo}</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t-text-muted)', fontSize: 20, lineHeight: 1 }}>✕</button>
@@ -3513,3 +3276,7 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
