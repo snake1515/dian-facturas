@@ -2948,35 +2948,31 @@ function agregarPorTipoYEstado(registros, metrica) {
   }));
 }
 
-// Envuelve una sección del dashboard: si hay un tipo (EPO/IPE) específico
-// seleccionado muestra una sola gráfica; si es "Todos" divide en dos paneles,
-// uno solo con EPO y otro solo con IPE, sin mezclar los datos.
+// Siempre divide EPO e IPE en dos columnas separadas.
+// Si el filtro de tipo es solo EPO o solo IPE, muestra solo esa columna.
 function SeccionGraficaTipo({ titulo, subtitulo, filtrados, filtroTipo, metrica, formatter, calcular, height = 240 }) {
-  if (filtroTipo !== 'todos') {
-    const data = calcular(filtrados, metrica);
-    return (
-      <>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{titulo}</div>
-        {subtitulo && <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>{subtitulo}</div>}
-        <div style={{ marginBottom: 22 }}><BarChartApilado data={data} formatter={formatter} height={height} /></div>
-      </>
-    );
-  }
-  const epo = calcular(filtrados.filter(r => r.tipo === 'egreso'), metrica);
-  const ipe = calcular(filtrados.filter(r => r.tipo === 'ingreso'), metrica);
+  const mostrarEpo = filtroTipo !== 'ingreso';
+  const mostrarIpe = filtroTipo !== 'egreso';
+  const epo = mostrarEpo ? calcular(filtrados.filter(r => r.tipo === 'egreso'), metrica) : [];
+  const ipe = mostrarIpe ? calcular(filtrados.filter(r => r.tipo === 'ingreso'), metrica) : [];
+  const cols = mostrarEpo && mostrarIpe ? '1fr 1fr' : '1fr';
   return (
     <>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{titulo}</div>
       {subtitulo && <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>{subtitulo}</div>}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 22 }}>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#ef4444' }}>EPO (dados)</div>
-          <BarChartApilado data={epo} formatter={formatter} height={height} />
-        </div>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#3b82f6' }}>IPE (recibidos)</div>
-          <BarChartApilado data={ipe} formatter={formatter} height={height} />
-        </div>
+      <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 16, marginBottom: 22 }}>
+        {mostrarEpo && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#ef4444' }}>EPO (dados)</div>
+            <BarChartApilado data={epo} formatter={formatter} height={height} />
+          </div>
+        )}
+        {mostrarIpe && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#3b82f6' }}>IPE (recibidos)</div>
+            <BarChartApilado data={ipe} formatter={formatter} height={height} />
+          </div>
+        )}
       </div>
     </>
   );
@@ -3026,7 +3022,6 @@ function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
     return Number(n || 0).toLocaleString('es-CO') + (corto ? '' : ' u.');
   };
 
-  const porTipo    = React.useMemo(() => agregarPor('tipoLabel', filtrados, metrica), [filtrados, metrica]);
   const porTipoEstado = React.useMemo(() => agregarPorTipoYEstado(filtradosSinEstado, metrica), [filtradosSinEstado, metrica]);
 
   const kpis = React.useMemo(() => {
@@ -3116,9 +3111,6 @@ function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
         <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Pendiente</span>
       </div>
 
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>EPO vs. IPE</div>
-      <div style={{ marginBottom: 22 }}><BarChartApilado data={porTipo} formatter={formatter} height={200} /></div>
-
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
         Por estado (abierto / parcial / cerrado) — EPO vs. IPE
       </div>
@@ -3153,6 +3145,16 @@ function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
         formatter={formatter}
         height={200}
         calcular={(regs, m) => agregarAntiguedad(regs, m)}
+      />
+
+      <SeccionGraficaTipo
+        titulo="Por año"
+        filtrados={filtrados}
+        filtroTipo={filtroTipo}
+        metrica={metrica}
+        formatter={formatter}
+        height={220}
+        calcular={(regs, m) => agregarPor('anio', regs, m).sort((x, y) => String(x.label).localeCompare(String(y.label)))}
       />
 
       <SeccionGraficaTipo
@@ -3250,9 +3252,6 @@ function descargarDashboardHTML(datosCompletos, filtrosIniciales) {
     <span class="sw" style="background:var(--amber)"></span> Pendiente
   </div>
 
-  <div class="titulo-grafica">EPO vs. IPE</div>
-  <div class="chart-wrap" id="chartTipo"></div>
-
   <div class="titulo-grafica">Por estado (abierto / parcial / cerrado) — EPO vs. IPE</div>
   <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Esta gráfica siempre muestra los 3 estados, sin importar lo que elijas en el filtro "Estado" de arriba</div>
   <div class="chart-wrap" id="chartTipoEstado"></div>
@@ -3265,6 +3264,9 @@ function descargarDashboardHTML(datosCompletos, filtrosIniciales) {
 
   <div class="titulo-grafica">Antigüedad de la cartera pendiente</div>
   <div id="secAntiguedad"></div>
+
+  <div class="titulo-grafica">Por año</div>
+  <div id="secAnio"></div>
 
   <div class="titulo-grafica">Por año-mes</div>
   <div id="secMes"></div>
@@ -3423,17 +3425,18 @@ function render() {
     ['% pagado', pct + '%', 'color:var(--blue)'],
   ].map(([l,v,style]) => '<div class="kpi"><div class="l">'+l+'</div><div class="v" style="'+style+'">'+v+'</div></div>').join('');
 
-  const porTipo    = agregarPor('tipoLabel', filtrados);
   const porTipoEstado = agregarPorTipoYEstado(filtrarDatosSinEstado());
 
-  document.getElementById('chartTipo').innerHTML       = svgBarChart(porTipo, 200);
   document.getElementById('chartTipoEstado').innerHTML = svgBarChart(porTipoEstado, 220);
 
   const fTipo = document.getElementById('fTipo').value;
   function pintarSeccionTipo(containerId, calcularFn, height) {
     const el = document.getElementById(containerId);
-    if (fTipo !== 'todos') {
-      el.innerHTML = svgBarChart(calcularFn(filtrados), height);
+    const mostrarEpo = fTipo !== 'ingreso';
+    const mostrarIpe = fTipo !== 'egreso';
+    if (!mostrarEpo || !mostrarIpe) {
+      const data = calcularFn(filtrados);
+      el.innerHTML = svgBarChart(data, height);
       return;
     }
     const epo = calcularFn(filtrados.filter(r => r.tipo === 'egreso'));
@@ -3448,6 +3451,7 @@ function render() {
   pintarSeccionTipo('secTercero', regs => agregarPor('clinica', regs).slice(0, 15), 240);
   pintarSeccionTipo('secBodega', regs => agregarPor('bodega', regs), 240);
   pintarSeccionTipo('secAntiguedad', regs => agregarAntiguedad(regs), 200);
+  pintarSeccionTipo('secAnio', regs => agregarPor('anio', regs).sort((x,y) => String(x.label).localeCompare(String(y.label))), 220);
   pintarSeccionTipo('secMes', regs => agregarPor('mes', regs).sort((x,y) => String(x.label).localeCompare(String(y.label))), 240);
 }
 
@@ -3509,17 +3513,3 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
