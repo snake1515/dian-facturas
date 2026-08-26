@@ -2522,6 +2522,10 @@ function BarraTresEstados({ label, valores, max, modo }) {
 
 function PanelDashboard({ titulo, filas, modo }) {
   const max = Math.max(1, ...filas.map(f => f.abierto + f.parcial + f.cerrado));
+  const cardStyle = {
+    background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10,
+    padding: '14px 16px',
+  };
   return (
     <div style={{ ...cardStyle, cursor: 'default' }}>
       <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>{titulo}</div>
@@ -3276,6 +3280,11 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
+
+
+
+
 
 
 
