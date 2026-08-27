@@ -2797,17 +2797,19 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, clinicas }) {
   // ── Devoluciones del tipo correspondiente ─────────────────────────
   // IDP = devoluciones de lo que prestamos (egreso → IDP)
   // ED  = devoluciones de lo que nos prestaron (ingreso → ED)
-  const tipoDevLabel = tipoDoc === 'egreso' ? 'IDP' : 'ED';
+  // Ojo: los documentos IDP/ED NO viven en la tabla vieja "devoluciones" (esa
+  // corresponde al flujo directo antiguo); son filas de `prestamos` con
+  // tipo 'devolucion_ingreso' / 'devolucion_egreso', igual que las usa TabCruces.
+  const tipoDevLabel   = tipoDoc === 'egreso' ? 'IDP' : 'ED';
+  const tipoDevolucion = tipoDoc === 'egreso' ? 'devolucion_ingreso' : 'devolucion_egreso';
   const devsFiltradas = useMemo(() => {
-    // prestamo_tipo viene del JOIN en el backend (tipo del préstamo padre)
-    // Si es 'egreso' (EPO) → devoluciones IDP; si es 'ingreso' (IPE) → devoluciones ED
-    return (devoluciones || []).filter(d => {
-      const matchTipo    = (d.prestamo_tipo || d.tipo) === tipoDoc;
+    return (prestamos || []).filter(d => {
+      const matchTipo    = d.tipo === tipoDevolucion;
       const matchClinica = filtroClinica === 'todas' || d.clinica_nombre === filtroClinica;
       const matchAnio    = filtroAnio   === 'todos'  || String(new Date(d.fecha).getFullYear()) === filtroAnio;
       return matchTipo && matchClinica && matchAnio;
     });
-  }, [devoluciones, tipoDoc, filtroClinica, filtroAnio]);
+  }, [prestamos, tipoDevolucion, filtroClinica, filtroAnio]);
 
   function valorDoc(doc) {
     const items = doc.items || [];
@@ -2877,9 +2879,8 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, clinicas }) {
       if (!mapa[k]) mapa[k] = { label: k, prestado: 0, devuelto: 0 };
       mapa[k].prestado += valorPrestamoDoc(p, modo);
     });
-    // Valor total devuelto por clínica
-    const prefijo = tipoDoc === 'egreso' ? 'IDP' : 'ED';
-    (devoluciones || []).filter(d => (d.documento_contable || '').toUpperCase().startsWith(prefijo)).forEach(d => {
+    // Valor total devuelto por clínica (documentos IDP/ED, que son filas de `prestamos`)
+    (prestamos || []).filter(d => d.tipo === tipoDevolucion).forEach(d => {
       const k = d.clinica_nombre || 'Sin clínica';
       if (!mapa[k]) mapa[k] = { label: k, prestado: 0, devuelto: 0 };
       mapa[k].devuelto += valorDoc(d);
@@ -2887,7 +2888,7 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, clinicas }) {
     return Object.values(mapa)
       .filter(e => e.prestado > 0)
       .sort((a, b) => b.prestado - a.prestado);
-  }, [porTipo, devoluciones, tipoDoc, modo]);
+  }, [porTipo, prestamos, tipoDevolucion, modo]);
 
   // ── Tendencia mensual préstamos vs devoluciones ───────────────────
   const tendenciaMensual = useMemo(() => {
@@ -3648,3 +3649,4 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
