@@ -248,6 +248,7 @@ export default function Prestamos() {
     { id: 'cruces',      label: 'Cruces' },
     { id: 'productos',   label: 'Productos' },
     { id: 'reportes',    label: 'Reportes' },
+    { id: 'dashboard',   label: 'Dashboard' },
   ];
 
   return (
@@ -283,6 +284,11 @@ export default function Prestamos() {
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
+          {activeTab === 'dashboard'   && (
+            <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+              <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />
+            </div>
+          )}
         </>
       )}
     </div>
@@ -2703,10 +2709,6 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
       {verPorPrestamo && (
         <ModalReportePorPrestamo prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerPorPrestamo(false)} />
       )}
-
-      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--t-border)' }}>
-        <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />
-      </div>
     </div>
   );
 }
@@ -3656,5 +3658,6 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
 
