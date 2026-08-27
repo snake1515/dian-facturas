@@ -2705,7 +2705,7 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
       )}
 
       <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--t-border)' }}>
-        <DashboardPrestamosInteractivo prestamos={prestamos} clinicas={clinicas} />
+        <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} />
       </div>
     </div>
   );
@@ -2766,13 +2766,16 @@ function PanelDashboard({ titulo, filas, modo }) {
   );
 }
 
-function DashboardPrestamosInteractivo({ prestamos, clinicas }) {
-  const [tipoDoc, setTipoDoc] = useState('egreso'); // 'egreso' = EPO (damos) | 'ingreso' = IPE (nos dan)
-  const [filtroClinica, setFiltroClinica] = useState('todas');
-  const [filtroAnio, setFiltroAnio] = useState('todos');
+function DashboardPrestamosInteractivo({ prestamos, devoluciones, clinicas }) {
+  const [tipoDoc,      setTipoDoc]      = useState('egreso');
+  const [filtroClinica,setFiltroClinica]= useState('todas');
+  const [filtroAnio,   setFiltroAnio]   = useState('todos');
   const [filtroEstado, setFiltroEstado] = useState('todos');
-  const [modo, setModo] = useState('valor'); // 'valor' | 'cantidad'
+  const [modo,         setModo]         = useState('valor');
+  // seccion activa: 'prestamos' | 'devoluciones' | 'eficiencia' | 'tendencia' | 'antiguedad' | 'productos'
+  const [seccion, setSeccion] = useState('prestamos');
 
+  // ── Datos de préstamos filtrados ──────────────────────────────────
   const porTipo = useMemo(() => (prestamos || []).filter(p => p.tipo === tipoDoc), [prestamos, tipoDoc]);
 
   const anios = useMemo(() => {
@@ -2787,86 +2790,214 @@ function DashboardPrestamosInteractivo({ prestamos, clinicas }) {
 
   const filtrados = useMemo(() => porTipo.filter(p =>
     (filtroClinica === 'todas' || p.clinica_nombre === filtroClinica) &&
-    (filtroAnio === 'todos' || String(new Date(p.fecha).getFullYear()) === filtroAnio) &&
+    (filtroAnio   === 'todos' || String(new Date(p.fecha).getFullYear()) === filtroAnio) &&
     (filtroEstado === 'todos' || p.estado === filtroEstado)
   ), [porTipo, filtroClinica, filtroAnio, filtroEstado]);
 
-  function agrupar(claveFn) {
+  // ── Devoluciones del tipo correspondiente ─────────────────────────
+  // IDP = devoluciones de lo que prestamos (egreso → IDP)
+  // ED  = devoluciones de lo que nos prestaron (ingreso → ED)
+  const tipoDevLabel = tipoDoc === 'egreso' ? 'IDP' : 'ED';
+  const devsFiltradas = useMemo(() => {
+    const prefijo = tipoDoc === 'egreso' ? 'IDP' : 'ED';
+    return (devoluciones || []).filter(d => {
+      const doc = (d.documento_contable || '').toUpperCase();
+      const matchTipo = doc.startsWith(prefijo);
+      const matchClinica = filtroClinica === 'todas' || d.clinica_nombre === filtroClinica;
+      const matchAnio = filtroAnio === 'todos' || String(new Date(d.fecha).getFullYear()) === filtroAnio;
+      return matchTipo && matchClinica && matchAnio;
+    });
+  }, [devoluciones, tipoDoc, filtroClinica, filtroAnio]);
+
+  function valorDoc(doc) {
+    const items = doc.items || [];
+    if (modo === 'cantidad') return items.reduce((s, i) => s + Number(i.cantidad || 0), 0);
+    return items.reduce((s, i) => s + Number(i.cantidad || 0) * Number(i.precio_unitario || 0), 0);
+  }
+
+  function agrupar(lista, claveFn, valorFn) {
     const mapa = {};
-    filtrados.forEach(p => {
+    lista.forEach(p => {
       const key = claveFn(p);
       if (!key) return;
       if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
-      const v = valorPrestamoDoc(p, modo);
-      mapa[key][p.estado] = (mapa[key][p.estado] || 0) + v;
+      const v = (valorFn || valorDoc)(p);
+      mapa[key][p.estado || 'cerrado'] = (mapa[key][p.estado || 'cerrado'] || 0) + v;
     });
     return Object.values(mapa).sort((a, b) => (b.abierto + b.parcial + b.cerrado) - (a.abierto + a.parcial + a.cerrado));
   }
 
-  const porTercero = useMemo(() => agrupar(p => p.clinica_nombre || 'Sin clínica'), [filtrados, modo]);
-  const porAnio = useMemo(() => {
-    const filas = agrupar(p => String(new Date(p.fecha).getFullYear()));
-    return filas.sort((a, b) => a.label.localeCompare(b.label));
-  }, [filtrados, modo]);
-  const porMes = useMemo(() => {
-    const filas = agrupar(p => {
+  // ── Préstamos: agrupaciones ───────────────────────────────────────
+  const porTercero = useMemo(() => agrupar(filtrados, p => p.clinica_nombre || 'Sin clínica'), [filtrados, modo]);
+  const porAnio    = useMemo(() => agrupar(filtrados, p => String(new Date(p.fecha).getFullYear())).sort((a,b) => a.label.localeCompare(b.label)), [filtrados, modo]);
+  const porMes     = useMemo(() => {
+    const filas = agrupar(filtrados, p => {
       const d = new Date(p.fecha);
       return filtroAnio === 'todos' ? MESES_NOMBRES[d.getMonth()] : `${MESES_NOMBRES[d.getMonth()]} ${d.getFullYear()}`;
     });
-    // orden cronológico por mes cuando no hay filtro de año fijo, si no por aparición
-    const ordenMes = (l) => MESES_NOMBRES.findIndex(m => l.startsWith(m));
-    return filas.sort((a, b) => ordenMes(a.label) - ordenMes(b.label));
+    return filas.sort((a, b) => MESES_NOMBRES.findIndex(m => a.label.startsWith(m)) - MESES_NOMBRES.findIndex(m => b.label.startsWith(m)));
   }, [filtrados, modo, filtroAnio]);
-  const porBodega = useMemo(() => agrupar(p => p.bodega_nombre || p.bodega_codigo || 'Sin bodega'), [filtrados, modo]);
+  const porBodega  = useMemo(() => agrupar(filtrados, p => p.bodega_nombre || p.bodega_codigo || 'Sin bodega'), [filtrados, modo]);
 
   const totales = useMemo(() => {
     const t = { abierto: 0, parcial: 0, cerrado: 0 };
-    filtrados.forEach(p => { t[p.estado] = (t[p.estado] || 0) + valorPrestamoDoc(p, modo); });
+    filtrados.forEach(p => { t[p.estado] = (t[p.estado] || 0) + valorDoc(p); });
     return t;
   }, [filtrados, modo]);
   const totalGeneral = totales.abierto + totales.parcial + totales.cerrado;
 
+  // ── Devoluciones: agrupaciones ────────────────────────────────────
+  const devsPorClinica = useMemo(() => {
+    const mapa = {};
+    devsFiltradas.forEach(d => {
+      const key = d.clinica_nombre || 'Sin clínica';
+      if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
+      const v = valorDoc(d);
+      mapa[key]['cerrado'] = (mapa[key]['cerrado'] || 0) + v; // devoluciones son siempre cerradas
+    });
+    return Object.values(mapa).sort((a, b) => b.cerrado - a.cerrado);
+  }, [devsFiltradas, modo]);
+
+  const devsPorAnio = useMemo(() => {
+    const mapa = {};
+    devsFiltradas.forEach(d => {
+      const key = String(new Date(d.fecha).getFullYear());
+      if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
+      mapa[key]['cerrado'] = (mapa[key]['cerrado'] || 0) + valorDoc(d);
+    });
+    return Object.values(mapa).sort((a, b) => a.label.localeCompare(b.label));
+  }, [devsFiltradas, modo]);
+
+  // ── Eficiencia por clínica ────────────────────────────────────────
+  const eficienciaPorClinica = useMemo(() => {
+    const mapa = {};
+    // Valor total prestado por clínica
+    porTipo.forEach(p => {
+      const k = p.clinica_nombre || 'Sin clínica';
+      if (!mapa[k]) mapa[k] = { label: k, prestado: 0, devuelto: 0 };
+      mapa[k].prestado += valorPrestamoDoc(p, modo);
+    });
+    // Valor total devuelto por clínica
+    const prefijo = tipoDoc === 'egreso' ? 'IDP' : 'ED';
+    (devoluciones || []).filter(d => (d.documento_contable || '').toUpperCase().startsWith(prefijo)).forEach(d => {
+      const k = d.clinica_nombre || 'Sin clínica';
+      if (!mapa[k]) mapa[k] = { label: k, prestado: 0, devuelto: 0 };
+      mapa[k].devuelto += valorDoc(d);
+    });
+    return Object.values(mapa)
+      .filter(e => e.prestado > 0)
+      .sort((a, b) => b.prestado - a.prestado);
+  }, [porTipo, devoluciones, tipoDoc, modo]);
+
+  // ── Tendencia mensual préstamos vs devoluciones ───────────────────
+  const tendenciaMensual = useMemo(() => {
+    const mapa = {};
+    const addMes = (fecha, tipo, v) => {
+      const d = new Date(fecha);
+      if (isNaN(d)) return;
+      const k = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      if (!mapa[k]) mapa[k] = { label: k, prestamos: 0, devoluciones: 0 };
+      mapa[k][tipo] += v;
+    };
+    filtrados.forEach(p => addMes(p.fecha, 'prestamos', valorDoc(p)));
+    devsFiltradas.forEach(d => addMes(d.fecha, 'devoluciones', valorDoc(d)));
+    return Object.values(mapa).sort((a, b) => a.label.localeCompare(b.label));
+  }, [filtrados, devsFiltradas, modo]);
+
+  // ── Antigüedad de documentos abiertos ────────────────────────────
+  const rangoAntiguedad = useMemo(() => {
+    const hoy = new Date();
+    const rangos = { '0-30 días': 0, '31-60 días': 0, '61-90 días': 0, '+90 días': 0 };
+    filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
+      const dias = Math.floor((hoy - new Date(p.fecha)) / 86400000);
+      const v = valorDoc(p);
+      if      (dias <= 30) rangos['0-30 días']  += v;
+      else if (dias <= 60) rangos['31-60 días'] += v;
+      else if (dias <= 90) rangos['61-90 días'] += v;
+      else                 rangos['+90 días']   += v;
+    });
+    return Object.entries(rangos).map(([label, cerrado]) => ({ label, abierto: 0, parcial: 0, cerrado }));
+  }, [filtrados, modo]);
+
+  // ── Semáforo de antigüedad por clínica ───────────────────────────
+  const semaforoPorClinica = useMemo(() => {
+    const hoy = new Date();
+    const mapa = {};
+    filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
+      const k = p.clinica_nombre || 'Sin clínica';
+      const dias = Math.floor((hoy - new Date(p.fecha)) / 86400000);
+      if (!mapa[k]) mapa[k] = { label: k, max: 0, count: 0, valor: 0 };
+      if (dias > mapa[k].max) mapa[k].max = dias;
+      mapa[k].count++;
+      mapa[k].valor += valorDoc(p);
+    });
+    return Object.values(mapa).sort((a, b) => b.max - a.max).map(e => ({
+      ...e,
+      color: e.max > 90 ? '#ef4444' : e.max > 30 ? '#f59e0b' : '#22c55e',
+    }));
+  }, [filtrados, modo]);
+
+  // ── Top productos pendientes ──────────────────────────────────────
+  const topProductosPendientes = useMemo(() => {
+    const mapa = {};
+    filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
+      (p.items || []).forEach(i => {
+        const k = i.codigo || i.nombre;
+        if (!mapa[k]) mapa[k] = { codigo: i.codigo, nombre: i.nombre, cantidad: 0, valor: 0 };
+        mapa[k].cantidad += Number(i.cantidad || 0);
+        mapa[k].valor    += Number(i.cantidad || 0) * Number(i.precio_unitario || 0);
+      });
+    });
+    return Object.values(mapa).sort((a, b) => b.valor - a.valor).slice(0, 15);
+  }, [filtrados]);
+
+  // ── Descargar HTML ────────────────────────────────────────────────
   function descargarHTML() {
     const datos = filtrados.map(p => ({
       documento: p.documento_contable,
-      clinica: p.clinica_nombre || 'Sin clínica',
-      bodega: p.bodega_nombre || p.bodega_codigo || 'Sin bodega',
-      estado: p.estado,
-      fecha: p.fecha,
-      valor: valorPrestamoDoc(p, 'valor'),
-      cantidad: valorPrestamoDoc(p, 'cantidad'),
+      clinica:   p.clinica_nombre || 'Sin clínica',
+      bodega:    p.bodega_nombre  || p.bodega_codigo || 'Sin bodega',
+      estado:    p.estado,
+      fecha:     p.fecha,
+      valor:     valorPrestamoDoc(p, 'valor'),
+      cantidad:  valorPrestamoDoc(p, 'cantidad'),
+    }));
+    const devDatos = devsFiltradas.map(d => ({
+      documento: d.documento_contable,
+      clinica:   d.clinica_nombre || 'Sin clínica',
+      fecha:     d.fecha,
+      valor:     (d.items || []).reduce((s, i) => s + Number(i.cantidad||0)*Number(i.precio_unitario||0), 0),
+      cantidad:  (d.items || []).reduce((s, i) => s + Number(i.cantidad||0), 0),
     }));
     const tipoLabel = tipoDoc === 'egreso' ? 'EPO (préstamos que hacemos)' : 'IPE (préstamos que nos hacen)';
-    const html = generarHTMLDashboardPrestamos(datos, tipoLabel);
+    const html = generarHTMLDashboardPrestamos(datos, devDatos, tipoLabel, tipoDevLabel, eficienciaPorClinica, tendenciaMensual, topProductosPendientes, modo);
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
     a.href = url;
-    a.download = `dashboard_prestamos_${tipoDoc === 'egreso' ? 'EPO' : 'IPE'}_${new Date().toISOString().slice(0, 10)}.html`;
+    a.download = `dashboard_prestamos_${tipoDoc === 'egreso' ? 'EPO' : 'IPE'}_${new Date().toISOString().slice(0,10)}.html`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
   const selectStyle = { padding: '6px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-card)', color: 'var(--t-text-primary)', fontSize: 12 };
+  const btnSecStyle = (s) => ({ ...selectStyle, cursor: 'pointer', fontWeight: seccion === s ? 700 : 400, background: seccion === s ? 'var(--t-accent)' : 'var(--t-bg-card)', color: seccion === s ? '#fff' : 'var(--t-text-primary)' });
 
   return (
     <div>
+      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
         <div style={{ fontWeight: 600, fontSize: 15 }}>📊 Dashboard interactivo de préstamos</div>
         <button onClick={descargarHTML} style={{ ...selectStyle, cursor: 'pointer', fontWeight: 500 }}>⬇ Descargar HTML</button>
       </div>
 
+      {/* Selector tipo doc */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <button onClick={() => { setTipoDoc('egreso'); setFiltroClinica('todas'); }}
-          style={{ ...selectStyle, cursor: 'pointer', fontWeight: tipoDoc === 'egreso' ? 700 : 400, background: tipoDoc === 'egreso' ? 'var(--t-accent)' : 'var(--t-bg-card)' }}>
-          EPO — préstamos que hacemos
-        </button>
-        <button onClick={() => { setTipoDoc('ingreso'); setFiltroClinica('todas'); }}
-          style={{ ...selectStyle, cursor: 'pointer', fontWeight: tipoDoc === 'ingreso' ? 700 : 400, background: tipoDoc === 'ingreso' ? 'var(--t-accent)' : 'var(--t-bg-card)' }}>
-          IPE — préstamos que nos hacen
-        </button>
+        <button onClick={() => { setTipoDoc('egreso');  setFiltroClinica('todas'); }} style={{ ...selectStyle, cursor: 'pointer', fontWeight: tipoDoc === 'egreso'  ? 700 : 400, background: tipoDoc === 'egreso'  ? 'var(--t-accent)' : 'var(--t-bg-card)', color: tipoDoc === 'egreso'  ? '#fff' : 'var(--t-text-primary)' }}>EPO — préstamos que hacemos</button>
+        <button onClick={() => { setTipoDoc('ingreso'); setFiltroClinica('todas'); }} style={{ ...selectStyle, cursor: 'pointer', fontWeight: tipoDoc === 'ingreso' ? 700 : 400, background: tipoDoc === 'ingreso' ? 'var(--t-accent)' : 'var(--t-bg-card)', color: tipoDoc === 'ingreso' ? '#fff' : 'var(--t-text-primary)' }}>IPE — préstamos que nos hacen</button>
       </div>
 
+      {/* Filtros */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
         <select value={filtroClinica} onChange={e => setFiltroClinica(e.target.value)} style={selectStyle}>
           <option value="todas">Todas las clínicas</option>
@@ -2883,175 +3014,183 @@ function DashboardPrestamosInteractivo({ prestamos, clinicas }) {
           <option value="cerrado">Cerrado / Total</option>
         </select>
         <div style={{ display: 'flex', gap: 4 }}>
-          <button onClick={() => setModo('valor')} style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'valor' ? 700 : 400 }}>$ Valor</button>
+          <button onClick={() => setModo('valor')}    style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'valor'    ? 700 : 400 }}>$ Valor</button>
           <button onClick={() => setModo('cantidad')} style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'cantidad' ? 700 : 400 }}>Cantidad</button>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 16, marginBottom: 18, flexWrap: 'wrap' }}>
-        {(['abierto', 'parcial', 'cerrado']).map(k => (
-          <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: ESTADO_COLORES[k], display: 'inline-block' }} />
-            <span>{ESTADO_LABELS[k]}: <strong>{formatearValorDash(totales[k] || 0, modo)}</strong></span>
+      {/* Totales resumen */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginBottom: 18 }}>
+        {(['abierto','parcial','cerrado']).map(k => (
+          <div key={k} style={{ background: 'var(--t-bg-card)', border: `1px solid ${ESTADO_COLORES[k]}44`, borderRadius: 8, padding: '10px 12px' }}>
+            <div style={{ fontSize: 11, color: ESTADO_COLORES[k], fontWeight: 600, marginBottom: 4 }}>{ESTADO_LABELS[k]}</div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{formatearValorDash(totales[k] || 0, modo)}</div>
           </div>
         ))}
-        <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-          Total: <strong>{formatearValorDash(totalGeneral, modo)}</strong> · {filtrados.length} documento(s)
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 12px' }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', fontWeight: 600, marginBottom: 4 }}>Total {tipoDevLabel} devuelto</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#22c55e' }}>
+            {formatearValorDash(devsFiltradas.reduce((s, d) => s + valorDoc(d), 0), modo)}
+          </div>
+        </div>
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 12px' }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', fontWeight: 600, marginBottom: 4 }}>Documentos</div>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{filtrados.length} / {devsFiltradas.length} {tipoDevLabel}</div>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
-        <PanelDashboard titulo="Por tercero (clínica)" filas={porTercero} modo={modo} />
-        <PanelDashboard titulo="Por bodega" filas={porBodega} modo={modo} />
-        <PanelDashboard titulo="Por año" filas={porAnio} modo={modo} />
-        <PanelDashboard titulo="Por mes" filas={porMes} modo={modo} />
+      {/* Navegación de secciones */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16, borderBottom: '1px solid var(--t-border)', paddingBottom: 10 }}>
+        <button onClick={() => setSeccion('prestamos')}   style={btnSecStyle('prestamos')}>📋 Préstamos</button>
+        <button onClick={() => setSeccion('devoluciones')} style={btnSecStyle('devoluciones')}>↩ Devoluciones ({tipoDevLabel})</button>
+        <button onClick={() => setSeccion('eficiencia')}  style={btnSecStyle('eficiencia')}>📈 Eficiencia por clínica</button>
+        <button onClick={() => setSeccion('tendencia')}   style={btnSecStyle('tendencia')}>📉 Tendencia mensual</button>
+        <button onClick={() => setSeccion('antiguedad')}  style={btnSecStyle('antiguedad')}>⏰ Antigüedad</button>
+        <button onClick={() => setSeccion('productos')}   style={btnSecStyle('productos')}>💊 Top productos pendientes</button>
       </div>
+
+      {/* ── SECCIÓN: PRÉSTAMOS ── */}
+      {seccion === 'prestamos' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+          <PanelDashboard titulo="Por tercero (clínica)" filas={porTercero} modo={modo} />
+          <PanelDashboard titulo="Por bodega"            filas={porBodega}  modo={modo} />
+          <PanelDashboard titulo="Por año"               filas={porAnio}    modo={modo} />
+          <PanelDashboard titulo="Por mes"               filas={porMes}     modo={modo} />
+        </div>
+      )}
+
+      {/* ── SECCIÓN: DEVOLUCIONES ── */}
+      {seccion === 'devoluciones' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+          <PanelDashboard titulo={`${tipoDevLabel} por clínica`} filas={devsPorClinica} modo={modo} />
+          <PanelDashboard titulo={`${tipoDevLabel} por año`}     filas={devsPorAnio}    modo={modo} />
+        </div>
+      )}
+
+      {/* ── SECCIÓN: EFICIENCIA ── */}
+      {seccion === 'eficiencia' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Eficiencia de devolución por clínica</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 14 }}>
+            Verde = devolvió {'>'} 80% · Amarillo = 40-80% · Rojo = {'<'} 40%
+          </div>
+          {eficienciaPorClinica.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin datos.</div>}
+          {eficienciaPorClinica.map(e => {
+            const pct = e.prestado > 0 ? Math.min(100, (e.devuelto / e.prestado) * 100) : 0;
+            const color = pct >= 80 ? '#22c55e' : pct >= 40 ? '#f59e0b' : '#ef4444';
+            return (
+              <div key={e.label} style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 500 }}>{e.label}</span>
+                  <span style={{ color: 'var(--t-text-muted)' }}>
+                    {Math.round(pct)}% devuelto · Prestado: {formatearValorDash(e.prestado, modo)} · Devuelto: {formatearValorDash(e.devuelto, modo)}
+                  </span>
+                </div>
+                <div style={{ height: 14, borderRadius: 4, background: 'rgba(128,128,128,0.15)', overflow: 'hidden' }}>
+                  <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4 }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── SECCIÓN: TENDENCIA ── */}
+      {seccion === 'tendencia' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Tendencia mensual — préstamos vs devoluciones</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 14 }}>
+            🔴 Préstamos &nbsp; 🟢 Devoluciones ({tipoDevLabel})
+          </div>
+          {tendenciaMensual.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin datos.</div>}
+          {tendenciaMensual.map(m => {
+            const maxVal = Math.max(1, ...tendenciaMensual.map(x => Math.max(x.prestamos, x.devoluciones)));
+            return (
+              <div key={m.label} style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>{m.label}</div>
+                <div style={{ marginBottom: 3 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 2 }}>
+                    <span>Préstamos</span><span>{formatearValorDash(m.prestamos, modo)}</span>
+                  </div>
+                  <div style={{ height: 10, borderRadius: 3, background: 'rgba(128,128,128,0.15)', overflow: 'hidden' }}>
+                    <div style={{ width: `${(m.prestamos/maxVal)*100}%`, height: '100%', background: '#ef4444', borderRadius: 3 }} />
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 2 }}>
+                    <span>Devoluciones ({tipoDevLabel})</span><span>{formatearValorDash(m.devoluciones, modo)}</span>
+                  </div>
+                  <div style={{ height: 10, borderRadius: 3, background: 'rgba(128,128,128,0.15)', overflow: 'hidden' }}>
+                    <div style={{ width: `${(m.devoluciones/maxVal)*100}%`, height: '100%', background: '#22c55e', borderRadius: 3 }} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── SECCIÓN: ANTIGÜEDAD ── */}
+      {seccion === 'antiguedad' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+          <PanelDashboard titulo="Valor pendiente por antigüedad" filas={rangoAntiguedad} modo={modo} />
+          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px' }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Semáforo por clínica</div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 12 }}>
+              🔴 {'>'} 90 días · 🟡 31-90 días · 🟢 0-30 días (doc. más antiguo abierto)
+            </div>
+            {semaforoPorClinica.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin documentos abiertos.</div>}
+            {semaforoPorClinica.map(e => (
+              <div key={e.label} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 7, border: `1px solid ${e.color}44` }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: e.color, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{e.count} doc. abiertos · más antiguo: {e.max} días · {formatearValorDash(e.valor, modo)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── SECCIÓN: TOP PRODUCTOS ── */}
+      {seccion === 'productos' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Top 15 productos con mayor saldo pendiente</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 14 }}>Solo documentos abiertos y parciales</div>
+          {topProductosPendientes.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin productos pendientes.</div>}
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr>
+                {['#','Código','Nombre','Cantidad','Valor pendiente'].map(h => (
+                  <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--t-border)', color: 'var(--t-text-muted)', fontWeight: 600 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {topProductosPendientes.map((p, i) => {
+                const maxVal = topProductosPendientes[0]?.valor || 1;
+                return (
+                  <tr key={p.codigo || i}>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)', color: 'var(--t-text-muted)' }}>{i+1}</td>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)', fontFamily: 'monospace', fontSize: 11 }}>{p.codigo}</td>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)' }}>
+                      <div>{p.nombre}</div>
+                      <div style={{ height: 6, borderRadius: 3, background: 'rgba(128,128,128,0.15)', marginTop: 3, overflow: 'hidden' }}>
+                        <div style={{ width: `${(p.valor/maxVal)*100}%`, height: '100%', background: '#ef4444', borderRadius: 3 }} />
+                      </div>
+                    </td>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{p.cantidad.toLocaleString('es-CO')}</td>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)', fontWeight: 700, color: '#ef4444' }}>{formatearValorDash(p.valor, 'valor')}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
-}
-
-function generarHTMLDashboardPrestamos(datos, tipoLabel) {
-  const dataJson = JSON.stringify(datos);
-  return `<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<title>Dashboard de préstamos — ${tipoLabel}</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #f8fafc; color: #1e293b; padding: 24px; margin: 0; }
-  h1 { font-size: 20px; margin-bottom: 2px; }
-  .sub { color: #64748b; font-size: 13px; margin-bottom: 18px; }
-  .filtros { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
-  select, button { padding: 6px 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; font-size: 12px; }
-  .leyenda { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; font-size: 12px; }
-  .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 6px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
-  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; }
-  .card h3 { font-size: 13px; margin: 0 0 12px 0; }
-  .fila { margin-bottom: 12px; }
-  .fila-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
-  .barra { display: flex; height: 16px; border-radius: 4px; overflow: hidden; background: rgba(128,128,128,0.15); }
-  .seg { height: 100%; }
-</style>
-</head>
-<body>
-  <h1>📊 Dashboard de préstamos</h1>
-  <div class="sub">${tipoLabel} · generado ${new Date().toLocaleDateString('es-CO')}</div>
-
-  <div class="filtros">
-    <select id="fClinica"><option value="todas">Todas las clínicas</option></select>
-    <select id="fAnio"><option value="todos">Todos los años</option></select>
-    <select id="fEstado">
-      <option value="todos">Todos los estados</option>
-      <option value="abierto">Abierto</option>
-      <option value="parcial">Parcial</option>
-      <option value="cerrado">Cerrado / Total</option>
-    </select>
-    <button id="bValor">$ Valor</button>
-    <button id="bCantidad">Cantidad</button>
-  </div>
-
-  <div class="leyenda" id="leyenda"></div>
-  <div class="grid">
-    <div class="card"><h3>Por tercero (clínica)</h3><div id="pTercero"></div></div>
-    <div class="card"><h3>Por bodega</h3><div id="pBodega"></div></div>
-    <div class="card"><h3>Por año</h3><div id="pAnio"></div></div>
-    <div class="card"><h3>Por mes</h3><div id="pMes"></div></div>
-  </div>
-
-<script>
-const DATOS = ${dataJson};
-const COLORES = { abierto: '#ef4444', parcial: '#f59e0b', cerrado: '#22c55e' };
-const LABELS  = { abierto: 'Abierto', parcial: 'Parcial', cerrado: 'Cerrado / Total' };
-const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-let modo = 'valor';
-
-function fmt(v) {
-  if (modo === 'cantidad') return Math.round(v).toLocaleString('es-CO') + ' u.';
-  return v.toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
-}
-
-function poblarSelects() {
-  const clinicas = [...new Set(DATOS.map(d => d.clinica))].sort();
-  const anios = [...new Set(DATOS.map(d => new Date(d.fecha).getFullYear()))].sort((a,b)=>b-a);
-  const selC = document.getElementById('fClinica');
-  clinicas.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; selC.appendChild(o); });
-  const selA = document.getElementById('fAnio');
-  anios.forEach(a => { const o = document.createElement('option'); o.value = a; o.textContent = a; selA.appendChild(o); });
-}
-
-function filtrar() {
-  const c = document.getElementById('fClinica').value;
-  const a = document.getElementById('fAnio').value;
-  const e = document.getElementById('fEstado').value;
-  return DATOS.filter(d =>
-    (c === 'todas' || d.clinica === c) &&
-    (a === 'todos' || String(new Date(d.fecha).getFullYear()) === a) &&
-    (e === 'todos' || d.estado === e)
-  );
-}
-
-function agrupar(filas, claveFn) {
-  const mapa = {};
-  filas.forEach(d => {
-    const key = claveFn(d);
-    if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
-    mapa[key][d.estado] = (mapa[key][d.estado] || 0) + d[modo];
-  });
-  return Object.values(mapa).sort((x, y) => (y.abierto+y.parcial+y.cerrado) - (x.abierto+x.parcial+x.cerrado));
-}
-
-function renderPanel(elId, filas) {
-  const el = document.getElementById(elId);
-  el.innerHTML = '';
-  const max = Math.max(1, ...filas.map(f => f.abierto + f.parcial + f.cerrado));
-  if (filas.length === 0) { el.innerHTML = '<div style="font-size:12px;color:#94a3b8">Sin datos.</div>'; return; }
-  filas.forEach(f => {
-    const total = f.abierto + f.parcial + f.cerrado;
-    const div = document.createElement('div');
-    div.className = 'fila';
-    let segs = '';
-    ['abierto','parcial','cerrado'].forEach(k => {
-      if (f[k] > 0) {
-        const pct = (f[k] / max) * 100;
-        segs += '<div class="seg" style="width:' + pct + '%;background:' + COLORES[k] + '" title="' + LABELS[k] + ': ' + fmt(f[k]) + '"></div>';
-      }
-    });
-    div.innerHTML = '<div class="fila-head"><span>' + f.label + '</span><span style="color:#64748b">' + fmt(total) + '</span></div><div class="barra">' + segs + '</div>';
-    el.appendChild(div);
-  });
-}
-
-function renderLeyenda(filas) {
-  const t = { abierto: 0, parcial: 0, cerrado: 0 };
-  filas.forEach(d => { t[d.estado] += d[modo]; });
-  const el = document.getElementById('leyenda');
-  el.innerHTML = ['abierto','parcial','cerrado'].map(k =>
-    '<span><span class="dot" style="background:' + COLORES[k] + '"></span>' + LABELS[k] + ': <strong>' + fmt(t[k]) + '</strong></span>'
-  ).join('') + '<span style="color:#64748b">Total: <strong>' + fmt(t.abierto+t.parcial+t.cerrado) + '</strong> · ' + filas.length + ' documento(s)</span>';
-}
-
-function actualizar() {
-  const filas = filtrar();
-  renderLeyenda(filas);
-  renderPanel('pTercero', agrupar(filas, d => d.clinica));
-  renderPanel('pBodega', agrupar(filas, d => d.bodega));
-  renderPanel('pAnio', agrupar(filas, d => String(new Date(d.fecha).getFullYear())).sort((a,b)=>a.label.localeCompare(b.label)));
-  renderPanel('pMes', agrupar(filas, d => MESES[new Date(d.fecha).getMonth()]).sort((a,b)=> MESES.indexOf(a.label)-MESES.indexOf(b.label)));
-}
-
-document.getElementById('fClinica').addEventListener('change', actualizar);
-document.getElementById('fAnio').addEventListener('change', actualizar);
-document.getElementById('fEstado').addEventListener('change', actualizar);
-document.getElementById('bValor').addEventListener('click', () => { modo = 'valor'; actualizar(); });
-document.getElementById('bCantidad').addEventListener('click', () => { modo = 'cantidad'; actualizar(); });
-
-poblarSelects();
-actualizar();
-</script>
-</body>
-</html>`;
 }
 
 // ─── Reporte préstamo por préstamo (devoluciones cruzadas, pagos y pendientes) ──
@@ -3509,21 +3648,3 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
