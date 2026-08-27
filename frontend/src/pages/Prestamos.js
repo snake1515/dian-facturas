@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import * as XLSX from 'xlsx';
 
@@ -85,11 +85,11 @@ const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 async function apiFetch(path, options = {}) {
   const token = localStorage.getItem('token');
   const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
     headers: {
       'Authorization': `Bearer ${token}`,
       ...options.headers,
     },
-    ...options,
   });
   if (!res.ok) {
     const err = await res.text();
@@ -248,6 +248,7 @@ export default function Prestamos() {
     { id: 'cruces',      label: 'Cruces' },
     { id: 'productos',   label: 'Productos' },
     { id: 'reportes',    label: 'Reportes' },
+    { id: 'dashboard',   label: 'Dashboard' },
   ];
 
   return (
@@ -278,11 +279,16 @@ export default function Prestamos() {
       ) : (
         <>
           {activeTab === 'resumen'     && <TabResumen prestamos={prestamos} devoluciones={devoluciones} onRefresh={cargarDatos} />}
-          {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} cruces={cruces} onRefresh={cargarDatos} />}
+          {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} productos={productos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
+          {activeTab === 'dashboard'   && (
+            <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+              <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />
+            </div>
+          )}
         </>
       )}
     </div>
@@ -430,7 +436,9 @@ function TabResumen({ prestamos, devoluciones, onRefresh }) {
 
 // ─── TAB MOVIMIENTOS ────────────────────────────────────────────────────────────
 
-function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefresh }) {
+function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cruces = [], onRefresh }) {
+  const { isAdmin } = useAuth();
+
   function saldoPend(p) {
     const totalPrestado = (p.items || []).reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
     const totalDevuelto = devoluciones
@@ -550,6 +558,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
   const [detalle,     setDetalle]     = useState(null);
   const [devModal,    setDevModal]    = useState(null);
   const [crucesModal, setCrucesModal] = useState(null); // array de cruces del documento clickeado
+  const [editModal,   setEditModal]   = useState(null); // movimiento en edición (solo admin)
 
   const MESES = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -734,6 +743,13 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
                         ↩ Devolución
                       </button>
                     )}
+                    {isAdmin && (
+                      <button onClick={e => { e.stopPropagation(); setEditModal(p); }}
+                        title='Editar movimiento (solo admin)'
+                        style={{ marginLeft: 6, padding: '4px 10px', fontSize: 12, border: '1px solid var(--t-border)', borderRadius: 6, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                        ✏️ Editar
+                      </button>
+                    )}
                     {devs.length > 0 && (
                       <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--t-text-muted)' }}>{devs.length} dev.</span>
                     )}
@@ -824,6 +840,18 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, cruces = [], onRefr
             prestamo={devModal}
             devoluciones={devoluciones.filter(d => d.prestamo_id === devModal.id)}
             onSaved={() => { setDevModal(null); onRefresh(); }}
+          />
+        </Modal>
+      )}
+
+      {editModal && (
+        <Modal onClose={() => setEditModal(null)} titulo={`Editar movimiento — ${editModal.documento_contable}`}>
+          <FormEditarMovimiento
+            movimiento={editModal}
+            clinicas={clinicas}
+            productos={productos}
+            onSaved={() => { setEditModal(null); onRefresh(); }}
+            onCancel={() => setEditModal(null)}
           />
         </Modal>
       )}
@@ -1041,6 +1069,213 @@ function FormDevolucion({ prestamo, devoluciones, onSaved }) {
   );
 }
 
+// ─── EDITAR MOVIMIENTO (solo admin) ─────────────────────────────────────────────
+// Permite modificar todos los campos de un movimiento ya registrado: tipo,
+// clínica, bodega, fecha, documento contable, observaciones, y los productos
+// (agregar, quitar, cambiar cantidad/precio). El backend valida que solo un
+// usuario con rol admin pueda invocar este PATCH.
+
+const TIPOS_MOVIMIENTO = [
+  { value: 'ingreso',            label: 'Ingreso (IPE) — recibimos préstamo' },
+  { value: 'egreso',             label: 'Egreso (EPO) — damos préstamo' },
+  { value: 'devolucion_ingreso', label: 'Devolución de ingreso (IDP)' },
+  { value: 'devolucion_egreso',  label: 'Devolución de egreso (ED)' },
+];
+
+function FormEditarMovimiento({ movimiento, clinicas, productos, onSaved, onCancel }) {
+  const [tipo,          setTipo]          = useState(movimiento.tipo || 'ingreso');
+  const [clinicaId,     setClinicaId]     = useState(movimiento.clinica_id != null ? String(movimiento.clinica_id) : '');
+  const [bodega,        setBodega]        = useState(movimiento.bodega_codigo || '');
+  const [fecha,         setFecha]         = useState(movimiento.fecha ? String(movimiento.fecha).substring(0, 10) : '');
+  const [docContable,   setDocContable]   = useState(movimiento.documento_contable || '');
+  const [observaciones, setObs]           = useState(movimiento.observaciones || '');
+  const [items,         setItems]         = useState((movimiento.items || []).map(i => ({ ...i })));
+  const [busqProd,      setBusqProd]      = useState('');
+  const [saving,        setSaving]        = useState(false);
+  const [error,         setError]         = useState('');
+
+  const prodsFiltrados = productos.filter(p => {
+    const q = busqProd.toLowerCase();
+    return !q || p.codigo?.toLowerCase().includes(q) || p.nombre?.toLowerCase().includes(q);
+  }).slice(0, 8);
+
+  function agregarProducto(prod) {
+    if (items.find(i => i.codigo === prod.codigo)) return;
+    const grupo = getCategoriaFromCodigo(prod.codigo);
+    setItems(prev => [...prev, {
+      codigo: prod.codigo, nombre: prod.nombre,
+      cantidad: 1, precio_unitario: prod.precio_unitario,
+      categoria:       grupo?.categoria || prod.categoria || '',
+      cuenta_contable: grupo?.cuenta || '',
+    }]);
+    setBusqProd('');
+  }
+
+  function actualizarItem(codigo, campo, val) {
+    setItems(prev => prev.map(i => i.codigo === codigo
+      ? { ...i, [campo]: campo === 'cantidad' || campo === 'precio_unitario' ? Number(val) : val }
+      : i));
+  }
+
+  function quitarItem(codigo) {
+    setItems(prev => prev.filter(i => i.codigo !== codigo));
+  }
+
+  const total = items.reduce((s, i) => s + Number(i.cantidad || 0) * Number(i.precio_unitario || 0), 0);
+
+  async function guardar() {
+    setError('');
+    if (!fecha)       return setError('La fecha es requerida');
+    if (!docContable) return setError('El documento contable es requerido');
+    if (items.length === 0) return setError('Debe haber al menos un producto');
+
+    setSaving(true);
+    try {
+      const clinica = clinicas.find(c => String(c.id) === String(clinicaId));
+      const bod     = BODEGAS.find(b => b.codigo === bodega);
+
+      await apiFetch(`/prestamos/${movimiento.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tipo,
+          clinica_id:         clinicaId || null,
+          clinica_nombre:     clinica?.nombre || movimiento.clinica_nombre || '',
+          bodega_codigo:      bodega,
+          bodega_nombre:      bod?.nombre || movimiento.bodega_nombre || '',
+          fecha,
+          documento_contable: docContable,
+          observaciones,
+          items,
+        }),
+      });
+      onSaved();
+    } catch (e) {
+      setError('Error guardando: ' + e.message);
+    }
+    setSaving(false);
+  }
+
+  const inputS = { display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', boxSizing: 'border-box' };
+  const labelS = { fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 };
+
+  return (
+    <div style={{ minWidth: 640, maxWidth: 820 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <label style={labelS}>Tipo de movimiento</label>
+          <select value={tipo} onChange={e => setTipo(e.target.value)} style={inputS}>
+            {TIPOS_MOVIMIENTO.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelS}>Clínica</label>
+          <select value={clinicaId} onChange={e => setClinicaId(e.target.value)} style={inputS}>
+            <option value=''>— seleccionar —</option>
+            {clinicas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelS}>Bodega</label>
+          <select value={bodega} onChange={e => setBodega(e.target.value)} style={inputS}>
+            <option value=''>— seleccionar —</option>
+            {BODEGAS.map(b => <option key={b.codigo} value={b.codigo}>{b.nombre} ({b.codigo})</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelS}>Fecha</label>
+          <input type='date' value={fecha} onChange={e => setFecha(e.target.value)} style={inputS} />
+        </div>
+        <div>
+          <label style={labelS}>Documento contable</label>
+          <input value={docContable} onChange={e => setDocContable(e.target.value)} style={inputS} />
+        </div>
+        <div style={{ gridColumn: '2 / -1' }}>
+          <label style={labelS}>Observaciones</label>
+          <input value={observaciones} onChange={e => setObs(e.target.value)} placeholder='Opcional' style={inputS} />
+        </div>
+      </div>
+
+      {/* Buscador de productos para agregar nuevos items */}
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>Productos</div>
+      <div style={{ position: 'relative', marginBottom: 10 }}>
+        <input value={busqProd} onChange={e => setBusqProd(e.target.value)}
+          placeholder='Buscar por código (10 dígitos) o nombre para agregar…'
+          style={{ ...inputS, marginTop: 0 }} />
+        {busqProd && prodsFiltrados.length > 0 && (
+          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, zIndex: 50, maxHeight: 220, overflowY: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,.3)' }}>
+            {prodsFiltrados.map(p => (
+              <div key={p.codigo} onClick={() => agregarProducto(p)}
+                style={{ padding: '9px 12px', cursor: 'pointer', fontSize: 13, borderBottom: '1px solid var(--t-border)', display: 'flex', gap: 10, alignItems: 'center' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--t-bg-inner)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                <span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--t-text-muted)' }}>{p.codigo}</span>
+                <span style={{ flex: 1 }}>{p.nombre}</span>
+                <CatTag categoria={getCategoriaFromCodigo(p.codigo)?.categoria || p.categoria} />
+                <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>{fmt(p.precio_unitario)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Tabla de items — cantidad, precio y nombre editables directamente */}
+      <div style={{ border: '1px solid var(--t-border)', borderRadius: 9, overflow: 'hidden', marginBottom: 10 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead style={{ background: 'var(--t-bg-card)' }}>
+            <tr>{['Código','Categoría','Nombre','Cant.','Precio unit.','Total',''].map(h => (
+              <th key={h} style={{ textAlign: 'left', padding: '8px 10px', fontSize: 11, color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{h}</th>
+            ))}</tr>
+          </thead>
+          <tbody>
+            {items.map(item => (
+              <tr key={item.codigo}>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontFamily: 'monospace', fontSize: 12 }}>{item.codigo}</td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}><CatTag categoria={item.categoria} /></td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                  <input value={item.nombre} onChange={e => actualizarItem(item.codigo, 'nombre', e.target.value)}
+                    style={{ width: '100%', padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                </td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                  <input type='number' min={1} value={item.cantidad} onChange={e => actualizarItem(item.codigo, 'cantidad', e.target.value)}
+                    style={{ width: 65, padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                </td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                  <input type='number' min={0} value={item.precio_unitario} onChange={e => actualizarItem(item.codigo, 'precio_unitario', e.target.value)}
+                    style={{ width: 90, padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                </td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{fmt(item.cantidad * item.precio_unitario)}</td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                  <button onClick={() => quitarItem(item.codigo)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t-text-muted)', fontSize: 16 }}>✕</button>
+                </td>
+              </tr>
+            ))}
+            {items.length === 0 && (
+              <tr><td colSpan={7} style={{ padding: '20px 10px', textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 13 }}>Sin productos — busca arriba para agregar</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ textAlign: 'right', fontSize: 13, marginBottom: 16 }}>
+        Total: <span style={{ fontWeight: 600, fontSize: 15 }}>{fmt(total)}</span>
+      </div>
+
+      {error && <div style={{ color: '#c0392b', fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button onClick={onCancel} style={{ padding: '8px 16px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+          Cancelar
+        </button>
+        <button onClick={guardar} disabled={saving}
+          style={{ padding: '8px 18px', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-accent)', color: '#fff', fontWeight: 500 }}>
+          {saving ? 'Guardando…' : 'Guardar cambios'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── TAB NUEVO PRÉSTAMO ─────────────────────────────────────────────────────────
 
 function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
@@ -1153,7 +1388,13 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
           body: JSON.stringify({ precio_unitario: precioUnit }),
         }).catch(() => {});
       }
-      if (!documentos[docKey].items.find(i => i.codigo === codigo)) {
+      // Un mismo código puede repetirse en varias filas cuando llega en distintos
+      // lotes — sumamos la cantidad en vez de descartar las filas siguientes,
+      // que antes se perdían silenciosamente.
+      const itemExistente = documentos[docKey].items.find(i => i.codigo === codigo);
+      if (itemExistente) {
+        itemExistente.cantidad += cantidad;
+      } else {
         documentos[docKey].items.push({
           codigo, nombre: nombre || prodMaestro?.nombre || '',
           cantidad, precio_unitario: precioUnit || prodMaestro?.precio_unitario || 0,
@@ -1239,16 +1480,13 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
 
     // Procesar productos
     const codigosNuevos = [];
-    const vistos = new Set();
-    const nuevosItems = [];
+    const nuevosItemsPorCodigo = {};
 
     console.log('Procesando', filas.length, 'filas para productos');
     for (const r of filas) {
       const codigoRaw = String(r[5] || '').trim();
       if (!codigoRaw) continue;
-      const codigo    = codigoRaw.padStart(10, '0');
-      if (vistos.has(codigo)) continue;
-      vistos.add(codigo);
+      const codigo = codigoRaw.padStart(10, '0');
 
       const cantidad   = Number(r[6]) || 0;
       const totalCosto = Math.abs(Number(String(r[7]).replace(/[^0-9.-]/g, '')) || 0);
@@ -1258,7 +1496,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       const fechaVenc  = r[20] ? String(r[20]).substring(0, 10) : '';
 
       const prodMaestro = productos.find(p => p.codigo === codigo);
-      if (!prodMaestro) codigosNuevos.push(codigo);
+      if (!prodMaestro && !nuevosItemsPorCodigo[codigo]) codigosNuevos.push(codigo);
 
       // Actualizar precio en maestro si difiere
       if (prodMaestro && precioUnit > 0 &&
@@ -1270,17 +1508,24 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
         }).catch(() => {});
       }
 
-      nuevosItems.push({
-        codigo,
-        nombre:            nombre || prodMaestro?.nombre || '',
-        cantidad,
-        precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
-        categoria:         prodMaestro?.categoria || '',
-        cuenta_contable:   prodMaestro?.cuenta_contable || '',
-        lote,
-        fecha_vencimiento: fechaVenc,
-      });
+      // Un mismo código puede repetirse en varias filas (distintos lotes) —
+      // sumamos la cantidad en vez de descartar las filas repetidas.
+      if (nuevosItemsPorCodigo[codigo]) {
+        nuevosItemsPorCodigo[codigo].cantidad += cantidad;
+      } else {
+        nuevosItemsPorCodigo[codigo] = {
+          codigo,
+          nombre:            nombre || prodMaestro?.nombre || '',
+          cantidad,
+          precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
+          categoria:         prodMaestro?.categoria || '',
+          cuenta_contable:   prodMaestro?.cuenta_contable || '',
+          lote,
+          fecha_vencimiento: fechaVenc,
+        };
+      }
     }
+    const nuevosItems = Object.values(nuevosItemsPorCodigo);
 
     if (codigosNuevos.length > 0) {
       setError(`⚠️ Códigos no registrados en maestro (asignar categoría/cuenta): ${codigosNuevos.join(', ')}`);
@@ -1555,6 +1800,8 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
 // ─── TAB CRUCES ──────────────────────────────────────────────────────────────
 
 function TabCruces({ prestamos, cruces, onRefresh }) {
+  const { isAdmin } = useAuth();
+
   async function revertirCruce(cruce, e) {
     e.stopPropagation();
     if (!window.confirm(`¿Revertir el cruce entre ${cruce.prestamo_doc} y ${cruce.devolucion_doc}? El préstamo volverá a estado abierto.`)) return;
@@ -1577,6 +1824,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [cantDevueltas,    setCantDevueltas]    = React.useState({});
   const [expandedCruce,    setExpandedCruce]    = React.useState(null);
   const [reparando,        setReparando]        = React.useState(false);
+  const [regenerandoPdfs,  setRegenerandoPdfs]   = React.useState(false);
 
   async function repararCrucesAntiguos() {
     setReparando(true);
@@ -1589,6 +1837,19 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
     }
     setReparando(false);
   }
+
+  async function regenerarPdfs() {
+    if (!window.confirm('¿Regenerar el PDF de todos los cruces ya emitidos con el formato actual? Los archivos existentes se sobrescriben (el enlace no cambia).')) return;
+    setRegenerandoPdfs(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/regenerar-pdfs', { method: 'POST' });
+      alert(`Se regeneraron ${r.regenerados} PDF(s).${r.errores > 0 ? ` ${r.errores} con error.` : ''}`);
+      onRefresh();
+    } catch (e) {
+      alert('Error regenerando PDFs: ' + e.message);
+    }
+    setRegenerandoPdfs(false);
+  }
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
   const [anioPrest,    setAnioPrest]    = React.useState('');
@@ -1600,6 +1861,33 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [detalleCruce, setDetalleCruce] = React.useState(null);
   const [detalleCard,  setDetalleCard]  = React.useState(null);
   const [filtroCruces, setFiltroCruces] = React.useState('');
+  const [editandoCruce, setEditandoCruce] = React.useState(null);
+  const [editTipo,       setEditTipo]      = React.useState('total');
+  const [editObs,        setEditObs]       = React.useState('');
+  const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
+
+  function abrirEdicionCruce(c, e) {
+    e.stopPropagation();
+    setEditandoCruce(c);
+    setEditTipo(c.tipo_cruce || 'total');
+    setEditObs(c.observaciones || c.grupo_observaciones || '');
+  }
+
+  async function guardarEdicionCruce() {
+    setGuardandoEdicion(true);
+    try {
+      await apiFetch(`/prestamos/cruces/${editandoCruce.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tipo_cruce: editTipo, observaciones: editObs }),
+      });
+      setEditandoCruce(null);
+      onRefresh();
+    } catch (err) {
+      alert('Error editando cruce: ' + err.message);
+    }
+    setGuardandoEdicion(false);
+  }
 
   function matchCruce(c, texto) {
     if (!texto) return true;
@@ -1979,13 +2267,22 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
         <div style={{ flex: '0 0 auto', paddingTop: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
-            {cruces.some(c => !c.grupo_numero) && (
-              <button onClick={repararCrucesAntiguos} disabled={reparando}
-                title="Asigna consecutivo, recalcula el estado y genera el PDF de los cruces creados antes de esta función"
-                style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
-                {reparando ? 'Reparando…' : '🔧 Reparar cruces antiguos'}
-              </button>
-            )}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {isAdmin && (
+                <button onClick={regenerarPdfs} disabled={regenerandoPdfs}
+                  title="Regenera el PDF de todos los cruces ya emitidos con el formato actual (código, cantidad y fecha por producto)"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                  {regenerandoPdfs ? 'Regenerando…' : '🔄 Actualizar PDFs al nuevo formato'}
+                </button>
+              )}
+              {cruces.some(c => !c.grupo_numero) && (
+                <button onClick={repararCrucesAntiguos} disabled={reparando}
+                  title="Asigna consecutivo, recalcula el estado y genera el PDF de los cruces creados antes de esta función"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                  {reparando ? 'Reparando…' : '🔧 Reparar cruces antiguos'}
+                </button>
+              )}
+            </div>
           </div>
           <input value={filtroCruces} onChange={e => setFiltroCruces(e.target.value)}
             placeholder="Buscar por Nº de cruce (ej. CRU-00092), documento (préstamo o devolución), producto o clínica…"
@@ -2040,7 +2337,14 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                   <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
                     <CruceSoportes cruce={c} />
                   </td>
-                  <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
+                  <td style={{ padding: '8px 10px', display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+                    {isAdmin && (
+                      <button onClick={e => abrirEdicionCruce(c, e)}
+                        title="Editar cruce (solo admin)"
+                        style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+                        ✏️ Editar
+                      </button>
+                    )}
                     <button onClick={e => revertirCruce(c, e)}
                       title="Revertir cruce"
                       style={{ padding: '3px 8px', fontSize: 11, border: '1px solid #ef444455', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: '#ef4444' }}>
@@ -2101,6 +2405,38 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
       {detalleCard && (
         <Modal onClose={() => setDetalleCard(null)} titulo={`Detalle ${detalleCard.documento_contable}`}>
           <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]} />
+        </Modal>
+      )}
+      {editandoCruce && (
+        <Modal onClose={() => setEditandoCruce(null)} titulo={`Editar cruce ${editandoCruce.grupo_numero || ''}`}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 320 }}>
+            <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+              {editandoCruce.prestamo_doc} ↔ {editandoCruce.devolucion_doc}
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Tipo</label>
+              <select value={editTipo} onChange={e => setEditTipo(e.target.value)}
+                style={{ display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                <option value="total">total</option>
+                <option value="parcial">parcial</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Observaciones</label>
+              <input value={editObs} onChange={e => setEditObs(e.target.value)}
+                style={{ display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+              <button onClick={() => setEditandoCruce(null)}
+                style={{ padding: '8px 16px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+                Cancelar
+              </button>
+              <button onClick={guardarEdicionCruce} disabled={guardandoEdicion}
+                style={{ padding: '8px 18px', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-accent)', color: '#fff', fontWeight: 500 }}>
+                {guardandoEdicion ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>
@@ -2310,8 +2646,6 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
 
   const [verPendientes, setVerPendientes] = useState(false);
   const [verPorPrestamo, setVerPorPrestamo] = useState(false);
-  const [verDashboard, setVerDashboard] = useState(false);
-  const [verCruces, setVerCruces] = useState(false);
 
   const cardStyle = {
     background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10,
@@ -2367,37 +2701,503 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
             Por cada IPE/EPO: qué devoluciones (IDP/ED) tiene cruzadas, qué productos ya se pagaron y qué falta
           </div>
         </div>
-        <div style={{ ...cardStyle, gridColumn: '1 / -1' }} onClick={() => setVerDashboard(true)}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
-            <span style={{ fontSize: 18 }}>📈</span>
-            <span style={{ fontWeight: 500, fontSize: 13 }}>Dashboard interactivo — pagado vs. pendiente</span>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-            Filtra por clínica, año, tipo (EPO/IPE) y estado; alterna entre valor y cantidad; descárgalo como HTML visualizable en el navegador
-          </div>
-        </div>
-        <div style={{ ...cardStyle, gridColumn: '1 / -1' }} onClick={() => setVerCruces(true)}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
-            <span style={{ fontSize: 18 }}>🧾</span>
-            <span style={{ fontWeight: 500, fontSize: 13 }}>Cruces cronológicos y saldo pendiente por préstamo</span>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-            EPO/IPE con sus devoluciones cruzadas, cantidades y valores $, descontando el saldo en orden cronológico — marca devoluciones con sobrante para revisar, y exporta a Excel con hojas de saldo pendiente por EPO y por IPE
-          </div>
-        </div>
       </div>
 
       {verPendientes && (
-        <ModalReportePendientes prestamos={prestamos} devoluciones={devoluciones} onClose={() => setVerPendientes(false)} />
+        <ModalReportePendientes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} onClose={() => setVerPendientes(false)} />
       )}
       {verPorPrestamo && (
         <ModalReportePorPrestamo prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerPorPrestamo(false)} />
       )}
-      {verDashboard && (
-        <ModalDashboard prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerDashboard(false)} />
+    </div>
+  );
+}
+
+// ─── Dashboard interactivo (EPO e IPE por separado, por tercero/año/estado) ─────
+
+const ESTADO_COLORES = { abierto: '#ef4444', parcial: '#f59e0b', cerrado: '#22c55e' };
+const ESTADO_LABELS  = { abierto: 'Abierto', parcial: 'Parcial', cerrado: 'Cerrado / Total' };
+const MESES_NOMBRES  = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+function valorPrestamoDoc(p, modo) {
+  const items = p.items || [];
+  if (modo === 'cantidad') return items.reduce((s, i) => s + Number(i.cantidad || 0), 0);
+  return items.reduce((s, i) => s + Number(i.cantidad || 0) * Number(i.precio_unitario || 0), 0);
+}
+
+function formatearValorDash(v, modo) {
+  if (modo === 'cantidad') return `${Math.round(v).toLocaleString('es-CO')} u.`;
+  return v.toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+}
+
+// Barra horizontal con 3 segmentos (abierto/parcial/cerrado) proporcional al total
+function BarraTresEstados({ label, valores, max, modo }) {
+  const total = valores.abierto + valores.parcial + valores.cerrado;
+  if (total <= 0 && max <= 0) return null;
+  const pct = (v) => (max > 0 ? (v / max) * 100 : 0);
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+        <span style={{ fontWeight: 500 }}>{label}</span>
+        <span style={{ color: 'var(--t-text-muted)' }}>{formatearValorDash(total, modo)}</span>
+      </div>
+      <div style={{ display: 'flex', height: 16, borderRadius: 4, overflow: 'hidden', background: 'rgba(128,128,128,0.15)' }}>
+        {(['abierto', 'parcial', 'cerrado']).map(k => valores[k] > 0 && (
+          <div key={k} title={`${ESTADO_LABELS[k]}: ${formatearValorDash(valores[k], modo)}`}
+               style={{ width: `${pct(valores[k])}%`, background: ESTADO_COLORES[k] }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PanelDashboard({ titulo, filas, modo }) {
+  const max = Math.max(1, ...filas.map(f => f.abierto + f.parcial + f.cerrado));
+  const cardStyle = {
+    background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10,
+    padding: '14px 16px',
+  };
+  return (
+    <div style={{ ...cardStyle, cursor: 'default' }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>{titulo}</div>
+      {filas.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin datos para este filtro.</div>}
+      {filas.map(f => (
+        <BarraTresEstados key={f.label} label={f.label} valores={f} max={max} modo={modo} />
+      ))}
+    </div>
+  );
+}
+
+function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinicas }) {
+  const [tipoDoc,      setTipoDoc]      = useState('egreso');
+  const [filtroClinica,setFiltroClinica]= useState('todas');
+  const [filtroAnio,   setFiltroAnio]   = useState('todos');
+  const [filtroEstado, setFiltroEstado] = useState('todos');
+  const [modo,         setModo]         = useState('valor');
+  // seccion activa: 'prestamos' | 'devoluciones' | 'eficiencia' | 'tendencia' | 'antiguedad' | 'productos'
+  const [seccion, setSeccion] = useState('prestamos');
+
+  // ── Datos de préstamos filtrados ──────────────────────────────────
+  const porTipo = useMemo(() => (prestamos || []).filter(p => p.tipo === tipoDoc), [prestamos, tipoDoc]);
+
+  const anios = useMemo(() => {
+    const set = new Set(porTipo.map(p => String(new Date(p.fecha).getFullYear())));
+    return Array.from(set).sort((a, b) => b - a);
+  }, [porTipo]);
+
+  const clinicasDelTipo = useMemo(() => {
+    const set = new Set(porTipo.map(p => p.clinica_nombre || 'Sin clínica'));
+    return Array.from(set).sort();
+  }, [porTipo]);
+
+  const filtrados = useMemo(() => porTipo.filter(p =>
+    (filtroClinica === 'todas' || p.clinica_nombre === filtroClinica) &&
+    (filtroAnio   === 'todos' || String(new Date(p.fecha).getFullYear()) === filtroAnio) &&
+    (filtroEstado === 'todos' || p.estado === filtroEstado)
+  ), [porTipo, filtroClinica, filtroAnio, filtroEstado]);
+
+  // ── Devoluciones del tipo correspondiente ─────────────────────────
+  // IDP = devoluciones de lo que prestamos (egreso → IDP)
+  // ED  = devoluciones de lo que nos prestaron (ingreso → ED)
+  // Ojo: los documentos IDP/ED NO viven en la tabla vieja "devoluciones" (esa
+  // corresponde al flujo directo antiguo); son filas de `prestamos` con
+  // tipo 'devolucion_ingreso' / 'devolucion_egreso', igual que las usa TabCruces.
+  const tipoDevLabel   = tipoDoc === 'egreso' ? 'IDP' : 'ED';
+  const tipoDevolucion = tipoDoc === 'egreso' ? 'devolucion_ingreso' : 'devolucion_egreso';
+  const devsFiltradas = useMemo(() => {
+    return (prestamos || []).filter(d => {
+      const matchTipo    = d.tipo === tipoDevolucion;
+      const matchClinica = filtroClinica === 'todas' || d.clinica_nombre === filtroClinica;
+      const matchAnio    = filtroAnio   === 'todos'  || String(new Date(d.fecha).getFullYear()) === filtroAnio;
+      return matchTipo && matchClinica && matchAnio;
+    });
+  }, [prestamos, tipoDevolucion, filtroClinica, filtroAnio]);
+
+  function valorDoc(doc) {
+    const items = doc.items || [];
+    if (modo === 'cantidad') return items.reduce((s, i) => s + Number(i.cantidad || 0), 0);
+    return items.reduce((s, i) => s + Number(i.cantidad || 0) * Number(i.precio_unitario || 0), 0);
+  }
+
+  function agrupar(lista, claveFn, valorFn) {
+    const mapa = {};
+    lista.forEach(p => {
+      const key = claveFn(p);
+      if (!key) return;
+      if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
+      const v = (valorFn || valorDoc)(p);
+      mapa[key][p.estado || 'cerrado'] = (mapa[key][p.estado || 'cerrado'] || 0) + v;
+    });
+    return Object.values(mapa).sort((a, b) => (b.abierto + b.parcial + b.cerrado) - (a.abierto + a.parcial + a.cerrado));
+  }
+
+  // ── Préstamos: agrupaciones ───────────────────────────────────────
+  const porTercero = useMemo(() => agrupar(filtrados, p => p.clinica_nombre || 'Sin clínica'), [filtrados, modo]);
+  const porAnio    = useMemo(() => agrupar(filtrados, p => String(new Date(p.fecha).getFullYear())).sort((a,b) => a.label.localeCompare(b.label)), [filtrados, modo]);
+  const porMes     = useMemo(() => {
+    const filas = agrupar(filtrados, p => {
+      const d = new Date(p.fecha);
+      return filtroAnio === 'todos' ? MESES_NOMBRES[d.getMonth()] : `${MESES_NOMBRES[d.getMonth()]} ${d.getFullYear()}`;
+    });
+    return filas.sort((a, b) => MESES_NOMBRES.findIndex(m => a.label.startsWith(m)) - MESES_NOMBRES.findIndex(m => b.label.startsWith(m)));
+  }, [filtrados, modo, filtroAnio]);
+  const porBodega  = useMemo(() => agrupar(filtrados, p => p.bodega_nombre || p.bodega_codigo || 'Sin bodega'), [filtrados, modo]);
+
+  const totales = useMemo(() => {
+    const t = { abierto: 0, parcial: 0, cerrado: 0 };
+    filtrados.forEach(p => { t[p.estado] = (t[p.estado] || 0) + valorDoc(p); });
+    return t;
+  }, [filtrados, modo]);
+  const totalGeneral = totales.abierto + totales.parcial + totales.cerrado;
+
+  // ── Devoluciones: agrupaciones ────────────────────────────────────
+  const devsPorClinica = useMemo(() => {
+    const mapa = {};
+    devsFiltradas.forEach(d => {
+      const key = d.clinica_nombre || 'Sin clínica';
+      if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
+      const v = valorDoc(d);
+      mapa[key]['cerrado'] = (mapa[key]['cerrado'] || 0) + v; // devoluciones son siempre cerradas
+    });
+    return Object.values(mapa).sort((a, b) => b.cerrado - a.cerrado);
+  }, [devsFiltradas, modo]);
+
+  const devsPorAnio = useMemo(() => {
+    const mapa = {};
+    devsFiltradas.forEach(d => {
+      const key = String(new Date(d.fecha).getFullYear());
+      if (!mapa[key]) mapa[key] = { label: key, abierto: 0, parcial: 0, cerrado: 0 };
+      mapa[key]['cerrado'] = (mapa[key]['cerrado'] || 0) + valorDoc(d);
+    });
+    return Object.values(mapa).sort((a, b) => a.label.localeCompare(b.label));
+  }, [devsFiltradas, modo]);
+
+  // ── Eficiencia por clínica ────────────────────────────────────────
+  const eficienciaPorClinica = useMemo(() => {
+    const mapa = {};
+    // Valor total prestado por clínica
+    porTipo.forEach(p => {
+      const k = p.clinica_nombre || 'Sin clínica';
+      if (!mapa[k]) mapa[k] = { label: k, prestado: 0, devuelto: 0 };
+      mapa[k].prestado += valorPrestamoDoc(p, modo);
+    });
+    // Valor total devuelto por clínica (documentos IDP/ED, que son filas de `prestamos`)
+    (prestamos || []).filter(d => d.tipo === tipoDevolucion).forEach(d => {
+      const k = d.clinica_nombre || 'Sin clínica';
+      if (!mapa[k]) mapa[k] = { label: k, prestado: 0, devuelto: 0 };
+      mapa[k].devuelto += valorDoc(d);
+    });
+    return Object.values(mapa)
+      .filter(e => e.prestado > 0)
+      .sort((a, b) => b.prestado - a.prestado);
+  }, [porTipo, prestamos, tipoDevolucion, modo]);
+
+  // ── Tendencia mensual préstamos vs devoluciones ───────────────────
+  const tendenciaMensual = useMemo(() => {
+    const mapa = {};
+    const addMes = (fecha, tipo, v) => {
+      const d = new Date(fecha);
+      if (isNaN(d)) return;
+      const k = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      if (!mapa[k]) mapa[k] = { label: k, prestamos: 0, devoluciones: 0 };
+      mapa[k][tipo] += v;
+    };
+    filtrados.forEach(p => addMes(p.fecha, 'prestamos', valorDoc(p)));
+    devsFiltradas.forEach(d => addMes(d.fecha, 'devoluciones', valorDoc(d)));
+    return Object.values(mapa).sort((a, b) => a.label.localeCompare(b.label));
+  }, [filtrados, devsFiltradas, modo]);
+
+  function valorPendienteDoc(p) {
+    const pendientes = itemsPendientesDe(p, devoluciones, cruces);
+    if (modo === 'cantidad') return pendientes.reduce((s, i) => s + Number(i.pendiente || 0), 0);
+    return pendientes.reduce((s, i) => s + Number(i.pendiente || 0) * Number(i.precio_unitario || 0), 0);
+  }
+
+  // ── Antigüedad de documentos abiertos (saldo pendiente, no el valor total del documento) ──
+  const rangoAntiguedad = useMemo(() => {
+    const hoy = new Date();
+    const rangos = { '0-30 días': 0, '31-60 días': 0, '61-90 días': 0, '+90 días': 0 };
+    filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
+      const dias = Math.floor((hoy - new Date(p.fecha)) / 86400000);
+      const v = valorPendienteDoc(p);
+      if      (dias <= 30) rangos['0-30 días']  += v;
+      else if (dias <= 60) rangos['31-60 días'] += v;
+      else if (dias <= 90) rangos['61-90 días'] += v;
+      else                 rangos['+90 días']   += v;
+    });
+    return Object.entries(rangos).map(([label, cerrado]) => ({ label, abierto: 0, parcial: 0, cerrado }));
+  }, [filtrados, modo, devoluciones, cruces]);
+
+  // ── Semáforo de antigüedad por clínica ───────────────────────────
+  const semaforoPorClinica = useMemo(() => {
+    const hoy = new Date();
+    const mapa = {};
+    filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
+      const k = p.clinica_nombre || 'Sin clínica';
+      const dias = Math.floor((hoy - new Date(p.fecha)) / 86400000);
+      if (!mapa[k]) mapa[k] = { label: k, max: 0, count: 0, valor: 0 };
+      if (dias > mapa[k].max) mapa[k].max = dias;
+      mapa[k].count++;
+      mapa[k].valor += valorPendienteDoc(p);
+    });
+    return Object.values(mapa).sort((a, b) => b.max - a.max).map(e => ({
+      ...e,
+      color: e.max > 90 ? '#ef4444' : e.max > 30 ? '#f59e0b' : '#22c55e',
+    }));
+  }, [filtrados, modo, devoluciones, cruces]);
+
+  // ── Top productos pendientes (cantidad/valor ya neto de lo devuelto/cruzado) ──
+  const topProductosPendientes = useMemo(() => {
+    const mapa = {};
+    filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
+      const pendientes = itemsPendientesDe(p, devoluciones, cruces);
+      pendientes.forEach(i => {
+        const k = i.codigo || i.nombre;
+        if (!mapa[k]) mapa[k] = { codigo: i.codigo, nombre: i.nombre, cantidad: 0, valor: 0 };
+        mapa[k].cantidad += Number(i.pendiente || 0);
+        mapa[k].valor    += Number(i.pendiente || 0) * Number(i.precio_unitario || 0);
+      });
+    });
+    return Object.values(mapa).sort((a, b) => b.valor - a.valor).slice(0, 15);
+  }, [filtrados, devoluciones, cruces]);
+
+  // ── Descargar HTML ────────────────────────────────────────────────
+  function descargarHTML() {
+    const datos = filtrados.map(p => ({
+      documento: p.documento_contable,
+      clinica:   p.clinica_nombre || 'Sin clínica',
+      bodega:    p.bodega_nombre  || p.bodega_codigo || 'Sin bodega',
+      estado:    p.estado,
+      fecha:     p.fecha,
+      valor:     valorPrestamoDoc(p, 'valor'),
+      cantidad:  valorPrestamoDoc(p, 'cantidad'),
+    }));
+    const devDatos = devsFiltradas.map(d => ({
+      documento: d.documento_contable,
+      clinica:   d.clinica_nombre || 'Sin clínica',
+      fecha:     d.fecha,
+      valor:     (d.items || []).reduce((s, i) => s + Number(i.cantidad||0)*Number(i.precio_unitario||0), 0),
+      cantidad:  (d.items || []).reduce((s, i) => s + Number(i.cantidad||0), 0),
+    }));
+    const tipoLabel = tipoDoc === 'egreso' ? 'EPO (préstamos que hacemos)' : 'IPE (préstamos que nos hacen)';
+    const html = generarHTMLDashboardPrestamos(datos, devDatos, tipoLabel, tipoDevLabel, eficienciaPorClinica, tendenciaMensual, topProductosPendientes, modo);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `dashboard_prestamos_${tipoDoc === 'egreso' ? 'EPO' : 'IPE'}_${new Date().toISOString().slice(0,10)}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const selectStyle = { padding: '6px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-card)', color: 'var(--t-text-primary)', fontSize: 12 };
+  const btnSecStyle = (s) => ({ ...selectStyle, cursor: 'pointer', fontWeight: seccion === s ? 700 : 400, background: seccion === s ? 'var(--t-accent)' : 'var(--t-bg-card)', color: seccion === s ? '#fff' : 'var(--t-text-primary)' });
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ fontWeight: 600, fontSize: 15 }}>📊 Dashboard interactivo de préstamos</div>
+        <button onClick={descargarHTML} style={{ ...selectStyle, cursor: 'pointer', fontWeight: 500 }}>⬇ Descargar HTML</button>
+      </div>
+
+      {/* Selector tipo doc */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <button onClick={() => { setTipoDoc('egreso');  setFiltroClinica('todas'); }} style={{ ...selectStyle, cursor: 'pointer', fontWeight: tipoDoc === 'egreso'  ? 700 : 400, background: tipoDoc === 'egreso'  ? 'var(--t-accent)' : 'var(--t-bg-card)', color: tipoDoc === 'egreso'  ? '#fff' : 'var(--t-text-primary)' }}>EPO — préstamos que hacemos</button>
+        <button onClick={() => { setTipoDoc('ingreso'); setFiltroClinica('todas'); }} style={{ ...selectStyle, cursor: 'pointer', fontWeight: tipoDoc === 'ingreso' ? 700 : 400, background: tipoDoc === 'ingreso' ? 'var(--t-accent)' : 'var(--t-bg-card)', color: tipoDoc === 'ingreso' ? '#fff' : 'var(--t-text-primary)' }}>IPE — préstamos que nos hacen</button>
+      </div>
+
+      {/* Filtros */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        <select value={filtroClinica} onChange={e => setFiltroClinica(e.target.value)} style={selectStyle}>
+          <option value="todas">Todas las clínicas</option>
+          {clinicasDelTipo.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={selectStyle}>
+          <option value="todos">Todos los años</option>
+          {anios.map(a => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)} style={selectStyle}>
+          <option value="todos">Todos los estados</option>
+          <option value="abierto">Abierto</option>
+          <option value="parcial">Parcial</option>
+          <option value="cerrado">Cerrado / Total</option>
+        </select>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button onClick={() => setModo('valor')}    style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'valor'    ? 700 : 400 }}>$ Valor</button>
+          <button onClick={() => setModo('cantidad')} style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'cantidad' ? 700 : 400 }}>Cantidad</button>
+        </div>
+      </div>
+
+      {/* Totales resumen */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginBottom: 18 }}>
+        {(['abierto','parcial','cerrado']).map(k => (
+          <div key={k} style={{ background: 'var(--t-bg-card)', border: `1px solid ${ESTADO_COLORES[k]}44`, borderRadius: 8, padding: '10px 12px' }}>
+            <div style={{ fontSize: 11, color: ESTADO_COLORES[k], fontWeight: 600, marginBottom: 4 }}>{ESTADO_LABELS[k]}</div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{formatearValorDash(totales[k] || 0, modo)}</div>
+          </div>
+        ))}
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 12px' }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', fontWeight: 600, marginBottom: 4 }}>Total {tipoDevLabel} devuelto</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#22c55e' }}>
+            {formatearValorDash(devsFiltradas.reduce((s, d) => s + valorDoc(d), 0), modo)}
+          </div>
+        </div>
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 12px' }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', fontWeight: 600, marginBottom: 4 }}>Documentos</div>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{filtrados.length} / {devsFiltradas.length} {tipoDevLabel}</div>
+        </div>
+      </div>
+
+      {/* Navegación de secciones */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16, borderBottom: '1px solid var(--t-border)', paddingBottom: 10 }}>
+        <button onClick={() => setSeccion('prestamos')}   style={btnSecStyle('prestamos')}>📋 Préstamos</button>
+        <button onClick={() => setSeccion('devoluciones')} style={btnSecStyle('devoluciones')}>↩ Devoluciones ({tipoDevLabel})</button>
+        <button onClick={() => setSeccion('eficiencia')}  style={btnSecStyle('eficiencia')}>📈 Eficiencia por clínica</button>
+        <button onClick={() => setSeccion('tendencia')}   style={btnSecStyle('tendencia')}>📉 Tendencia mensual</button>
+        <button onClick={() => setSeccion('antiguedad')}  style={btnSecStyle('antiguedad')}>⏰ Antigüedad</button>
+        <button onClick={() => setSeccion('productos')}   style={btnSecStyle('productos')}>💊 Top productos pendientes</button>
+      </div>
+
+      {/* ── SECCIÓN: PRÉSTAMOS ── */}
+      {seccion === 'prestamos' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+          <PanelDashboard titulo="Por tercero (clínica)" filas={porTercero} modo={modo} />
+          <PanelDashboard titulo="Por bodega"            filas={porBodega}  modo={modo} />
+          <PanelDashboard titulo="Por año"               filas={porAnio}    modo={modo} />
+          <PanelDashboard titulo="Por mes"               filas={porMes}     modo={modo} />
+        </div>
       )}
-      {verCruces && (
-        <ModalReporteCruces prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerCruces(false)} />
+
+      {/* ── SECCIÓN: DEVOLUCIONES ── */}
+      {seccion === 'devoluciones' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+          <PanelDashboard titulo={`${tipoDevLabel} por clínica`} filas={devsPorClinica} modo={modo} />
+          <PanelDashboard titulo={`${tipoDevLabel} por año`}     filas={devsPorAnio}    modo={modo} />
+        </div>
+      )}
+
+      {/* ── SECCIÓN: EFICIENCIA ── */}
+      {seccion === 'eficiencia' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Eficiencia de devolución por clínica</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 14 }}>
+            Verde = devolvió {'>'} 80% · Amarillo = 40-80% · Rojo = {'<'} 40%
+          </div>
+          {eficienciaPorClinica.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin datos.</div>}
+          {eficienciaPorClinica.map(e => {
+            const pct = e.prestado > 0 ? Math.min(100, (e.devuelto / e.prestado) * 100) : 0;
+            const color = pct >= 80 ? '#22c55e' : pct >= 40 ? '#f59e0b' : '#ef4444';
+            return (
+              <div key={e.label} style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 500 }}>{e.label}</span>
+                  <span style={{ color: 'var(--t-text-muted)' }}>
+                    {Math.round(pct)}% devuelto · Prestado: {formatearValorDash(e.prestado, modo)} · Devuelto: {formatearValorDash(e.devuelto, modo)}
+                  </span>
+                </div>
+                <div style={{ height: 14, borderRadius: 4, background: 'rgba(128,128,128,0.15)', overflow: 'hidden' }}>
+                  <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4 }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── SECCIÓN: TENDENCIA ── */}
+      {seccion === 'tendencia' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Tendencia mensual — préstamos vs devoluciones</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 14 }}>
+            🔴 Préstamos &nbsp; 🟢 Devoluciones ({tipoDevLabel})
+          </div>
+          {tendenciaMensual.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin datos.</div>}
+          {tendenciaMensual.map(m => {
+            const maxVal = Math.max(1, ...tendenciaMensual.map(x => Math.max(x.prestamos, x.devoluciones)));
+            return (
+              <div key={m.label} style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>{m.label}</div>
+                <div style={{ marginBottom: 3 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 2 }}>
+                    <span>Préstamos</span><span>{formatearValorDash(m.prestamos, modo)}</span>
+                  </div>
+                  <div style={{ height: 10, borderRadius: 3, background: 'rgba(128,128,128,0.15)', overflow: 'hidden' }}>
+                    <div style={{ width: `${(m.prestamos/maxVal)*100}%`, height: '100%', background: '#ef4444', borderRadius: 3 }} />
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 2 }}>
+                    <span>Devoluciones ({tipoDevLabel})</span><span>{formatearValorDash(m.devoluciones, modo)}</span>
+                  </div>
+                  <div style={{ height: 10, borderRadius: 3, background: 'rgba(128,128,128,0.15)', overflow: 'hidden' }}>
+                    <div style={{ width: `${(m.devoluciones/maxVal)*100}%`, height: '100%', background: '#22c55e', borderRadius: 3 }} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── SECCIÓN: ANTIGÜEDAD ── */}
+      {seccion === 'antiguedad' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+          <PanelDashboard titulo="Valor pendiente por antigüedad" filas={rangoAntiguedad} modo={modo} />
+          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px' }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Semáforo por clínica</div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 12 }}>
+              🔴 {'>'} 90 días · 🟡 31-90 días · 🟢 0-30 días (doc. más antiguo abierto)
+            </div>
+            {semaforoPorClinica.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin documentos abiertos.</div>}
+            {semaforoPorClinica.map(e => (
+              <div key={e.label} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 7, border: `1px solid ${e.color}44` }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: e.color, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{e.count} doc. abiertos · más antiguo: {e.max} días · {formatearValorDash(e.valor, modo)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── SECCIÓN: TOP PRODUCTOS ── */}
+      {seccion === 'productos' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Top 15 productos con mayor saldo pendiente</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 14 }}>Solo documentos abiertos y parciales</div>
+          {topProductosPendientes.length === 0 && <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin productos pendientes.</div>}
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr>
+                {['#','Código','Nombre','Cantidad','Valor pendiente'].map(h => (
+                  <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--t-border)', color: 'var(--t-text-muted)', fontWeight: 600 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {topProductosPendientes.map((p, i) => {
+                const maxVal = topProductosPendientes[0]?.valor || 1;
+                return (
+                  <tr key={p.codigo || i}>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)', color: 'var(--t-text-muted)' }}>{i+1}</td>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)', fontFamily: 'monospace', fontSize: 11 }}>{p.codigo}</td>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)' }}>
+                      <div>{p.nombre}</div>
+                      <div style={{ height: 6, borderRadius: 3, background: 'rgba(128,128,128,0.15)', marginTop: 3, overflow: 'hidden' }}>
+                        <div style={{ width: `${(p.valor/maxVal)*100}%`, height: '100%', background: '#ef4444', borderRadius: 3 }} />
+                      </div>
+                    </td>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{p.cantidad.toLocaleString('es-CO')}</td>
+                    <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--t-border)', fontWeight: 700, color: '#ef4444' }}>{formatearValorDash(p.valor, 'valor')}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -2412,6 +3212,7 @@ function construirDetallePrestamo(prestamo, cruces) {
     id: c.devolucion_id,
     documento: c.devolucion_doc,
     tipo_cruce: c.tipo_cruce,
+    grupo_numero: c.grupo_numero || '',   // número de cruce CRU-xxxxx
     soporte_url: c.devolucion_soporte_url,
     items: c.devolucion_items || [],
   }));
@@ -2424,14 +3225,29 @@ function construirDetallePrestamo(prestamo, cruces) {
     });
   });
 
+  // Mapear qué cruce y devolución cubrió cada producto (para el Excel)
+  const crucePorCodigo = {};   // codigo -> { documento_devolucion, grupo_numero }
+  devolucionesDoc.forEach(d => {
+    (d.items || []).forEach(i => {
+      if (!crucePorCodigo[i.codigo]) {
+        crucePorCodigo[i.codigo] = { documento_devolucion: d.documento, grupo_numero: d.grupo_numero };
+      }
+    });
+  });
+
   const productosPagados = [];
   const productosPendientes = [];
   (prestamo.items || []).forEach(i => {
     const disponible = pagadoPorCodigo[i.codigo] || 0;
     const pagado = Math.min(Number(i.cantidad), disponible);
     const pendiente = Math.max(0, Number(i.cantidad) - pagado);
+    const info = crucePorCodigo[i.codigo] || {};
     if (pagado > 0) {
-      productosPagados.push({ codigo: i.codigo, nombre: i.nombre, cantidad: pagado, valor: pagado * Number(i.precio_unitario || 0) });
+      productosPagados.push({
+        codigo: i.codigo, nombre: i.nombre, cantidad: pagado, valor: pagado * Number(i.precio_unitario || 0),
+        documento_devolucion: info.documento_devolucion || '',
+        numero_cruce: info.grupo_numero || '',
+      });
     }
     if (pendiente > 0) {
       productosPendientes.push({ codigo: i.codigo, nombre: i.nombre, cantidad: pendiente, valor: pendiente * Number(i.precio_unitario || 0) });
@@ -2443,106 +3259,6 @@ function construirDetallePrestamo(prestamo, cruces) {
 
   return { devolucionesDoc, documentosDevolucion, productosPagados, productosPendientes };
 }
-
-// Reporte de cruces en orden cronológico: recorre las devoluciones cruzadas
-// de cada préstamo en el orden en que se cruzaron (fecha del cruce) y va
-// descontando el saldo pendiente del préstamo a medida que avanza, para que
-// cada fila muestre cuánto quedó pendiente DESPUÉS de ese cruce puntual.
-function construirReporteCrucesCronologico(prestamos, cruces) {
-  const base = (prestamos || []).filter(p => ['ingreso', 'egreso'].includes(p.tipo));
-  const filas = [];
-
-  base.forEach(p => {
-    const crucesDe = (cruces || [])
-      .filter(c => c.prestamo_id === p.id)
-      .slice()
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-    if (crucesDe.length === 0) return; // sin devoluciones cruzadas, no aporta filas a este reporte
-
-    const saldoPorCodigo = {};
-    const precioPorCodigo = {};
-    const nombrePorCodigo = {};
-    (p.items || []).forEach(i => {
-      saldoPorCodigo[i.codigo] = Number(i.cantidad);
-      precioPorCodigo[i.codigo] = Number(i.precio_unitario || 0);
-      nombrePorCodigo[i.codigo] = i.nombre;
-    });
-    const valorTotalPrestamo = (p.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
-    const cantidadTotalPrestamo = (p.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
-    const tipoLabel = p.tipo === 'egreso' ? 'EPO' : 'IPE';
-    const tipoLabelDevol = p.tipo === 'egreso' ? 'IDP' : 'ED';
-
-    crucesDe.forEach(c => {
-      const itemsDevueltos = c.devolucion_items || [];
-      let cantidadEsteC = 0;
-      let valorEsteC = 0;
-      let sobranteCantidad = 0;
-      let sobranteValor = 0;
-      const detalleProductos = [];
-      const detalleSobrante = [];
-
-      itemsDevueltos.forEach(it => {
-        const codigo = it.codigo;
-        const cant = Number(it.cantidad);
-        const precio = precioPorCodigo[codigo] != null ? precioPorCodigo[codigo] : Number(it.precio_unitario || 0);
-        const disponible = Math.max(saldoPorCodigo[codigo] || 0, 0);
-        const aplicada = Math.min(cant, disponible);
-        const sobranteItem = cant - aplicada; // lo que la devolución trae de más y no cupo en el saldo de este préstamo
-        saldoPorCodigo[codigo] = disponible - aplicada;
-        if (aplicada > 0) {
-          cantidadEsteC += aplicada;
-          valorEsteC += aplicada * precio;
-          detalleProductos.push(`${nombrePorCodigo[codigo] || it.nombre || codigo} (${aplicada})`);
-        }
-        if (sobranteItem > 0) {
-          sobranteCantidad += sobranteItem;
-          sobranteValor += sobranteItem * precio;
-          detalleSobrante.push(`${nombrePorCodigo[codigo] || it.nombre || codigo} (+${sobranteItem})`);
-        }
-      });
-
-      const saldoPendienteCantidad = Object.values(saldoPorCodigo).reduce((s, v) => s + Math.max(v, 0), 0);
-      const saldoPendienteValor = Object.entries(saldoPorCodigo)
-        .reduce((s, [cod, v]) => s + Math.max(v, 0) * (precioPorCodigo[cod] || 0), 0);
-
-      const descripcion = c.observaciones || c.grupo_observaciones
-        || `Cruce ${tipoLabel} ${p.documento_contable} con ${tipoLabelDevol} ${c.devolucion_doc}`;
-
-      filas.push({
-        documento_prestamo: p.documento_contable,
-        tipo: tipoLabel,
-        clinica: p.clinica_nombre || '—',
-        fecha_prestamo: p.fecha,
-        numero_cruce: c.grupo_numero || '',
-        fecha_cruce: c.created_at,
-        documento_devolucion: c.devolucion_doc,
-        tipo_devolucion: tipoLabelDevol,
-        tipo_cruce: c.tipo_cruce || '',
-        descripcion,
-        productos_devueltos: detalleProductos.join(', ') || '—',
-        cantidad_devuelta: cantidadEsteC,
-        valor_devuelto: valorEsteC,
-        tiene_sobrante: sobranteCantidad > 0,
-        sobrante_cantidad: sobranteCantidad,
-        sobrante_valor: sobranteValor,
-        sobrante_detalle: detalleSobrante.join(', '),
-        saldo_pendiente_cantidad: saldoPendienteCantidad,
-        saldo_pendiente_valor: saldoPendienteValor,
-        cantidad_total_prestamo: cantidadTotalPrestamo,
-        valor_total_prestamo: valorTotalPrestamo,
-        estado_prestamo: p.estado,
-      });
-    });
-  });
-
-  // Orden final: por préstamo (documento) y dentro de cada uno, cronológico
-  return filas.sort((a, b) => {
-    if (a.documento_prestamo !== b.documento_prestamo) return String(a.documento_prestamo).localeCompare(String(b.documento_prestamo));
-    return new Date(a.fecha_cruce) - new Date(b.fecha_cruce);
-  });
-}
-
 
 function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
   const [tipo, setTipo] = useState('todos');       // todos | egreso | ingreso
@@ -2587,14 +3303,14 @@ function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
       };
 
       if (det.productosPagados.length === 0 && det.productosPendientes.length === 0) {
-        filas.push({ ...filaBase, Situación: 'Pagado', Producto: '', Código: '', Cantidad: '', Valor: '' });
+        filas.push({ ...filaBase, Situación: 'Sin movimiento', Producto: '', Código: '', Cantidad: '', Valor: '', 'Doc. devolución': '', 'N° cruce': '' });
         return;
       }
       det.productosPagados.forEach(prod => {
-        filas.push({ ...filaBase, Situación: 'Pagado', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor });
+        filas.push({ ...filaBase, Situación: 'Pagado', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor, 'Doc. devolución': prod.documento_devolucion || '', 'N° cruce': prod.numero_cruce || '' });
       });
       det.productosPendientes.forEach(prod => {
-        filas.push({ ...filaBase, Situación: 'Pendiente', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor });
+        filas.push({ ...filaBase, Situación: 'Pendiente', Producto: prod.nombre, Código: prod.codigo, Cantidad: prod.cantidad, Valor: prod.valor, 'Doc. devolución': '', 'N° cruce': '' });
       });
     });
 
@@ -2737,218 +3453,23 @@ function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
   );
 }
 
-// ─── Reporte de cruces en orden cronológico, con saldo descontado por préstamo ─
-
-function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
-  const [filtroTipo, setFiltroTipo] = useState('todos');       // todos | egreso | ingreso
-  const [filtroClinica, setFiltroClinica] = useState('');
-  const [filtroAnio, setFiltroAnio] = useState('');
-
-  const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
-
-  const base = (prestamos || []).filter(p => ['ingreso', 'egreso'].includes(p.tipo));
-  const clinicasDisponibles = Array.from(new Set(base.map(p => p.clinica_nombre).filter(Boolean))).sort();
-  const aniosDisponibles = Array.from(new Set(base.map(p => (p.fecha ? String(p.fecha).substring(0, 4) : null)).filter(Boolean))).sort().reverse();
-
-  const baseFiltrada = base.filter(p => {
-    if (filtroTipo !== 'todos' && p.tipo !== filtroTipo) return false;
-    if (filtroClinica && p.clinica_nombre !== filtroClinica) return false;
-    if (filtroAnio && !(String(p.fecha || '').startsWith(filtroAnio))) return false;
-    return true;
-  });
-
-  const filasCronologicas = construirReporteCrucesCronologico(baseFiltrada, cruces);
-  const datosSaldos = construirDatosDashboard(baseFiltrada, cruces);
-  const saldoEPO = datosSaldos.filter(r => r.tipo === 'egreso').sort((a, b) => b.valorPendiente - a.valorPendiente);
-  const saldoIPE = datosSaldos.filter(r => r.tipo === 'ingreso').sort((a, b) => b.valorPendiente - a.valorPendiente);
-
-  function exportarExcel() {
-    const hojaCruces = filasCronologicas.map(f => ({
-      'Documento Préstamo': f.documento_prestamo,
-      'Tipo': f.tipo,
-      'Clínica': f.clinica,
-      'Fecha Préstamo': fmtFecha(f.fecha_prestamo),
-      'N° Cruce': f.numero_cruce,
-      'Fecha Cruce': fmtFecha(f.fecha_cruce),
-      'Documento Devolución': f.documento_devolucion,
-      'Tipo Devolución': f.tipo_devolucion,
-      'Tipo de Cruce': f.tipo_cruce,
-      'Descripción del Cruce': f.descripcion,
-      'Productos Devueltos en este Cruce': f.productos_devueltos,
-      'Cantidad Devuelta (este cruce)': f.cantidad_devuelta,
-      'Valor Devuelto (este cruce) $': f.valor_devuelto,
-      '⚠ Sobrante (revisar)': f.tiene_sobrante ? 'SÍ' : '',
-      'Cantidad Sobrante': f.sobrante_cantidad || '',
-      'Valor Sobrante $': f.sobrante_valor || '',
-      'Detalle del Sobrante': f.sobrante_detalle || '',
-      'Saldo Pendiente Cantidad (después de este cruce)': f.saldo_pendiente_cantidad,
-      'Saldo Pendiente Valor $ (después de este cruce)': f.saldo_pendiente_valor,
-      'Cantidad Total del Préstamo': f.cantidad_total_prestamo,
-      'Valor Total del Préstamo $': f.valor_total_prestamo,
-      'Estado Actual del Préstamo': f.estado_prestamo,
-    }));
-
-    const filaSaldo = r => ({
-      'Documento': r.documento,
-      'Clínica': r.clinica,
-      'Bodega': r.bodega,
-      'Fecha': fmtFecha(r.fecha),
-      'Estado': r.estado,
-      'Cantidad Total': r.cantidadTotal,
-      'Cantidad Pagada': r.cantidadPagada,
-      'Cantidad Pendiente': r.cantidadPendiente,
-      'Valor Total $': r.valorTotal,
-      'Valor Pagado $': r.valorPagado,
-      'Valor Pendiente $': r.valorPendiente,
-    });
-
-    const filasConSobrante = filasCronologicas.filter(f => f.tiene_sobrante);
-    const hojaSobrantes = filasConSobrante.map(f => ({
-      'Documento Préstamo': f.documento_prestamo,
-      'Tipo': f.tipo,
-      'Clínica': f.clinica,
-      'Documento Devolución': f.documento_devolucion,
-      'Fecha Cruce': fmtFecha(f.fecha_cruce),
-      'Cantidad Sobrante': f.sobrante_cantidad,
-      'Valor Sobrante $': f.sobrante_valor,
-      'Detalle del Sobrante': f.sobrante_detalle,
-      'Posible explicación': 'Esta devolución trajo más cantidad de la que el préstamo tenía pendiente en ese momento. Puede deberse a que también se cruzó (o debía cruzarse) contra otro préstamo del mismo tipo.',
-    }));
-
-    const hojaLeyenda = [
-      { Columna: 'Sobrante', Explicación: 'Cantidad/valor de una devolución que NO se pudo descontar del saldo de este préstamo porque ya no tenía pendiente suficiente. No se pierde el dato: probablemente pertenece a otro préstamo cruzado con la misma devolución.' },
-      { Columna: 'Saldo Pendiente (después de este cruce)', Explicación: 'Lo que le queda pendiente al préstamo justo después de aplicar ese cruce, en el orden cronológico en que se registraron los cruces (created_at).' },
-      { Columna: 'Cantidad/Valor Devuelto (este cruce)', Explicación: 'Solo la porción de la devolución que sí se pudo aplicar al saldo del préstamo (tope: lo que quedaba pendiente).' },
-      { Columna: '', Explicación: '' },
-      { Columna: 'Revisar la hoja "Sobrantes a revisar"', Explicación: 'Contiene solo las filas donde hubo sobrante, para auditar más rápido sin recorrer todo el histórico.' },
-    ];
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hojaCruces), 'Cruces cronologico');
-    if (hojaSobrantes.length > 0) {
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hojaSobrantes), 'Sobrantes a revisar');
-    }
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(saldoEPO.map(filaSaldo)), 'Saldo pendiente EPO');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(saldoIPE.map(filaSaldo)), 'Saldo pendiente IPE');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hojaLeyenda), 'Leyenda');
-    XLSX.writeFile(wb, `cruces_saldo_prestamos_${new Date().toISOString().substring(0, 10)}.xlsx`);
-  }
-
-  const totalPendienteEPO = saldoEPO.reduce((s, r) => s + r.valorPendiente, 0);
-  const totalPendienteIPE = saldoIPE.reduce((s, r) => s + r.valorPendiente, 0);
-  const cantidadSobrantes = filasCronologicas.filter(f => f.tiene_sobrante).length;
-
-  return (
-    <Modal onClose={onClose} titulo="Cruces cronológicos y saldo pendiente por préstamo" maxWidth={1000}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Tipo</div>
-          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} style={inputS}>
-            <option value="todos">EPO + IPE</option>
-            <option value="egreso">Solo EPO (dados)</option>
-            <option value="ingreso">Solo IPE (recibidos)</option>
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Clínica</div>
-          <select value={filtroClinica} onChange={e => setFiltroClinica(e.target.value)} style={inputS}>
-            <option value="">Todas</option>
-            {clinicasDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Año</div>
-          <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={inputS}>
-            <option value="">Todos</option>
-            {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
-        </div>
-        <div style={{ flex: 1 }} />
-        <button onClick={exportarExcel}
-          style={{ padding: '8px 14px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
-          ↓ Exportar a Excel
-        </button>
-      </div>
-
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
-        <div style={{ background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 150 }}>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Cruces (filas)</div>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>{filasCronologicas.length}</div>
-        </div>
-        <div style={{ background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 150 }}>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Pendiente EPO (dados)</div>
-          <div style={{ fontSize: 17, fontWeight: 700, color: '#ef4444' }}>{fmt(totalPendienteEPO)}</div>
-        </div>
-        <div style={{ background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 150 }}>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Pendiente IPE (recibidos)</div>
-          <div style={{ fontSize: 17, fontWeight: 700, color: '#3b82f6' }}>{fmt(totalPendienteIPE)}</div>
-        </div>
-        <div style={{ background: cantidadSobrantes > 0 ? 'rgba(239,68,68,0.12)' : 'var(--t-bg-inner)', border: `1px solid ${cantidadSobrantes > 0 ? '#ef4444' : 'var(--t-border)'}`, borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 150 }}>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>⚠ Cruces con sobrante</div>
-          <div style={{ fontSize: 17, fontWeight: 700, color: cantidadSobrantes > 0 ? '#ef4444' : 'var(--t-text-primary)' }}>{cantidadSobrantes}</div>
-        </div>
-      </div>
-
-      {cantidadSobrantes > 0 && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: 'rgba(239,68,68,0.1)', border: '1px solid #ef4444', borderRadius: 8, padding: '10px 12px', marginBottom: 14, fontSize: 12 }}>
-          <span style={{ fontSize: 16 }}>⚠️</span>
-          <div>
-            <strong>Hay {cantidadSobrantes} cruce(s) con sobrante</strong> — la devolución trajo más cantidad de la que ese préstamo tenía pendiente en ese momento.
-            Estas filas están marcadas abajo con ⚠ y se listan aparte en la hoja <strong>"Sobrantes a revisar"</strong> del Excel.
-            Revisa si esa devolución también debía cruzarse contra otro préstamo.
-          </div>
-        </div>
-      )}
-
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Vista previa — cruces en orden cronológico</div>
-      <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid var(--t-border)', borderRadius: 8 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-          <thead style={{ position: 'sticky', top: 0, background: 'var(--t-bg-inner)' }}>
-            <tr style={{ textAlign: 'left', color: 'var(--t-text-muted)' }}>
-              <th style={{ padding: '6px 8px' }}></th>
-              <th style={{ padding: '6px 8px' }}>Préstamo</th>
-              <th style={{ padding: '6px 8px' }}>Tipo</th>
-              <th style={{ padding: '6px 8px' }}>Devolución</th>
-              <th style={{ padding: '6px 8px' }}>Fecha cruce</th>
-              <th style={{ padding: '6px 8px' }}>Descripción</th>
-              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Cant. devuelta</th>
-              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Valor devuelto</th>
-              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Saldo pendiente</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filasCronologicas.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin cruces para este filtro</td></tr>
-            )}
-            {filasCronologicas.map((f, i) => (
-              <tr key={i} style={{ borderTop: '1px solid var(--t-border)', background: f.tiene_sobrante ? 'rgba(239,68,68,0.08)' : 'transparent' }}
-                title={f.tiene_sobrante ? `Sobrante: ${f.sobrante_detalle} — Valor sobrante: ${fmt(f.sobrante_valor)}` : undefined}>
-                <td style={{ padding: '5px 8px', textAlign: 'center' }}>{f.tiene_sobrante ? '⚠️' : ''}</td>
-                <td style={{ padding: '5px 8px', fontWeight: 600 }}>{f.documento_prestamo}</td>
-                <td style={{ padding: '5px 8px' }}>{f.tipo}</td>
-                <td style={{ padding: '5px 8px' }}>{f.documento_devolucion}</td>
-                <td style={{ padding: '5px 8px' }}>{fmtFecha(f.fecha_cruce)}</td>
-                <td style={{ padding: '5px 8px', color: 'var(--t-text-muted)' }}>{f.descripcion}</td>
-                <td style={{ padding: '5px 8px', textAlign: 'right' }}>{f.cantidad_devuelta}</td>
-                <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmt(f.valor_devuelto)}</td>
-                <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: f.saldo_pendiente_valor > 0 ? '#f59e0b' : '#22c55e' }}>
-                  {fmt(f.saldo_pendiente_valor)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Modal>
-  );
-}
-
 // ─── Reporte detallado de pendientes por devolver (por producto y clínica) ─────
 
-function itemsPendientesDe(p, devoluciones) {
-  const devueltoPorCodigo = {};
+function itemsPendientesDe(p, devoluciones, cruces = []) {
+  // Junta devoluciones por dos vías: el flujo directo (d.prestamo_id) y el
+  // flujo de multicruce (prestamo_cruces), deduplicando por id de devolución
+  // para no contar dos veces si una devolución aparece en ambas fuentes.
+  const devMap = {};
   devoluciones.filter(d => d.prestamo_id === p.id).forEach(d => {
-    (d.items || []).forEach(i => {
+    devMap[d.id] = d.items || [];
+  });
+  (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
+    devMap[c.devolucion_id] = c.devolucion_items || [];
+  });
+
+  const devueltoPorCodigo = {};
+  Object.values(devMap).forEach(items => {
+    (items || []).forEach(i => {
       devueltoPorCodigo[i.codigo] = (devueltoPorCodigo[i.codigo] || 0) + Number(i.cantidad);
     });
   });
@@ -2959,7 +3480,7 @@ function itemsPendientesDe(p, devoluciones) {
   }).filter(i => i.pendiente > 0);
 }
 
-function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta) {
+function construirReportePendientes(prestamos, devoluciones, cruces, tipo, desde, hasta) {
   const filtrados = prestamos.filter(p => {
     if (p.tipo !== tipo) return false;
     if (p.estado === 'cerrado') return false;
@@ -2973,7 +3494,7 @@ function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta)
   let granTotal = 0;
 
   filtrados.forEach(p => {
-    const pendientes = itemsPendientesDe(p, devoluciones);
+    const pendientes = itemsPendientesDe(p, devoluciones, cruces);
     if (pendientes.length === 0) return;
     const clinica = p.clinica_nombre || 'Sin clínica';
     if (!porClinica[clinica]) porClinica[clinica] = { documentos: {}, valorTotal: 0 };
@@ -2999,12 +3520,12 @@ function construirReportePendientes(prestamos, devoluciones, tipo, desde, hasta)
   return { porClinica, granTotal };
 }
 
-function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
+function ModalReportePendientes({ prestamos, devoluciones, cruces, onClose }) {
   const [desde, setDesde] = useState('2020-01-01');
   const [hasta, setHasta] = useState(new Date().toISOString().substring(0, 10));
 
-  const reporteEgresos = construirReportePendientes(prestamos, devoluciones, 'egreso', desde, hasta);
-  const reporteIngresos = construirReportePendientes(prestamos, devoluciones, 'ingreso', desde, hasta);
+  const reporteEgresos = construirReportePendientes(prestamos, devoluciones, cruces, 'egreso', desde, hasta);
+  const reporteIngresos = construirReportePendientes(prestamos, devoluciones, cruces, 'ingreso', desde, hasta);
 
   const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
 
@@ -3124,635 +3645,10 @@ function ModalReportePendientes({ prestamos, devoluciones, onClose }) {
 
 // ─── MODAL genérico ─────────────────────────────────────────────────────────────
 
-// ─── Dashboard interactivo de préstamos (pagado vs pendiente) ──────────────────
-
-function construirRegistroDashboard(p, cruces) {
-  const det = construirDetallePrestamo(p, cruces);
-  const valorTotal     = (p.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
-  const cantidadTotal  = (p.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
-  const valorPagado    = det.productosPagados.reduce((s, x) => s + x.valor, 0);
-  const cantidadPagada = det.productosPagados.reduce((s, x) => s + x.cantidad, 0);
-  const valorPendiente = det.productosPendientes.reduce((s, x) => s + x.valor, 0);
-  const cantidadPendiente = det.productosPendientes.reduce((s, x) => s + x.cantidad, 0);
-  const fecha = p.fecha ? String(p.fecha).substring(0, 10) : '';
-  return {
-    id: p.id,
-    documento: p.documento_contable,
-    tipo: p.tipo,
-    tipoLabel: p.tipo === 'egreso' ? 'EPO' : 'IPE',
-    clinica: p.clinica_nombre || 'Sin clínica',
-    bodega: p.bodega_nombre || 'Sin bodega',
-    bodega_codigo: p.bodega_codigo || '',
-    estado: p.estado || 'abierto',
-    fecha,
-    anio: fecha ? fecha.substring(0, 4) : 'Sin fecha',
-    mes: fecha ? fecha.substring(0, 7) : 'Sin fecha',
-    valorTotal, cantidadTotal, valorPagado, cantidadPagada, valorPendiente, cantidadPendiente,
-  };
-}
-
-function construirDatosDashboard(prestamos, cruces) {
-  return (prestamos || [])
-    .filter(p => ['ingreso', 'egreso'].includes(p.tipo))
-    .map(p => construirRegistroDashboard(p, cruces));
-}
-
-// Gráfica de barras apiladas (pagado + pendiente) en SVG puro, sin dependencias.
-function BarChartApilado({ data, formatter, height = 240, colorA = '#22c55e', colorB = '#f59e0b', labelA = 'Pagado', labelB = 'Pendiente' }) {
-  if (!data || data.length === 0) {
-    return <div style={{ fontSize: 12, color: 'var(--t-text-muted)', padding: 16, textAlign: 'center' }}>Sin datos para este filtro</div>;
-  }
-  const width = Math.max(560, data.length * 78);
-  const max = Math.max(1, ...data.map(d => d.a + d.b));
-  const gap = (width - 60) / data.length;
-  const barW = Math.min(42, gap - 16);
-  const chartH = height - 46;
-
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <svg width={width} height={height} style={{ display: 'block' }}>
-        <line x1={40} y1={height - 26} x2={width - 10} y2={height - 26} style={{ stroke: 'var(--t-border)' }} strokeWidth="1" />
-        {[0.25, 0.5, 0.75, 1].map(f => (
-          <line key={f} x1={40} y1={height - 26 - chartH * f} x2={width - 10} y2={height - 26 - chartH * f}
-            style={{ stroke: 'var(--t-border)' }} strokeWidth="1" strokeDasharray="3,4" opacity="0.5" />
-        ))}
-        {data.map((d, i) => {
-          const x = 44 + i * gap + (gap - barW) / 2;
-          const hA = max ? (d.a / max) * chartH : 0;
-          const hB = max ? (d.b / max) * chartH : 0;
-          const yA = height - 26 - hA;
-          const yB = yA - hB;
-          const total = d.a + d.b;
-          return (
-            <g key={i}>
-              <title>{`${d.label}\n${labelA}: ${formatter(d.a)}\n${labelB}: ${formatter(d.b)}\nTotal: ${formatter(total)}`}</title>
-              {hB > 0 && <rect x={x} y={yB} width={barW} height={Math.max(hB, 1)} fill={colorB} rx={2} />}
-              {hA > 0 && <rect x={x} y={yA} width={barW} height={Math.max(hA, 1)} fill={colorA} rx={2} />}
-              {total > 0 && (
-                <text x={x + barW / 2} y={yB - 4} textAnchor="middle" fontSize="10" style={{ fill: 'var(--t-text-muted)' }}>
-                  {formatter(total, true)}
-                </text>
-              )}
-              <text x={x + barW / 2} y={height - 10} textAnchor="middle" fontSize="10" style={{ fill: 'var(--t-text-muted)' }}>
-                {d.label.length > 11 ? d.label.slice(0, 10) + '…' : d.label}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
-
-function agregarPor(campo, registros, metrica) {
-  const mapa = new Map();
-  registros.forEach(r => {
-    const key = r[campo] || '—';
-    if (!mapa.has(key)) mapa.set(key, { a: 0, b: 0 });
-    const acc = mapa.get(key);
-    acc.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    acc.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-  return Array.from(mapa.entries())
-    .map(([label, v]) => ({ label, a: v.a, b: v.b }))
-    .sort((x, y) => (y.a + y.b) - (x.a + x.b));
-}
-
-// Antigüedad de la cartera pendiente: cuánto tiempo llevan abiertos los
-// préstamos que aún tienen saldo por devolver (útil para priorizar gestión de cobro).
-function agregarAntiguedad(registros, metrica) {
-  const hoy = new Date();
-  const buckets = [
-    { label: '0-30 días', min: 0, max: 30 },
-    { label: '31-60 días', min: 31, max: 60 },
-    { label: '61-90 días', min: 61, max: 90 },
-    { label: '+90 días', min: 91, max: Infinity },
-  ].map(b => ({ ...b, a: 0, b: 0 }));
-
-  registros.forEach(r => {
-    if (!r.fecha) return;
-    if (r.valorPendiente <= 0 && r.cantidadPendiente <= 0) return;
-    const dias = Math.floor((hoy - new Date(r.fecha)) / 86400000);
-    const bucket = buckets.find(b => dias >= b.min && dias <= b.max) || buckets[buckets.length - 1];
-    bucket.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    bucket.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-
-  return buckets.map(({ label, a, b }) => ({ label, a, b }));
-}
-
-// Desglose de un tipo (EPO o IPE) por estado, en orden fijo abierto → parcial → cerrado.
-function agregarPorEstadoFijo(registros, metrica) {
-  const orden = [
-    { estado: 'abierto', label: 'Abierto' },
-    { estado: 'parcial', label: 'Parcial' },
-    { estado: 'cerrado', label: 'Cerrado' },
-  ].map(o => ({ ...o, a: 0, b: 0 }));
-
-  registros.forEach(r => {
-    const bucket = orden.find(o => o.estado === r.estado);
-    if (!bucket) return;
-    bucket.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    bucket.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-
-  return orden.map(({ label, a, b }) => ({ label, a, b }));
-}
-
-// Bloque completo de un solo tipo de documento (EPO o IPE): sus propias
-// gráficas de clínica, estado, antigüedad de cartera, bodega y año-mes —
-// nunca mezcladas con el otro tipo.
-function BloqueTipo({ titulo, colorTitulo, registros, metrica, formatter }) {
-  const porClinica = React.useMemo(() => agregarPor('clinica', registros, metrica).slice(0, 15), [registros, metrica]);
-  const porEstado = React.useMemo(() => agregarPorEstadoFijo(registros, metrica), [registros, metrica]);
-  const porAntiguedad = React.useMemo(() => agregarAntiguedad(registros, metrica), [registros, metrica]);
-  const porBodega = React.useMemo(() => agregarPor('bodega', registros, metrica), [registros, metrica]);
-  const porAnioMes = React.useMemo(
-    () => agregarPor('mes', registros, metrica).sort((x, y) => String(x.label).localeCompare(String(y.label))),
-    [registros, metrica]
-  );
-
-  return (
-    <div style={{ marginBottom: 32, paddingBottom: 20, borderBottom: '1px solid var(--t-border)' }}>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 14, color: colorTitulo }}>{titulo}</div>
-
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Por tercero (clínica)</div>
-      <div style={{ marginBottom: 20 }}><BarChartApilado data={porClinica} formatter={formatter} /></div>
-
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Por estado</div>
-      <div style={{ marginBottom: 20 }}><BarChartApilado data={porEstado} formatter={formatter} height={200} /></div>
-
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Antigüedad de la cartera pendiente</div>
-      <div style={{ marginBottom: 20 }}><BarChartApilado data={porAntiguedad} formatter={formatter} height={200} /></div>
-
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Por bodega</div>
-      <div style={{ marginBottom: 20 }}><BarChartApilado data={porBodega} formatter={formatter} /></div>
-
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Por año-mes</div>
-      <div><BarChartApilado data={porAnioMes} formatter={formatter} /></div>
-    </div>
-  );
-}
-
-function ModalDashboard({ prestamos, cruces, clinicas, onClose }) {
-  const [filtroClinica, setFiltroClinica] = useState('');
-  const [filtroAnio, setFiltroAnio] = useState('');
-  const [filtroEstado, setFiltroEstado] = useState('todos');
-  const [filtroTipo, setFiltroTipo] = useState('todos');   // todos | egreso (EPO) | ingreso (IPE)
-  const [metrica, setMetrica] = useState('valor'); // 'valor' | 'cantidad'
-
-  const datosCompletos = React.useMemo(() => construirDatosDashboard(prestamos, cruces), [prestamos, cruces]);
-
-  const cliniasDisponibles = React.useMemo(
-    () => Array.from(new Set(datosCompletos.map(r => r.clinica))).sort(),
-    [datosCompletos]
-  );
-  const aniosDisponibles = React.useMemo(
-    () => Array.from(new Set(datosCompletos.map(r => r.anio))).sort().reverse(),
-    [datosCompletos]
-  );
-
-  const filtrados = React.useMemo(() => datosCompletos.filter(r => {
-    if (filtroClinica && r.clinica !== filtroClinica) return false;
-    if (filtroAnio && r.anio !== filtroAnio) return false;
-    if (filtroEstado !== 'todos' && r.estado !== filtroEstado) return false;
-    if (filtroTipo !== 'todos' && r.tipo !== filtroTipo) return false;
-    return true;
-  }), [datosCompletos, filtroClinica, filtroAnio, filtroEstado, filtroTipo]);
-
-  const formatter = (n, corto) => {
-    if (metrica === 'valor') {
-      if (corto && Math.abs(n) >= 1000000) return '$' + (n / 1000000).toFixed(1) + 'M';
-      if (corto && Math.abs(n) >= 1000) return '$' + (n / 1000).toFixed(0) + 'K';
-      return fmt(n);
-    }
-    return Number(n || 0).toLocaleString('es-CO') + (corto ? '' : ' u.');
-  };
-
-  // "filtrados" ya respeta el filtro de Tipo (para decidir cuáles bloques
-  // mostrar); los subconjuntos de cada bloque salen de ahí mismo.
-  const registrosEPO = React.useMemo(() => filtrados.filter(r => r.tipo === 'egreso'), [filtrados]);
-  const registrosIPE = React.useMemo(() => filtrados.filter(r => r.tipo === 'ingreso'), [filtrados]);
-  const mostrarEPO = filtroTipo === 'todos' || filtroTipo === 'egreso';
-  const mostrarIPE = filtroTipo === 'todos' || filtroTipo === 'ingreso';
-
-  const kpis = React.useMemo(() => {
-    const valorPagado = filtrados.reduce((s, r) => s + r.valorPagado, 0);
-    const valorPendiente = filtrados.reduce((s, r) => s + r.valorPendiente, 0);
-    const cantidadPagada = filtrados.reduce((s, r) => s + r.cantidadPagada, 0);
-    const cantidadPendiente = filtrados.reduce((s, r) => s + r.cantidadPendiente, 0);
-    const total = valorPagado + valorPendiente;
-    const pct = total > 0 ? Math.round((valorPagado / total) * 100) : 0;
-    return { valorPagado, valorPendiente, cantidadPagada, cantidadPendiente, pct, nPrestamos: filtrados.length };
-  }, [filtrados]);
-
-  const kpiCard = (label, valor, color) => (
-    <div style={{ background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 130 }}>
-      <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 17, fontWeight: 700, color: color || 'var(--t-text-primary)' }}>{valor}</div>
-    </div>
-  );
-
-  const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
-
-  return (
-    <Modal onClose={onClose} titulo="📈 Dashboard de préstamos — pagado vs. pendiente" maxWidth={1180}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Clínica / tercero</div>
-          <select value={filtroClinica} onChange={e => setFiltroClinica(e.target.value)} style={inputS}>
-            <option value="">Todas</option>
-            {cliniasDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Año</div>
-          <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={inputS}>
-            <option value="">Todos</option>
-            {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Tipo</div>
-          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} style={inputS}>
-            <option value="todos">EPO + IPE</option>
-            <option value="egreso">Solo EPO (dados)</option>
-            <option value="ingreso">Solo IPE (recibidos)</option>
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Estado</div>
-          <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)} style={inputS}>
-            <option value="todos">Todos</option>
-            <option value="abierto">Abierto</option>
-            <option value="parcial">Parcial</option>
-            <option value="cerrado">Cerrado</option>
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Ver por</div>
-          <div style={{ display: 'flex', border: '1px solid var(--t-border)', borderRadius: 7, overflow: 'hidden' }}>
-            <button onClick={() => setMetrica('valor')}
-              style={{ padding: '7px 12px', fontSize: 13, border: 'none', cursor: 'pointer', background: metrica === 'valor' ? '#3b82f6' : 'var(--t-bg-inner)', color: metrica === 'valor' ? '#fff' : 'var(--t-text-primary)' }}>
-              Valor ($)
-            </button>
-            <button onClick={() => setMetrica('cantidad')}
-              style={{ padding: '7px 12px', fontSize: 13, border: 'none', cursor: 'pointer', background: metrica === 'cantidad' ? '#3b82f6' : 'var(--t-bg-inner)', color: metrica === 'cantidad' ? '#fff' : 'var(--t-text-primary)' }}>
-              Cantidad (u.)
-            </button>
-          </div>
-        </div>
-        <div style={{ flex: 1 }} />
-        <button onClick={() => descargarDashboardHTML(datosCompletos, { filtroClinica, filtroAnio, filtroEstado, filtroTipo, metrica })}
-          style={{ padding: '8px 14px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
-          ⬇ Descargar dashboard en HTML
-        </button>
-      </div>
-
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
-        {kpiCard('Préstamos (IPE/EPO)', kpis.nPrestamos)}
-        {kpiCard('Pagado', metrica === 'valor' ? fmt(kpis.valorPagado) : `${kpis.cantidadPagada.toLocaleString('es-CO')} u.`, '#22c55e')}
-        {kpiCard('Pendiente', metrica === 'valor' ? fmt(kpis.valorPendiente) : `${kpis.cantidadPendiente.toLocaleString('es-CO')} u.`, '#f59e0b')}
-        {kpiCard('% pagado', `${kpis.pct}%`, '#3b82f6')}
-      </div>
-
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ width: 10, height: 10, borderRadius: 3, background: '#22c55e', display: 'inline-block' }} />
-        <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Pagado</span>
-        <span style={{ width: 10, height: 10, borderRadius: 3, background: '#f59e0b', display: 'inline-block', marginLeft: 8 }} />
-        <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Pendiente</span>
-      </div>
-
-      {mostrarEPO && (
-        <BloqueTipo titulo="📤 EPO — Préstamos dados" colorTitulo="#ef4444" registros={registrosEPO} metrica={metrica} formatter={formatter} />
-      )}
-      {mostrarIPE && (
-        <BloqueTipo titulo="📥 IPE — Préstamos recibidos" colorTitulo="#3b82f6" registros={registrosIPE} metrica={metrica} formatter={formatter} />
-      )}
-    </Modal>
-  );
-}
-
-// Genera un archivo HTML autónomo (sin dependencias externas) con el mismo
-// dashboard interactivo, para verlo directamente en cualquier navegador.
-function descargarDashboardHTML(datosCompletos, filtrosIniciales) {
-  const dataJson = JSON.stringify(datosCompletos).replace(/</g, '\\u003c');
-  const filtrosJson = JSON.stringify(filtrosIniciales);
-
-  const html = `<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8" />
-<title>Dashboard de préstamos</title>
-<style>
-  :root {
-    --bg-app:#0f1117; --bg-card:#1e2535; --bg-inner:#0a0d14; --border:#2a3348;
-    --text:#e2e8f0; --muted:#64748b; --green:#22c55e; --amber:#f59e0b; --blue:#3b82f6;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg-app); color:var(--text); padding:24px; }
-  h1 { font-size:18px; margin:0 0 18px; }
-  .filtros { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:18px; }
-  .filtros label { display:block; font-size:11px; color:var(--muted); margin-bottom:3px; }
-  select, .toggle button { padding:7px 10px; border:1px solid var(--border); border-radius:7px; font-size:13px; background:var(--bg-inner); color:var(--text); }
-  .toggle { display:flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
-  .toggle button { border:none; cursor:pointer; border-radius:0; }
-  .toggle button.activo { background:var(--blue); color:#fff; }
-  .kpis { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:22px; }
-  .kpi { background:var(--bg-inner); border:1px solid var(--border); border-radius:8px; padding:10px 14px; flex:1; min-width:130px; }
-  .kpi .l { font-size:11px; color:var(--muted); margin-bottom:4px; }
-  .kpi .v { font-size:17px; font-weight:700; }
-  .leyenda { display:flex; gap:8px; align-items:center; margin-bottom:8px; font-size:12px; color:var(--muted); }
-  .sw { width:10px; height:10px; border-radius:3px; display:inline-block; }
-  .titulo-grafica { font-size:13px; font-weight:600; margin:18px 0 6px; }
-  .chart-wrap { overflow-x:auto; }
-  .split-tipo { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  .split-tipo > div { overflow-x:auto; }
-  .split-tipo .sub-titulo { font-size:12px; font-weight:600; margin-bottom:4px; }
-  svg text { fill: var(--muted); }
-</style>
-</head>
-<body>
-  <h1>📈 Dashboard de préstamos — pagado vs. pendiente</h1>
-  <div class="filtros">
-    <div>
-      <label>Clínica / tercero</label>
-      <select id="fClinica"></select>
-    </div>
-    <div>
-      <label>Año</label>
-      <select id="fAnio"></select>
-    </div>
-    <div>
-      <label>Tipo</label>
-      <select id="fTipo">
-        <option value="todos">EPO + IPE</option>
-        <option value="egreso">Solo EPO (dados)</option>
-        <option value="ingreso">Solo IPE (recibidos)</option>
-      </select>
-    </div>
-    <div>
-      <label>Estado</label>
-      <select id="fEstado">
-        <option value="todos">Todos</option>
-        <option value="abierto">Abierto</option>
-        <option value="parcial">Parcial</option>
-        <option value="cerrado">Cerrado</option>
-      </select>
-    </div>
-    <div>
-      <label>Ver por</label>
-      <div class="toggle">
-        <button id="btnValor" class="activo">Valor ($)</button>
-        <button id="btnCantidad">Cantidad (u.)</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="kpis" id="kpis"></div>
-
-  <div class="leyenda">
-    <span class="sw" style="background:var(--green)"></span> Pagado
-    <span class="sw" style="background:var(--amber)"></span> Pendiente
-  </div>
-
-  <div class="titulo-grafica">EPO — Préstamos dados</div>
-  <div id="bloqueEPO"></div>
-
-  <div class="titulo-grafica">IPE — Préstamos recibidos</div>
-  <div id="bloqueIPE"></div>
-
-
-<script>
-const DATA = ${dataJson};
-const FILTROS_INICIALES = ${filtrosJson};
-let metrica = FILTROS_INICIALES.metrica || 'valor';
-
-function fmtMoneda(n) { return '$' + Math.round(n||0).toLocaleString('es-CO'); }
-function fmtCorto(n, corto) {
-  if (metrica === 'valor') {
-    if (corto && Math.abs(n) >= 1000000) return '$' + (n/1000000).toFixed(1) + 'M';
-    if (corto && Math.abs(n) >= 1000) return '$' + (n/1000).toFixed(0) + 'K';
-    return fmtMoneda(n);
-  }
-  return Math.round(n||0).toLocaleString('es-CO') + (corto ? '' : ' u.');
-}
-
-function poblarSelect(id, valores, seleccionado) {
-  const el = document.getElementById(id);
-  el.innerHTML = '<option value="">Todos</option>' + valores.map(v => '<option value="'+v+'">'+v+'</option>').join('');
-  if (seleccionado) el.value = seleccionado;
-}
-
-function filtrarDatos() {
-  const fClinica = document.getElementById('fClinica').value;
-  const fAnio = document.getElementById('fAnio').value;
-  const fEstado = document.getElementById('fEstado').value;
-  const fTipo = document.getElementById('fTipo').value;
-  return DATA.filter(r => {
-    if (fClinica && r.clinica !== fClinica) return false;
-    if (fAnio && r.anio !== fAnio) return false;
-    if (fEstado !== 'todos' && r.estado !== fEstado) return false;
-    if (fTipo !== 'todos' && r.tipo !== fTipo) return false;
-    return true;
-  });
-}
-
-// Igual que filtrarDatos() pero ignora el filtro de Estado, para la gráfica
-// "Por estado" que siempre debe mostrar abierto/parcial/cerrado a la vez.
-function filtrarDatosSinEstado() {
-  const fClinica = document.getElementById('fClinica').value;
-  const fAnio = document.getElementById('fAnio').value;
-  const fTipo = document.getElementById('fTipo').value;
-  return DATA.filter(r => {
-    if (fClinica && r.clinica !== fClinica) return false;
-    if (fAnio && r.anio !== fAnio) return false;
-    if (fTipo !== 'todos' && r.tipo !== fTipo) return false;
-    return true;
-  });
-}
-
-function agregarPor(campo, registros) {
-  const mapa = new Map();
-  registros.forEach(r => {
-    const key = r[campo] || '—';
-    if (!mapa.has(key)) mapa.set(key, { a:0, b:0 });
-    const acc = mapa.get(key);
-    acc.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    acc.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-  return Array.from(mapa.entries()).map(([label, v]) => ({ label, a: v.a, b: v.b }))
-    .sort((x,y) => (y.a+y.b) - (x.a+x.b));
-}
-
-function agregarPorTipoYEstado(registros) {
-  const combos = [
-    { tipoLabel: 'EPO', estado: 'abierto' },
-    { tipoLabel: 'EPO', estado: 'parcial' },
-    { tipoLabel: 'EPO', estado: 'cerrado' },
-    { tipoLabel: 'IPE', estado: 'abierto' },
-    { tipoLabel: 'IPE', estado: 'parcial' },
-    { tipoLabel: 'IPE', estado: 'cerrado' },
-  ].map(c => ({ ...c, a: 0, b: 0 }));
-
-  registros.forEach(r => {
-    const combo = combos.find(c => c.tipoLabel === r.tipoLabel && c.estado === r.estado);
-    if (!combo) return;
-    combo.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    combo.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-
-  return combos.map(({ tipoLabel, estado, a, b }) => ({
-    label: tipoLabel + ' · ' + (estado.charAt(0).toUpperCase() + estado.slice(1)),
-    a, b,
-  }));
-}
-
-function agregarAntiguedad(registros) {
-  const hoy = new Date();
-  const buckets = [
-    { label: '0-30 días', min:0, max:30, a:0, b:0 },
-    { label: '31-60 días', min:31, max:60, a:0, b:0 },
-    { label: '61-90 días', min:61, max:90, a:0, b:0 },
-    { label: '+90 días', min:91, max:Infinity, a:0, b:0 },
-  ];
-  registros.forEach(r => {
-    if (!r.fecha) return;
-    if (r.valorPendiente <= 0 && r.cantidadPendiente <= 0) return;
-    const dias = Math.floor((hoy - new Date(r.fecha)) / 86400000);
-    const bucket = buckets.find(b => dias >= b.min && dias <= b.max) || buckets[buckets.length-1];
-    bucket.a += metrica === 'valor' ? r.valorPagado : r.cantidadPagada;
-    bucket.b += metrica === 'valor' ? r.valorPendiente : r.cantidadPendiente;
-  });
-  return buckets.map(({label,a,b}) => ({label,a,b}));
-}
-
-
-function svgBarChart(data, height) {
-  height = height || 240;
-  if (!data.length) return '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center;">Sin datos para este filtro</div>';
-  const width = Math.max(560, data.length * 78);
-  const max = Math.max(1, ...data.map(d => d.a + d.b));
-  const gap = (width - 60) / data.length;
-  const barW = Math.min(42, gap - 16);
-  const chartH = height - 46;
-  let bars = '';
-  data.forEach((d, i) => {
-    const x = 44 + i*gap + (gap-barW)/2;
-    const hA = max ? (d.a/max)*chartH : 0;
-    const hB = max ? (d.b/max)*chartH : 0;
-    const yA = height - 26 - hA;
-    const yB = yA - hB;
-    const total = d.a + d.b;
-    const label = d.label.length > 11 ? d.label.slice(0,10)+'…' : d.label;
-    const tip = d.label + '\\n Pagado: ' + fmtCorto(d.a) + '\\n Pendiente: ' + fmtCorto(d.b) + '\\n Total: ' + fmtCorto(total);
-    bars += '<g><title>'+tip+'</title>';
-    if (hB > 0) bars += '<rect x="'+x+'" y="'+yB+'" width="'+barW+'" height="'+Math.max(hB,1)+'" fill="var(--amber)" rx="2" />';
-    if (hA > 0) bars += '<rect x="'+x+'" y="'+yA+'" width="'+barW+'" height="'+Math.max(hA,1)+'" fill="var(--green)" rx="2" />';
-    if (total > 0) bars += '<text x="'+(x+barW/2)+'" y="'+(yB-4)+'" text-anchor="middle" font-size="10">'+fmtCorto(total,true)+'</text>';
-    bars += '<text x="'+(x+barW/2)+'" y="'+(height-10)+'" text-anchor="middle" font-size="10">'+label+'</text></g>';
-  });
-  let grid = '<line x1="40" y1="'+(height-26)+'" x2="'+(width-10)+'" y2="'+(height-26)+'" stroke="var(--border)" stroke-width="1" />';
-  [0.25,0.5,0.75,1].forEach(f => {
-    grid += '<line x1="40" y1="'+(height-26-chartH*f)+'" x2="'+(width-10)+'" y2="'+(height-26-chartH*f)+'" stroke="var(--border)" stroke-width="1" stroke-dasharray="3,4" opacity="0.5" />';
-  });
-  return '<svg width="'+width+'" height="'+height+'" style="display:block">'+grid+bars+'</svg>';
-}
-
-function render() {
-  const filtrados = filtrarDatos();
-
-  const valorPagado = filtrados.reduce((s,r) => s + r.valorPagado, 0);
-  const valorPendiente = filtrados.reduce((s,r) => s + r.valorPendiente, 0);
-  const cantidadPagada = filtrados.reduce((s,r) => s + r.cantidadPagada, 0);
-  const cantidadPendiente = filtrados.reduce((s,r) => s + r.cantidadPendiente, 0);
-  const total = valorPagado + valorPendiente;
-  const pct = total > 0 ? Math.round((valorPagado/total)*100) : 0;
-
-  document.getElementById('kpis').innerHTML = [
-    ['Préstamos (IPE/EPO)', filtrados.length, ''],
-    ['Pagado', metrica === 'valor' ? fmtMoneda(valorPagado) : cantidadPagada.toLocaleString('es-CO')+' u.', 'color:var(--green)'],
-    ['Pendiente', metrica === 'valor' ? fmtMoneda(valorPendiente) : cantidadPendiente.toLocaleString('es-CO')+' u.', 'color:var(--amber)'],
-    ['% pagado', pct + '%', 'color:var(--blue)'],
-  ].map(([l,v,style]) => '<div class="kpi"><div class="l">'+l+'</div><div class="v" style="'+style+'">'+v+'</div></div>').join('');
-
-  const porTipo    = agregarPor('tipoLabel', filtrados);
-  const porTipoEstado = agregarPorTipoYEstado(filtrarDatosSinEstado());
-
-  document.getElementById('chartTipo').innerHTML       = svgBarChart(porTipo, 200);
-  document.getElementById('chartTipoEstado').innerHTML = svgBarChart(porTipoEstado, 220);
-
-  const fTipo = document.getElementById('fTipo').value;
-  function pintarSeccionTipo(containerId, calcularFn, height) {
-    const el = document.getElementById(containerId);
-    if (fTipo !== 'todos') {
-      el.innerHTML = svgBarChart(calcularFn(filtrados), height);
-      return;
-    }
-    const epo = calcularFn(filtrados.filter(r => r.tipo === 'egreso'));
-    const ipe = calcularFn(filtrados.filter(r => r.tipo === 'ingreso'));
-    el.innerHTML =
-      '<div class="split-tipo">' +
-        '<div><div class="sub-titulo" style="color:#ef4444">EPO (dados)</div>' + svgBarChart(epo, height) + '</div>' +
-        '<div><div class="sub-titulo" style="color:#3b82f6">IPE (recibidos)</div>' + svgBarChart(ipe, height) + '</div>' +
-      '</div>';
-  }
-
-  pintarSeccionTipo('secTercero', regs => agregarPor('clinica', regs).slice(0, 15), 240);
-  pintarSeccionTipo('secBodega', regs => agregarPor('bodega', regs), 240);
-  pintarSeccionTipo('secAntiguedad', regs => agregarAntiguedad(regs), 200);
-  pintarSeccionTipo('secMes', regs => agregarPor('mes', regs).sort((x,y) => String(x.label).localeCompare(String(y.label))), 240);
-}
-
-function init() {
-  poblarSelect('fClinica', Array.from(new Set(DATA.map(r => r.clinica))).sort(), FILTROS_INICIALES.filtroClinica);
-  poblarSelect('fAnio', Array.from(new Set(DATA.map(r => r.anio))).sort().reverse(), FILTROS_INICIALES.filtroAnio);
-  if (FILTROS_INICIALES.filtroEstado) document.getElementById('fEstado').value = FILTROS_INICIALES.filtroEstado;
-  if (FILTROS_INICIALES.filtroTipo) document.getElementById('fTipo').value = FILTROS_INICIALES.filtroTipo;
-  if (metrica === 'cantidad') {
-    document.getElementById('btnCantidad').classList.add('activo');
-    document.getElementById('btnValor').classList.remove('activo');
-  }
-
-  document.getElementById('fClinica').addEventListener('change', render);
-  document.getElementById('fAnio').addEventListener('change', render);
-  document.getElementById('fEstado').addEventListener('change', render);
-  document.getElementById('fTipo').addEventListener('change', render);
-  document.getElementById('btnValor').addEventListener('click', () => {
-    metrica = 'valor';
-    document.getElementById('btnValor').classList.add('activo');
-    document.getElementById('btnCantidad').classList.remove('activo');
-    render();
-  });
-  document.getElementById('btnCantidad').addEventListener('click', () => {
-    metrica = 'cantidad';
-    document.getElementById('btnCantidad').classList.add('activo');
-    document.getElementById('btnValor').classList.remove('activo');
-    render();
-  });
-
-  render();
-}
-init();
-</script>
-</body>
-</html>`;
-
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `dashboard_prestamos_${new Date().toISOString().substring(0, 10)}.html`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function Modal({ onClose, titulo, children, maxWidth = 760 }) {
+function Modal({ onClose, titulo, children }) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div style={{ background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 12, width: '100%', maxWidth, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 12, width: '100%', maxWidth: 760, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: '1px solid var(--t-border)' }}>
           <span style={{ fontWeight: 600, fontSize: 15 }}>{titulo}</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t-text-muted)', fontSize: 20, lineHeight: 1 }}>✕</button>
@@ -3762,12 +3658,6 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
 
 
 
