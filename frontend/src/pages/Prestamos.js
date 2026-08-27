@@ -2799,12 +2799,12 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, clinicas }) {
   // ED  = devoluciones de lo que nos prestaron (ingreso → ED)
   const tipoDevLabel = tipoDoc === 'egreso' ? 'IDP' : 'ED';
   const devsFiltradas = useMemo(() => {
-    const prefijo = tipoDoc === 'egreso' ? 'IDP' : 'ED';
+    // prestamo_tipo viene del JOIN en el backend (tipo del préstamo padre)
+    // Si es 'egreso' (EPO) → devoluciones IDP; si es 'ingreso' (IPE) → devoluciones ED
     return (devoluciones || []).filter(d => {
-      const doc = (d.documento_contable || '').toUpperCase();
-      const matchTipo = doc.startsWith(prefijo);
+      const matchTipo    = (d.prestamo_tipo || d.tipo) === tipoDoc;
       const matchClinica = filtroClinica === 'todas' || d.clinica_nombre === filtroClinica;
-      const matchAnio = filtroAnio === 'todos' || String(new Date(d.fecha).getFullYear()) === filtroAnio;
+      const matchAnio    = filtroAnio   === 'todos'  || String(new Date(d.fecha).getFullYear()) === filtroAnio;
       return matchTipo && matchClinica && matchAnio;
     });
   }, [devoluciones, tipoDoc, filtroClinica, filtroAnio]);
