@@ -2646,6 +2646,7 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
 
   const [verPendientes, setVerPendientes] = useState(false);
   const [verPorPrestamo, setVerPorPrestamo] = useState(false);
+  const [verCruces, setVerCruces] = useState(false);
 
   const cardStyle = {
     background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10,
@@ -2701,6 +2702,15 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
             Por cada IPE/EPO: qué devoluciones (IDP/ED) tiene cruzadas, qué productos ya se pagaron y qué falta
           </div>
         </div>
+        <div style={{ ...cardStyle, gridColumn: '1 / -1' }} onClick={() => setVerCruces(true)}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
+            <span style={{ fontSize: 18 }}>🧾</span>
+            <span style={{ fontWeight: 500, fontSize: 13 }}>Cruces cronológicos y saldo pendiente por préstamo</span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+            EPO/IPE con sus devoluciones cruzadas, cantidades y valores $, descontando el saldo en orden cronológico — marca devoluciones con sobrante para revisar, y exporta a Excel con hojas de saldo pendiente por EPO y por IPE
+          </div>
+        </div>
       </div>
 
       {verPendientes && (
@@ -2708,6 +2718,9 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
       )}
       {verPorPrestamo && (
         <ModalReportePorPrestamo prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerPorPrestamo(false)} />
+      )}
+      {verCruces && (
+        <ModalReporteCruces prestamos={prestamos} cruces={cruces} clinicas={clinicas} onClose={() => setVerCruces(false)} />
       )}
     </div>
   );
@@ -3453,6 +3466,338 @@ function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
   );
 }
 
+// ─── Reporte de cruces en orden cronológico, con saldo descontado por préstamo ─
+
+// Reporte de cruces en orden cronológico: recorre las devoluciones cruzadas
+// de cada préstamo en el orden en que se cruzaron (fecha del cruce) y va
+// descontando el saldo pendiente del préstamo a medida que avanza, para que
+// cada fila muestre cuánto quedó pendiente DESPUÉS de ese cruce puntual.
+// También marca cuando una devolución trae más cantidad de la que el
+// préstamo tenía pendiente en ese momento ("sobrante", para revisar).
+function construirReporteCrucesCronologico(prestamos, cruces) {
+  const base = (prestamos || []).filter(p => ['ingreso', 'egreso'].includes(p.tipo));
+  const filas = [];
+
+  base.forEach(p => {
+    const crucesDe = (cruces || [])
+      .filter(c => c.prestamo_id === p.id)
+      .slice()
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    if (crucesDe.length === 0) return; // sin devoluciones cruzadas, no aporta filas a este reporte
+
+    const saldoPorCodigo = {};
+    const precioPorCodigo = {};
+    const nombrePorCodigo = {};
+    (p.items || []).forEach(i => {
+      saldoPorCodigo[i.codigo] = Number(i.cantidad);
+      precioPorCodigo[i.codigo] = Number(i.precio_unitario || 0);
+      nombrePorCodigo[i.codigo] = i.nombre;
+    });
+    const valorTotalPrestamo = (p.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
+    const cantidadTotalPrestamo = (p.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
+    const tipoLabel = p.tipo === 'egreso' ? 'EPO' : 'IPE';
+    const tipoLabelDevol = p.tipo === 'egreso' ? 'IDP' : 'ED';
+
+    crucesDe.forEach(c => {
+      const itemsDevueltos = c.devolucion_items || [];
+      let cantidadEsteC = 0;
+      let valorEsteC = 0;
+      let sobranteCantidad = 0;
+      let sobranteValor = 0;
+      const detalleProductos = [];
+      const detalleSobrante = [];
+
+      itemsDevueltos.forEach(it => {
+        const codigo = it.codigo;
+        const cant = Number(it.cantidad);
+        const precio = precioPorCodigo[codigo] != null ? precioPorCodigo[codigo] : Number(it.precio_unitario || 0);
+        const disponible = Math.max(saldoPorCodigo[codigo] || 0, 0);
+        const aplicada = Math.min(cant, disponible);
+        const sobranteItem = cant - aplicada; // lo que la devolución trae de más y no cupo en el saldo de este préstamo
+        saldoPorCodigo[codigo] = disponible - aplicada;
+        if (aplicada > 0) {
+          cantidadEsteC += aplicada;
+          valorEsteC += aplicada * precio;
+          detalleProductos.push(`${nombrePorCodigo[codigo] || it.nombre || codigo} (${aplicada})`);
+        }
+        if (sobranteItem > 0) {
+          sobranteCantidad += sobranteItem;
+          sobranteValor += sobranteItem * precio;
+          detalleSobrante.push(`${nombrePorCodigo[codigo] || it.nombre || codigo} (+${sobranteItem})`);
+        }
+      });
+
+      const saldoPendienteCantidad = Object.values(saldoPorCodigo).reduce((s, v) => s + Math.max(v, 0), 0);
+      const saldoPendienteValor = Object.entries(saldoPorCodigo)
+        .reduce((s, [cod, v]) => s + Math.max(v, 0) * (precioPorCodigo[cod] || 0), 0);
+
+      const descripcion = c.observaciones || c.grupo_observaciones
+        || `Cruce ${tipoLabel} ${p.documento_contable} con ${tipoLabelDevol} ${c.devolucion_doc}`;
+
+      filas.push({
+        documento_prestamo: p.documento_contable,
+        tipo: tipoLabel,
+        clinica: p.clinica_nombre || '—',
+        fecha_prestamo: p.fecha,
+        numero_cruce: c.grupo_numero || '',
+        fecha_cruce: c.created_at,
+        documento_devolucion: c.devolucion_doc,
+        tipo_devolucion: tipoLabelDevol,
+        tipo_cruce: c.tipo_cruce || '',
+        descripcion,
+        productos_devueltos: detalleProductos.join(', ') || '—',
+        cantidad_devuelta: cantidadEsteC,
+        valor_devuelto: valorEsteC,
+        tiene_sobrante: sobranteCantidad > 0,
+        sobrante_cantidad: sobranteCantidad,
+        sobrante_valor: sobranteValor,
+        sobrante_detalle: detalleSobrante.join(', '),
+        saldo_pendiente_cantidad: saldoPendienteCantidad,
+        saldo_pendiente_valor: saldoPendienteValor,
+        cantidad_total_prestamo: cantidadTotalPrestamo,
+        valor_total_prestamo: valorTotalPrestamo,
+        estado_prestamo: p.estado,
+      });
+    });
+  });
+
+  // Orden final: por préstamo (documento) y dentro de cada uno, cronológico
+  return filas.sort((a, b) => {
+    if (a.documento_prestamo !== b.documento_prestamo) return String(a.documento_prestamo).localeCompare(String(b.documento_prestamo));
+    return new Date(a.fecha_cruce) - new Date(b.fecha_cruce);
+  });
+}
+
+// Saldo pendiente por préstamo (para las hojas "Saldo pendiente EPO/IPE" del Excel)
+function construirSaldoPorPrestamo(prestamos, cruces) {
+  return (prestamos || [])
+    .filter(p => ['ingreso', 'egreso'].includes(p.tipo))
+    .map(p => {
+      const det = construirDetallePrestamo(p, cruces);
+      const cantidadTotal = (p.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
+      const valorTotal = (p.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
+      const cantidadPagada = det.productosPagados.reduce((s, x) => s + x.cantidad, 0);
+      const valorPagado = det.productosPagados.reduce((s, x) => s + x.valor, 0);
+      const cantidadPendiente = det.productosPendientes.reduce((s, x) => s + x.cantidad, 0);
+      const valorPendiente = det.productosPendientes.reduce((s, x) => s + x.valor, 0);
+      return {
+        tipo: p.tipo,
+        documento: p.documento_contable,
+        clinica: p.clinica_nombre || 'Sin clínica',
+        bodega: p.bodega_nombre || p.bodega_codigo || 'Sin bodega',
+        fecha: p.fecha,
+        estado: p.estado,
+        cantidadTotal, cantidadPagada, cantidadPendiente,
+        valorTotal, valorPagado, valorPendiente,
+      };
+    });
+}
+
+function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
+  const [filtroTipo, setFiltroTipo] = useState('todos');       // todos | egreso | ingreso
+  const [filtroClinica, setFiltroClinica] = useState('');
+  const [filtroAnio, setFiltroAnio] = useState('');
+
+  const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
+
+  const base = (prestamos || []).filter(p => ['ingreso', 'egreso'].includes(p.tipo));
+  const clinicasDisponibles = Array.from(new Set(base.map(p => p.clinica_nombre).filter(Boolean))).sort();
+  const aniosDisponibles = Array.from(new Set(base.map(p => (p.fecha ? String(p.fecha).substring(0, 4) : null)).filter(Boolean))).sort().reverse();
+
+  const baseFiltrada = base.filter(p => {
+    if (filtroTipo !== 'todos' && p.tipo !== filtroTipo) return false;
+    if (filtroClinica && p.clinica_nombre !== filtroClinica) return false;
+    if (filtroAnio && !(String(p.fecha || '').startsWith(filtroAnio))) return false;
+    return true;
+  });
+
+  const filasCronologicas = construirReporteCrucesCronologico(baseFiltrada, cruces);
+  const datosSaldos = construirSaldoPorPrestamo(baseFiltrada, cruces);
+  const saldoEPO = datosSaldos.filter(r => r.tipo === 'egreso').sort((a, b) => b.valorPendiente - a.valorPendiente);
+  const saldoIPE = datosSaldos.filter(r => r.tipo === 'ingreso').sort((a, b) => b.valorPendiente - a.valorPendiente);
+
+  function exportarExcel() {
+    const hojaCruces = filasCronologicas.map(f => ({
+      'Documento Préstamo': f.documento_prestamo,
+      'Tipo': f.tipo,
+      'Clínica': f.clinica,
+      'Fecha Préstamo': fmtFecha(f.fecha_prestamo),
+      'N° Cruce': f.numero_cruce,
+      'Fecha Cruce': fmtFecha(f.fecha_cruce),
+      'Documento Devolución': f.documento_devolucion,
+      'Tipo Devolución': f.tipo_devolucion,
+      'Tipo de Cruce': f.tipo_cruce,
+      'Descripción del Cruce': f.descripcion,
+      'Productos Devueltos en este Cruce': f.productos_devueltos,
+      'Cantidad Devuelta (este cruce)': f.cantidad_devuelta,
+      'Valor Devuelto (este cruce) $': f.valor_devuelto,
+      '⚠ Sobrante (revisar)': f.tiene_sobrante ? 'SÍ' : '',
+      'Cantidad Sobrante': f.sobrante_cantidad || '',
+      'Valor Sobrante $': f.sobrante_valor || '',
+      'Detalle del Sobrante': f.sobrante_detalle || '',
+      'Saldo Pendiente Cantidad (después de este cruce)': f.saldo_pendiente_cantidad,
+      'Saldo Pendiente Valor $ (después de este cruce)': f.saldo_pendiente_valor,
+      'Cantidad Total del Préstamo': f.cantidad_total_prestamo,
+      'Valor Total del Préstamo $': f.valor_total_prestamo,
+      'Estado Actual del Préstamo': f.estado_prestamo,
+    }));
+
+    const filaSaldo = r => ({
+      'Documento': r.documento,
+      'Clínica': r.clinica,
+      'Bodega': r.bodega,
+      'Fecha': fmtFecha(r.fecha),
+      'Estado': r.estado,
+      'Cantidad Total': r.cantidadTotal,
+      'Cantidad Pagada': r.cantidadPagada,
+      'Cantidad Pendiente': r.cantidadPendiente,
+      'Valor Total $': r.valorTotal,
+      'Valor Pagado $': r.valorPagado,
+      'Valor Pendiente $': r.valorPendiente,
+    });
+
+    const filasConSobrante = filasCronologicas.filter(f => f.tiene_sobrante);
+    const hojaSobrantes = filasConSobrante.map(f => ({
+      'Documento Préstamo': f.documento_prestamo,
+      'Tipo': f.tipo,
+      'Clínica': f.clinica,
+      'Documento Devolución': f.documento_devolucion,
+      'Fecha Cruce': fmtFecha(f.fecha_cruce),
+      'Cantidad Sobrante': f.sobrante_cantidad,
+      'Valor Sobrante $': f.sobrante_valor,
+      'Detalle del Sobrante': f.sobrante_detalle,
+      'Posible explicación': 'Esta devolución trajo más cantidad de la que el préstamo tenía pendiente en ese momento. Puede deberse a que también se cruzó (o debía cruzarse) contra otro préstamo del mismo tipo.',
+    }));
+
+    const hojaLeyenda = [
+      { Columna: 'Sobrante', Explicación: 'Cantidad/valor de una devolución que NO se pudo descontar del saldo de este préstamo porque ya no tenía pendiente suficiente. No se pierde el dato: probablemente pertenece a otro préstamo cruzado con la misma devolución.' },
+      { Columna: 'Saldo Pendiente (después de este cruce)', Explicación: 'Lo que le queda pendiente al préstamo justo después de aplicar ese cruce, en el orden cronológico en que se registraron los cruces (created_at).' },
+      { Columna: 'Cantidad/Valor Devuelto (este cruce)', Explicación: 'Solo la porción de la devolución que sí se pudo aplicar al saldo del préstamo (tope: lo que quedaba pendiente).' },
+      { Columna: '', Explicación: '' },
+      { Columna: 'Revisar la hoja "Sobrantes a revisar"', Explicación: 'Contiene solo las filas donde hubo sobrante, para auditar más rápido sin recorrer todo el histórico.' },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hojaCruces), 'Cruces cronologico');
+    if (hojaSobrantes.length > 0) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hojaSobrantes), 'Sobrantes a revisar');
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(saldoEPO.map(filaSaldo)), 'Saldo pendiente EPO');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(saldoIPE.map(filaSaldo)), 'Saldo pendiente IPE');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hojaLeyenda), 'Leyenda');
+    XLSX.writeFile(wb, `cruces_saldo_prestamos_${new Date().toISOString().substring(0, 10)}.xlsx`);
+  }
+
+  const totalPendienteEPO = saldoEPO.reduce((s, r) => s + r.valorPendiente, 0);
+  const totalPendienteIPE = saldoIPE.reduce((s, r) => s + r.valorPendiente, 0);
+  const cantidadSobrantes = filasCronologicas.filter(f => f.tiene_sobrante).length;
+
+  return (
+    <Modal onClose={onClose} titulo="Cruces cronológicos y saldo pendiente por préstamo" maxWidth={1000}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Tipo</div>
+          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} style={inputS}>
+            <option value="todos">EPO + IPE</option>
+            <option value="egreso">Solo EPO (dados)</option>
+            <option value="ingreso">Solo IPE (recibidos)</option>
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Clínica</div>
+          <select value={filtroClinica} onChange={e => setFiltroClinica(e.target.value)} style={inputS}>
+            <option value="">Todas</option>
+            {clinicasDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Año</div>
+          <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={inputS}>
+            <option value="">Todos</option>
+            {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <div style={{ flex: 1 }} />
+        <button onClick={exportarExcel}
+          style={{ padding: '8px 14px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+          ↓ Exportar a Excel
+        </button>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        <div style={{ background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Cruces (filas)</div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{filasCronologicas.length}</div>
+        </div>
+        <div style={{ background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Pendiente EPO (dados)</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: '#ef4444' }}>{fmt(totalPendienteEPO)}</div>
+        </div>
+        <div style={{ background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Pendiente IPE (recibidos)</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: '#3b82f6' }}>{fmt(totalPendienteIPE)}</div>
+        </div>
+        <div style={{ background: cantidadSobrantes > 0 ? 'rgba(239,68,68,0.12)' : 'var(--t-bg-inner)', border: `1px solid ${cantidadSobrantes > 0 ? '#ef4444' : 'var(--t-border)'}`, borderRadius: 8, padding: '10px 14px', flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>⚠ Cruces con sobrante</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: cantidadSobrantes > 0 ? '#ef4444' : 'var(--t-text-primary)' }}>{cantidadSobrantes}</div>
+        </div>
+      </div>
+
+      {cantidadSobrantes > 0 && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: 'rgba(239,68,68,0.1)', border: '1px solid #ef4444', borderRadius: 8, padding: '10px 12px', marginBottom: 14, fontSize: 12 }}>
+          <span style={{ fontSize: 16 }}>⚠️</span>
+          <div>
+            <strong>Hay {cantidadSobrantes} cruce(s) con sobrante</strong> — la devolución trajo más cantidad de la que ese préstamo tenía pendiente en ese momento.
+            Estas filas están marcadas abajo con ⚠ y se listan aparte en la hoja <strong>"Sobrantes a revisar"</strong> del Excel.
+            Revisa si esa devolución también debía cruzarse contra otro préstamo.
+          </div>
+        </div>
+      )}
+
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Vista previa — cruces en orden cronológico</div>
+      <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid var(--t-border)', borderRadius: 8 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead style={{ position: 'sticky', top: 0, background: 'var(--t-bg-inner)' }}>
+            <tr style={{ textAlign: 'left', color: 'var(--t-text-muted)' }}>
+              <th style={{ padding: '6px 8px' }}></th>
+              <th style={{ padding: '6px 8px' }}>Préstamo</th>
+              <th style={{ padding: '6px 8px' }}>Tipo</th>
+              <th style={{ padding: '6px 8px' }}>Devolución</th>
+              <th style={{ padding: '6px 8px' }}>Fecha cruce</th>
+              <th style={{ padding: '6px 8px' }}>Descripción</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Cant. devuelta</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Valor devuelto</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Saldo pendiente</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filasCronologicas.length === 0 && (
+              <tr><td colSpan={9} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin cruces para este filtro</td></tr>
+            )}
+            {filasCronologicas.map((f, i) => (
+              <tr key={i} style={{ borderTop: '1px solid var(--t-border)', background: f.tiene_sobrante ? 'rgba(239,68,68,0.08)' : 'transparent' }}
+                title={f.tiene_sobrante ? `Sobrante: ${f.sobrante_detalle} — Valor sobrante: ${fmt(f.sobrante_valor)}` : undefined}>
+                <td style={{ padding: '5px 8px', textAlign: 'center' }}>{f.tiene_sobrante ? '⚠️' : ''}</td>
+                <td style={{ padding: '5px 8px', fontWeight: 600 }}>{f.documento_prestamo}</td>
+                <td style={{ padding: '5px 8px' }}>{f.tipo}</td>
+                <td style={{ padding: '5px 8px' }}>{f.documento_devolucion}</td>
+                <td style={{ padding: '5px 8px' }}>{fmtFecha(f.fecha_cruce)}</td>
+                <td style={{ padding: '5px 8px', color: 'var(--t-text-muted)' }}>{f.descripcion}</td>
+                <td style={{ padding: '5px 8px', textAlign: 'right' }}>{f.cantidad_devuelta}</td>
+                <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmt(f.valor_devuelto)}</td>
+                <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: f.saldo_pendiente_valor > 0 ? '#f59e0b' : '#22c55e' }}>
+                  {fmt(f.saldo_pendiente_valor)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── Reporte detallado de pendientes por devolver (por producto y clínica) ─────
 
 function itemsPendientesDe(p, devoluciones, cruces = []) {
@@ -3645,10 +3990,10 @@ function ModalReportePendientes({ prestamos, devoluciones, cruces, onClose }) {
 
 // ─── MODAL genérico ─────────────────────────────────────────────────────────────
 
-function Modal({ onClose, titulo, children }) {
+function Modal({ onClose, titulo, children, maxWidth = 760 }) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div style={{ background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 12, width: '100%', maxWidth: 760, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ background: 'var(--t-bg-app)', border: '1px solid var(--t-border)', borderRadius: 12, width: '100%', maxWidth, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: '1px solid var(--t-border)' }}>
           <span style={{ fontWeight: 600, fontSize: 15 }}>{titulo}</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t-text-muted)', fontSize: 20, lineHeight: 1 }}>✕</button>
@@ -3658,6 +4003,7 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
 
 
