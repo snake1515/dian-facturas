@@ -231,16 +231,7 @@ router.patch('/:id', authMiddleware, adminOnly, async (req, res) => {
 
 router.get('/devoluciones', async (req, res) => {
   try {
-    const { rows } = await pool.query(`
-      SELECT d.*,
-             p.clinica_nombre,
-             p.tipo          AS prestamo_tipo,
-             p.bodega_codigo,
-             p.bodega_nombre
-      FROM prestamo_devoluciones d
-      LEFT JOIN prestamos p ON p.id = d.prestamo_id
-      ORDER BY d.fecha DESC
-    `);
+    const { rows } = await pool.query('SELECT * FROM prestamo_devoluciones ORDER BY fecha DESC');
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -536,8 +527,22 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
     const fechaDoc = d.fecha ? String(d.fecha).substring(0, 10) : '—';
     const nItems = (d.items || []).length;
     const altoCabDoc = 18;
+
+    // Descripción propia del documento (observaciones de la EPO/IPE/IDP/ED),
+    // partida en líneas para que quepa dentro del ancho útil de la página.
+    const descLineas = [];
+    if (d.observaciones && String(d.observaciones).trim()) {
+      const palabras = String(d.observaciones).trim().split(/\s+/);
+      let renglon = '';
+      for (const w of palabras) {
+        if ((renglon + w).length > 110) { descLineas.push(renglon.trim()); renglon = ''; }
+        renglon += w + ' ';
+      }
+      if (renglon.trim()) descLineas.push(renglon.trim());
+    }
+    const altoDesc  = descLineas.length > 0 ? 4 + descLineas.length * 11 : 0;
     const altoTabla = nItems > 0 ? 16 + nItems * 14 : 0;
-    checkY(altoCabDoc + altoTabla + 8);
+    checkY(altoCabDoc + altoDesc + altoTabla + 8);
 
     // Cabecera del documento — fondo azul claro con borde
     rect(ML, y - altoCabDoc + 4, CW, altoCabDoc, AZUL_LIGHT, AZUL, 0.6);
@@ -547,6 +552,20 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
     texto(fechaDoc, ML + DC[3] + 4, y - 10, 8, font, NEGRO, 75);
     texto('$' + valor.toLocaleString('es-CO'), ML + DC[4] + 4, y - 10, 8, fontBold, NEGRO, 90);
     y -= altoCabDoc + 2;
+
+    // Descripción del documento (si tiene observaciones registradas)
+    if (descLineas.length > 0) {
+      checkY(11);
+      texto('Descripción:', ML + 4, y - 8, 7.5, fontBold, NEGRO, 58);
+      texto(descLineas[0], ML + 60, y - 8, 7.5, font, NEGRO, CW - 64);
+      y -= 11;
+      for (let li = 1; li < descLineas.length; li++) {
+        checkY(11);
+        texto(descLineas[li], ML + 60, y - 8, 7.5, font, NEGRO, CW - 64);
+        y -= 11;
+      }
+      y -= 3;
+    }
 
     // Tabla de items del documento
     if (nItems > 0) {
@@ -909,6 +928,7 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
 
 
 
