@@ -231,7 +231,16 @@ router.patch('/:id', authMiddleware, adminOnly, async (req, res) => {
 
 router.get('/devoluciones', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM prestamo_devoluciones ORDER BY fecha DESC');
+    const { rows } = await pool.query(`
+      SELECT d.*,
+             p.clinica_nombre,
+             p.tipo          AS prestamo_tipo,
+             p.bodega_codigo,
+             p.bodega_nombre
+      FROM prestamo_devoluciones d
+      LEFT JOIN prestamos p ON p.id = d.prestamo_id
+      ORDER BY d.fecha DESC
+    `);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -900,6 +909,11 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
 
 
 
