@@ -2705,7 +2705,7 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
       )}
 
       <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--t-border)' }}>
-        <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} />
+        <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />
       </div>
     </div>
   );
@@ -2766,7 +2766,7 @@ function PanelDashboard({ titulo, filas, modo }) {
   );
 }
 
-function DashboardPrestamosInteractivo({ prestamos, devoluciones, clinicas }) {
+function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinicas }) {
   const [tipoDoc,      setTipoDoc]      = useState('egreso');
   const [filtroClinica,setFiltroClinica]= useState('todas');
   const [filtroAnio,   setFiltroAnio]   = useState('todos');
@@ -2905,20 +2905,26 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, clinicas }) {
     return Object.values(mapa).sort((a, b) => a.label.localeCompare(b.label));
   }, [filtrados, devsFiltradas, modo]);
 
-  // ── Antigüedad de documentos abiertos ────────────────────────────
+  function valorPendienteDoc(p) {
+    const pendientes = itemsPendientesDe(p, devoluciones, cruces);
+    if (modo === 'cantidad') return pendientes.reduce((s, i) => s + Number(i.pendiente || 0), 0);
+    return pendientes.reduce((s, i) => s + Number(i.pendiente || 0) * Number(i.precio_unitario || 0), 0);
+  }
+
+  // ── Antigüedad de documentos abiertos (saldo pendiente, no el valor total del documento) ──
   const rangoAntiguedad = useMemo(() => {
     const hoy = new Date();
     const rangos = { '0-30 días': 0, '31-60 días': 0, '61-90 días': 0, '+90 días': 0 };
     filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
       const dias = Math.floor((hoy - new Date(p.fecha)) / 86400000);
-      const v = valorDoc(p);
+      const v = valorPendienteDoc(p);
       if      (dias <= 30) rangos['0-30 días']  += v;
       else if (dias <= 60) rangos['31-60 días'] += v;
       else if (dias <= 90) rangos['61-90 días'] += v;
       else                 rangos['+90 días']   += v;
     });
     return Object.entries(rangos).map(([label, cerrado]) => ({ label, abierto: 0, parcial: 0, cerrado }));
-  }, [filtrados, modo]);
+  }, [filtrados, modo, devoluciones, cruces]);
 
   // ── Semáforo de antigüedad por clínica ───────────────────────────
   const semaforoPorClinica = useMemo(() => {
@@ -2930,27 +2936,28 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, clinicas }) {
       if (!mapa[k]) mapa[k] = { label: k, max: 0, count: 0, valor: 0 };
       if (dias > mapa[k].max) mapa[k].max = dias;
       mapa[k].count++;
-      mapa[k].valor += valorDoc(p);
+      mapa[k].valor += valorPendienteDoc(p);
     });
     return Object.values(mapa).sort((a, b) => b.max - a.max).map(e => ({
       ...e,
       color: e.max > 90 ? '#ef4444' : e.max > 30 ? '#f59e0b' : '#22c55e',
     }));
-  }, [filtrados, modo]);
+  }, [filtrados, modo, devoluciones, cruces]);
 
-  // ── Top productos pendientes ──────────────────────────────────────
+  // ── Top productos pendientes (cantidad/valor ya neto de lo devuelto/cruzado) ──
   const topProductosPendientes = useMemo(() => {
     const mapa = {};
     filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
-      (p.items || []).forEach(i => {
+      const pendientes = itemsPendientesDe(p, devoluciones, cruces);
+      pendientes.forEach(i => {
         const k = i.codigo || i.nombre;
         if (!mapa[k]) mapa[k] = { codigo: i.codigo, nombre: i.nombre, cantidad: 0, valor: 0 };
-        mapa[k].cantidad += Number(i.cantidad || 0);
-        mapa[k].valor    += Number(i.cantidad || 0) * Number(i.precio_unitario || 0);
+        mapa[k].cantidad += Number(i.pendiente || 0);
+        mapa[k].valor    += Number(i.pendiente || 0) * Number(i.precio_unitario || 0);
       });
     });
     return Object.values(mapa).sort((a, b) => b.valor - a.valor).slice(0, 15);
-  }, [filtrados]);
+  }, [filtrados, devoluciones, cruces]);
 
   // ── Descargar HTML ────────────────────────────────────────────────
   function descargarHTML() {
@@ -3649,4 +3656,5 @@ function Modal({ onClose, titulo, children }) {
     </div>
   );
 }
+
 
