@@ -221,7 +221,25 @@ router.patch('/:id', authMiddleware, adminOnly, async (req, res) => {
       values
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Movimiento no encontrado' });
-    res.json(rows[0]);
+
+    // Si se editaron los items, el saldo cruzado con otros documentos pudo
+    // cambiar de sentido (p. ej. se corrige una cantidad mal importada) —
+    // recalculamos el estado real de este documento Y de todos los que estén
+    // cruzados con él, para que quede consistente con lo que ahora muestra
+    // el Kárdex (que sí lee los items en vivo).
+    let doc = rows[0];
+    if ('items' in req.body) {
+      const { rows: relacionados } = await pool.query(
+        `SELECT DISTINCT unnest(ARRAY[prestamo_id, devolucion_id]) AS doc_id
+         FROM prestamo_cruces WHERE prestamo_id = $1 OR devolucion_id = $1`,
+        [req.params.id]
+      );
+      const idsARecalcular = new Set([Number(req.params.id), ...relacionados.map(r => r.doc_id)]);
+      for (const id of idsARecalcular) await recalcularEstadoDocumento(pool, id);
+      const { rows: refrescado } = await pool.query('SELECT * FROM prestamos WHERE id = $1', [req.params.id]);
+      doc = refrescado[0];
+    }
+    res.json(doc);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -929,31 +947,4 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
