@@ -282,7 +282,7 @@ export default function Prestamos() {
           {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} productos={productos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
-          {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
+          {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
           {activeTab === 'dashboard'   && (
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
@@ -788,8 +788,11 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
             <div key={c.id} style={{ marginBottom: idx < crucesModal.length - 1 ? 20 : 0, paddingBottom: idx < crucesModal.length - 1 ? 20 : 0, borderBottom: idx < crucesModal.length - 1 ? '1px solid var(--t-border)' : 'none' }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)', marginBottom: 8 }}>
                 {c.prestamo_doc} <span style={{ color: 'var(--t-text-muted)', fontWeight: 400 }}>↔</span> {c.devolucion_doc}
-                <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: c.tipo_cruce === 'total' ? '#22c55e22' : '#f59e0b22', color: c.tipo_cruce === 'total' ? '#22c55e' : '#f59e0b' }}>
-                  {c.tipo_cruce}
+                <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(c.estado_prestamo).bg, color: badgeEstado(c.estado_prestamo).color }}>
+                  préstamo: {badgeEstado(c.estado_prestamo).label}
+                </span>
+                <span style={{ marginLeft: 4, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(c.estado_devolucion).bg, color: badgeEstado(c.estado_devolucion).color }}>
+                  devolución: {badgeEstado(c.estado_devolucion).label}
                 </span>
               </div>
               {c.grupo_numero && (
@@ -935,8 +938,11 @@ function DetallePrestamoModal({ prestamo, devoluciones, cruces = [] }) {
               <div key={c.id} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden' }}>
                 <div style={{ background: 'var(--t-bg-card)', padding: '8px 12px', display: 'flex', gap: 12, alignItems: 'center', fontSize: 13, flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 500 }}>🔗 {esDevolucion ? 'Cruce con préstamo' : 'Cruce con devolución'} {docContraparte}</span>
-                  <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, background: c.tipo_cruce === 'total' ? '#22c55e22' : '#f59e0b22', color: c.tipo_cruce === 'total' ? '#22c55e' : '#f59e0b' }}>
-                    {c.tipo_cruce}
+                  <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(c.estado_prestamo).bg, color: badgeEstado(c.estado_prestamo).color }}>
+                    préstamo: {badgeEstado(c.estado_prestamo).label}
+                  </span>
+                  <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(c.estado_devolucion).bg, color: badgeEstado(c.estado_devolucion).color }}>
+                    devolución: {badgeEstado(c.estado_devolucion).label}
                   </span>
                   <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>{c.created_at?.substring(0, 10)}</span>
                 </div>
@@ -1799,7 +1805,19 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
 
 // ─── TAB CRUCES ──────────────────────────────────────────────────────────────
 
-function TabCruces({ prestamos, cruces, onRefresh }) {
+// Badge de color/label reutilizable para el estado real (abierto/parcial/cerrado)
+// de un documento — reemplaza al viejo tipo_cruce manual, que no reflejaba el
+// estado real de cada documento en un multicruce.
+function badgeEstado(estado) {
+  const mapa = {
+    cerrado: { bg: '#22c55e22', color: '#22c55e', label: 'cerrado' },
+    parcial: { bg: '#f59e0b22', color: '#f59e0b', label: 'parcial' },
+    abierto: { bg: '#94a3b822', color: '#64748b', label: 'abierto' },
+  };
+  return mapa[estado] || { bg: '#94a3b822', color: '#64748b', label: estado || '—' };
+}
+
+function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const { isAdmin } = useAuth();
 
   async function revertirCruce(cruce, e) {
@@ -1862,14 +1880,13 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
   const [detalleCard,  setDetalleCard]  = React.useState(null);
   const [filtroCruces, setFiltroCruces] = React.useState('');
   const [editandoCruce, setEditandoCruce] = React.useState(null);
-  const [editTipo,       setEditTipo]      = React.useState('total');
   const [editObs,        setEditObs]       = React.useState('');
   const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
+  const [verKardex, setVerKardex] = React.useState(false);
 
   function abrirEdicionCruce(c, e) {
     e.stopPropagation();
     setEditandoCruce(c);
-    setEditTipo(c.tipo_cruce || 'total');
     setEditObs(c.observaciones || c.grupo_observaciones || '');
   }
 
@@ -1879,7 +1896,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
       await apiFetch(`/prestamos/cruces/${editandoCruce.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tipo_cruce: editTipo, observaciones: editObs }),
+        body: JSON.stringify({ observaciones: editObs }),
       });
       setEditandoCruce(null);
       onRefresh();
@@ -2103,7 +2120,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                           <div key={c.id} style={{ fontSize: 10, color: 'var(--t-text-muted)', marginBottom: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span>
                               <span style={{ color: 'var(--t-text-primary)', fontWeight: 600 }}>{c.devolucion_doc}</span>
-                              {' · '}{c.tipo_cruce}
+                              {' · '}<span style={{ color: badgeEstado(c.estado_prestamo).color, fontWeight: 600 }}>{badgeEstado(c.estado_prestamo).label}</span>
                               {c.observaciones && <span style={{ opacity: 0.7 }}> · {c.observaciones.substring(0, 40)}</span>}
                             </span>
                             <span style={{ color: c.soporte_url ? 'var(--t-accent)' : 'var(--t-text-muted)', marginLeft: 6 }}>
@@ -2196,17 +2213,20 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
             )}
           </div>
 
-          {/* Tipo de cruce */}
-          <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
-            {['total','parcial'].map(t => (
-              <button key={t} onClick={() => setTipoCruce(t)} style={{
-                padding: '6px 16px', borderRadius: 6, fontSize: 13, cursor: 'pointer',
-                background: tipoCruce === t ? 'var(--t-accent)' : 'var(--t-bg-inner)',
-                color: tipoCruce === t ? '#fff' : 'var(--t-text-primary)',
-                border: '1px solid var(--t-border)', fontWeight: tipoCruce === t ? 600 : 400,
-              }}>{t.charAt(0).toUpperCase() + t.slice(1)}</button>
-            ))}
-          </div>
+          {/* Modo de soporte — solo aplica y tiene sentido en un cruce simple 1 a 1;
+              en multicruce no se usa para nada (el PDF ya anexa los soportes de cada documento) */}
+          {selPrestamos.length === 1 && selDevoluciones.length === 1 && (
+            <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+              {['total','parcial'].map(t => (
+                <button key={t} onClick={() => setTipoCruce(t)} style={{
+                  padding: '6px 16px', borderRadius: 6, fontSize: 13, cursor: 'pointer',
+                  background: tipoCruce === t ? 'var(--t-accent)' : 'var(--t-bg-inner)',
+                  color: tipoCruce === t ? '#fff' : 'var(--t-text-primary)',
+                  border: '1px solid var(--t-border)', fontWeight: tipoCruce === t ? 600 : 400,
+                }}>{t === 'total' ? 'Soporte único' : 'Soporte por producto'}</button>
+              ))}
+            </div>
+          )}
 
           {/* PDF total — solo aplica en cruce simple 1 a 1; en multicruce el PDF generado ya anexa los soportes de cada documento */}
           {tipoCruce === 'total' && selPrestamos.length === 1 && selDevoluciones.length === 1 && (
@@ -2268,6 +2288,11 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button onClick={() => setVerKardex(true)}
+                title="Saldo por producto: cuánto se ha prestado y devuelto en total, sin depender de cómo se hicieron los cruces"
+                style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                📒 Kárdex por producto
+              </button>
               {isAdmin && (
                 <button onClick={regenerarPdfs} disabled={regenerandoPdfs}
                   title="Regenera el PDF de todos los cruces ya emitidos con el formato actual (código, cantidad y fecha por producto)"
@@ -2292,7 +2317,7 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-card)' }}>
-                {['Cruce Nº','Préstamo','Devolución','Tipo','Clínica','Fecha','Estado','Soporte',''].map(h => (
+                {['Cruce Nº','Préstamo','Devolución','Estado devol.','Clínica','Fecha','Estado prést.','Soporte',''].map(h => (
                   <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)', position: 'sticky', top: 0, background: 'var(--t-bg-card)', zIndex: 1 }}>{h}</th>
                 ))}
               </tr>
@@ -2323,15 +2348,15 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
                   </td>
                   <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)' }}>{c.devolucion_doc}</td>
                   <td style={{ padding: '8px 10px' }}>
-                    <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, background: c.tipo_cruce === 'total' ? '#22c55e22' : '#f59e0b22', color: c.tipo_cruce === 'total' ? '#22c55e' : '#f59e0b' }}>
-                      {c.tipo_cruce}
+                    <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(c.estado_devolucion).bg, color: badgeEstado(c.estado_devolucion).color }}>
+                      {badgeEstado(c.estado_devolucion).label}
                     </span>
                   </td>
                   <td style={{ padding: '8px 10px', color: 'var(--t-text-muted)' }}>{c.clinica_nombre}</td>
                   <td style={{ padding: '8px 10px', color: 'var(--t-text-muted)' }}>{c.created_at?.substring(0,10)}</td>
                   <td style={{ padding: '8px 10px' }}>
-                    <span style={{ color: estadoColor(c.estado_prestamo), fontWeight: 600 }}>
-                      {c.estado_prestamo === 'cerrado' ? 'total' : (c.estado_prestamo || '—')}
+                    <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(c.estado_prestamo).bg, color: badgeEstado(c.estado_prestamo).color }}>
+                      {badgeEstado(c.estado_prestamo).label}
                     </span>
                   </td>
                   <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
@@ -2413,13 +2438,16 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
             <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
               {editandoCruce.prestamo_doc} ↔ {editandoCruce.devolucion_doc}
             </div>
-            <div>
-              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Tipo</label>
-              <select value={editTipo} onChange={e => setEditTipo(e.target.value)}
-                style={{ display: 'block', width: '100%', marginTop: 5, padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
-                <option value="total">total</option>
-                <option value="parcial">parcial</option>
-              </select>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(editandoCruce.estado_prestamo).bg, color: badgeEstado(editandoCruce.estado_prestamo).color }}>
+                préstamo: {badgeEstado(editandoCruce.estado_prestamo).label}
+              </span>
+              <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(editandoCruce.estado_devolucion).bg, color: badgeEstado(editandoCruce.estado_devolucion).color }}>
+                devolución: {badgeEstado(editandoCruce.estado_devolucion).label}
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>
+              El estado se calcula solo a partir de las cantidades reales — no es editable.
             </div>
             <div>
               <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Observaciones</label>
@@ -2438,6 +2466,172 @@ function TabCruces({ prestamos, cruces, onRefresh }) {
             </div>
           </div>
         </Modal>
+      )}
+      {verKardex && (
+        <Modal onClose={() => setVerKardex(false)} titulo="📒 Kárdex por producto">
+          <ModalKardexProducto prestamos={prestamos} productos={productos} clinicas={clinicas} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ─── KÁRDEX POR PRODUCTO ──────────────────────────────────────────────────
+// Saldo de un producto prestado/devuelto, calculado directamente de las
+// cantidades reales (documentos de préstamo vs. documentos de devolución),
+// sin depender de cómo quedaron armados los cruces. Es la fuente de verdad
+// para "¿cuánto va pendiente de este producto en total?".
+function ModalKardexProducto({ prestamos, productos, clinicas }) {
+  const [busqueda, setBusqueda] = React.useState('');
+  const [codigoSel, setCodigoSel] = React.useState(null);
+  const [tipoMov, setTipoMov] = React.useState('otorgados'); // otorgados (EPO→IDP) | recibidos (IPE→ED)
+  const [clinicaSel, setClinicaSel] = React.useState('todas');
+
+  // Catálogo de productos para buscar: prioriza el maestro de productos,
+  // pero también incluye cualquier código que aparezca en los documentos
+  // aunque no esté en el maestro.
+  const catalogo = React.useMemo(() => {
+    const mapa = {};
+    (productos || []).forEach(p => { mapa[p.codigo] = p.nombre; });
+    (prestamos || []).forEach(p => (p.items || []).forEach(i => {
+      if (i.codigo && !mapa[i.codigo]) mapa[i.codigo] = i.nombre || '';
+    }));
+    return Object.entries(mapa).map(([codigo, nombre]) => ({ codigo, nombre }));
+  }, [productos, prestamos]);
+
+  const sugerencias = React.useMemo(() => {
+    if (!busqueda.trim()) return [];
+    const q = busqueda.toLowerCase();
+    return catalogo.filter(p => p.codigo.toLowerCase().includes(q) || (p.nombre || '').toLowerCase().includes(q)).slice(0, 12);
+  }, [busqueda, catalogo]);
+
+  const nombreSel = catalogo.find(p => p.codigo === codigoSel)?.nombre || '';
+
+  const tipoSalida  = tipoMov === 'otorgados' ? 'egreso'            : 'ingreso';
+  const tipoEntrada = tipoMov === 'otorgados' ? 'devolucion_ingreso' : 'devolucion_egreso';
+
+  const movimientos = React.useMemo(() => {
+    if (!codigoSel) return [];
+    const filas = [];
+    (prestamos || []).forEach(p => {
+      if (clinicaSel !== 'todas' && p.clinica_nombre !== clinicaSel) return;
+      const item = (p.items || []).find(i => i.codigo === codigoSel);
+      if (!item || !Number(item.cantidad)) return;
+      if (p.tipo === tipoSalida) {
+        filas.push({
+          fecha: p.fecha, documento: p.documento_contable, clinica: p.clinica_nombre,
+          movimiento: tipoMov === 'otorgados' ? 'Préstamo otorgado' : 'Préstamo recibido',
+          entra: Number(item.cantidad), sale: 0,
+        });
+      } else if (p.tipo === tipoEntrada) {
+        filas.push({
+          fecha: p.fecha, documento: p.documento_contable, clinica: p.clinica_nombre,
+          movimiento: tipoMov === 'otorgados' ? 'Devolución recibida' : 'Devolución entregada',
+          entra: 0, sale: Number(item.cantidad),
+        });
+      }
+    });
+    filas.sort((a, b) => (a.fecha || '').localeCompare(b.fecha || '') || a.documento.localeCompare(b.documento));
+    let saldo = 0;
+    return filas.map(f => {
+      saldo += f.entra - f.sale;
+      return { ...f, saldo };
+    });
+  }, [prestamos, codigoSel, clinicaSel, tipoSalida, tipoEntrada, tipoMov]);
+
+  const totalPrestado = movimientos.reduce((s, m) => s + m.entra, 0);
+  const totalDevuelto = movimientos.reduce((s, m) => s + m.sale, 0);
+  const saldoFinal = totalPrestado - totalDevuelto;
+
+  const inputS = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', fontSize: 13, boxSizing: 'border-box' };
+
+  return (
+    <div style={{ minWidth: 480, maxWidth: 720 }}>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        {['otorgados','recibidos'].map(t => (
+          <button key={t} onClick={() => setTipoMov(t)} style={{
+            padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+            background: tipoMov === t ? 'var(--t-accent)' : 'var(--t-bg-inner)',
+            color: tipoMov === t ? '#fff' : 'var(--t-text-primary)',
+            border: '1px solid var(--t-border)', fontWeight: tipoMov === t ? 600 : 400,
+          }}>{t === 'otorgados' ? 'Préstamos que otorgamos (EPO/IDP)' : 'Préstamos que recibimos (IPE/ED)'}</button>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+        <div style={{ position: 'relative', flex: 1 }}>
+          <input value={codigoSel ? `${codigoSel} — ${nombreSel}` : busqueda}
+            onChange={e => { setCodigoSel(null); setBusqueda(e.target.value); }}
+            placeholder="Buscar producto por código o nombre…" style={inputS} />
+          {!codigoSel && sugerencias.length > 0 && (
+            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 6, maxHeight: 220, overflowY: 'auto', marginTop: 2 }}>
+              {sugerencias.map(p => (
+                <div key={p.codigo} onClick={() => { setCodigoSel(p.codigo); setBusqueda(''); }}
+                  style={{ padding: '7px 10px', fontSize: 12, cursor: 'pointer', borderBottom: '1px solid var(--t-border)' }}>
+                  <span style={{ fontFamily: 'monospace', color: 'var(--t-accent)' }}>{p.codigo}</span>{' — '}{p.nombre}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <select value={clinicaSel} onChange={e => setClinicaSel(e.target.value)} style={{ ...inputS, flex: '0 0 200px' }}>
+          <option value="todas">Todas las clínicas</option>
+          {(clinicas || []).map(c => <option key={c.id || c.nombre} value={c.nombre}>{c.nombre}</option>)}
+        </select>
+      </div>
+
+      {!codigoSel ? (
+        <div style={{ textAlign: 'center', padding: '40px 10px', color: 'var(--t-text-muted)', fontSize: 13 }}>
+          Busca y selecciona un producto para ver su kárdex.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 10, margin: '14px 0', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 120, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Total prestado</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t-text-primary)' }}>{totalPrestado}</div>
+            </div>
+            <div style={{ flex: 1, minWidth: 120, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Total devuelto</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t-text-primary)' }}>{totalDevuelto}</div>
+            </div>
+            <div style={{ flex: 1, minWidth: 120, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Saldo pendiente</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: saldoFinal > 0 ? '#f59e0b' : '#22c55e' }}>{saldoFinal}</div>
+            </div>
+          </div>
+
+          {movimientos.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '30px 10px', color: 'var(--t-text-muted)', fontSize: 13 }}>
+              No hay movimientos de este producto{clinicaSel !== 'todas' ? ' en esta clínica' : ''}.
+            </div>
+          ) : (
+            <div style={{ maxHeight: 340, overflowY: 'auto', border: '1px solid var(--t-border)', borderRadius: 8 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: 'var(--t-bg-card)' }}>
+                    {['Fecha','Documento','Clínica','Movimiento','Entra','Sale','Saldo'].map(h => (
+                      <th key={h} style={{ padding: '7px 9px', textAlign: h === 'Entra' || h === 'Sale' || h === 'Saldo' ? 'right' : 'left', color: 'var(--t-text-muted)', fontWeight: 600, position: 'sticky', top: 0, background: 'var(--t-bg-card)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {movimientos.map((m, i) => (
+                    <tr key={i} style={{ borderTop: '1px solid var(--t-border)' }}>
+                      <td style={{ padding: '6px 9px', color: 'var(--t-text-muted)' }}>{(m.fecha || '').substring(0,10)}</td>
+                      <td style={{ padding: '6px 9px', color: 'var(--t-text-primary)', fontWeight: 600 }}>{m.documento}</td>
+                      <td style={{ padding: '6px 9px', color: 'var(--t-text-muted)' }}>{m.clinica}</td>
+                      <td style={{ padding: '6px 9px' }}>{m.movimiento}</td>
+                      <td style={{ padding: '6px 9px', textAlign: 'right', color: '#22c55e' }}>{m.entra > 0 ? `+${m.entra}` : ''}</td>
+                      <td style={{ padding: '6px 9px', textAlign: 'right', color: '#ef4444' }}>{m.sale > 0 ? `-${m.sale}` : ''}</td>
+                      <td style={{ padding: '6px 9px', textAlign: 'right', fontWeight: 700, color: 'var(--t-text-primary)' }}>{m.saldo}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -3224,7 +3418,7 @@ function construirDetallePrestamo(prestamo, cruces) {
   const devolucionesDoc = crucesDe.map(c => ({
     id: c.devolucion_id,
     documento: c.devolucion_doc,
-    tipo_cruce: c.tipo_cruce,
+    estado_devolucion: c.estado_devolucion,
     grupo_numero: c.grupo_numero || '',   // número de cruce CRU-xxxxx
     soporte_url: c.devolucion_soporte_url,
     items: c.devolucion_items || [],
@@ -3544,7 +3738,7 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
         fecha_cruce: c.created_at,
         documento_devolucion: c.devolucion_doc,
         tipo_devolucion: tipoLabelDevol,
-        tipo_cruce: c.tipo_cruce || '',
+        estado_devolucion: c.estado_devolucion || '',
         descripcion,
         productos_devueltos: detalleProductos.join(', ') || '—',
         cantidad_devuelta: cantidadEsteC,
@@ -3627,7 +3821,7 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
       'Fecha Cruce': fmtFecha(f.fecha_cruce),
       'Documento Devolución': f.documento_devolucion,
       'Tipo Devolución': f.tipo_devolucion,
-      'Tipo de Cruce': f.tipo_cruce,
+      'Estado Devolución': badgeEstado(f.estado_devolucion).label,
       'Descripción del Cruce': f.descripcion,
       'Productos Devueltos en este Cruce': f.productos_devueltos,
       'Cantidad Devuelta (este cruce)': f.cantidad_devuelta,
@@ -4003,7 +4197,3 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
