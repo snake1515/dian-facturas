@@ -1886,9 +1886,11 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [anioPrest,    setAnioPrest]    = React.useState('');
   const [fDesdePrest,  setFDesdePrest]  = React.useState('');
   const [fHastaPrest,  setFHastaPrest]  = React.useState('');
+  const [estadoPrest,  setEstadoPrest]  = React.useState(''); // '' | abierto | parcial | cerrado
   const [anioDevol,    setAnioDevol]    = React.useState('');
   const [fDesdeDevol,  setFDesdeDevol]  = React.useState('');
   const [fHastaDevol,  setFHastaDevol]  = React.useState('');
+  const [estadoDevol,  setEstadoDevol]  = React.useState(''); // '' | abierto | parcial | cerrado
   const [detalleCruce, setDetalleCruce] = React.useState(null);
   const [detalleCard,  setDetalleCard]  = React.useState(null);
   const [filtroCruces, setFiltroCruces] = React.useState('');
@@ -1989,7 +1991,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   }
 
   const prestFiltrados = prestamosBase.filter(p =>
-    matchDoc(p, filtroPrest.toLowerCase()) && matchFecha(p, anioPrest, fDesdePrest, fHastaPrest));
+    matchDoc(p, filtroPrest.toLowerCase()) && matchFecha(p, anioPrest, fDesdePrest, fHastaPrest) &&
+    (!estadoPrest || p.estado === estadoPrest));
 
   // Inicializar cantidades al seleccionar devolución
   React.useEffect(() => {
@@ -2013,7 +2016,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
         sp.tipo === 'egreso' ? 'devolucion_ingreso' : 'devolucion_egreso'));
       if (!tiposRequeridos.has(p.tipo)) return false;
     }
-    return matchDoc(p, filtroDevol.toLowerCase()) && matchFecha(p, anioDevol, fDesdeDevol, fHastaDevol);
+    return matchDoc(p, filtroDevol.toLowerCase()) && matchFecha(p, anioDevol, fDesdeDevol, fHastaDevol) &&
+      (!estadoDevol || p.estado === estadoDevol);
   });
 
   function totalItems(p) {
@@ -2089,13 +2093,20 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               <option value="">Año</option>
               {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
             </select>
+            <select value={estadoPrest} onChange={e => setEstadoPrest(e.target.value)}
+              title="Filtrar por estado" style={{ ...inputS, flex: '0 0 100px', padding: '6px 6px', fontSize: 12 }}>
+              <option value="">Estado: todos</option>
+              <option value="abierto">Abierto</option>
+              <option value="parcial">Parcial</option>
+              <option value="cerrado">Cerrado</option>
+            </select>
             <input type="date" value={fDesdePrest} onChange={e => setFDesdePrest(e.target.value)}
               title="Desde" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
             <input type="date" value={fHastaPrest} onChange={e => setFHastaPrest(e.target.value)}
               title="Hasta" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
-            {(anioPrest || fDesdePrest || fHastaPrest) && (
-              <span onClick={() => { setAnioPrest(''); setFDesdePrest(''); setFHastaPrest(''); }}
-                title="Limpiar filtros de fecha"
+            {(anioPrest || fDesdePrest || fHastaPrest || estadoPrest) && (
+              <span onClick={() => { setAnioPrest(''); setFDesdePrest(''); setFHastaPrest(''); setEstadoPrest(''); }}
+                title="Limpiar filtros"
                 style={{ cursor: 'pointer', fontSize: 13, color: 'var(--t-text-muted)', padding: '0 4px', flex: '0 0 auto' }}>✕</span>
             )}
           </div>
@@ -2172,13 +2183,20 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               <option value="">Año</option>
               {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
             </select>
+            <select value={estadoDevol} onChange={e => setEstadoDevol(e.target.value)}
+              title="Filtrar por estado" style={{ ...inputS, flex: '0 0 100px', padding: '6px 6px', fontSize: 12 }}>
+              <option value="">Estado: todos</option>
+              <option value="abierto">Abierto</option>
+              <option value="parcial">Parcial</option>
+              <option value="cerrado">Cerrado</option>
+            </select>
             <input type="date" value={fDesdeDevol} onChange={e => setFDesdeDevol(e.target.value)}
               title="Desde" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
             <input type="date" value={fHastaDevol} onChange={e => setFHastaDevol(e.target.value)}
               title="Hasta" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
-            {(anioDevol || fDesdeDevol || fHastaDevol) && (
-              <span onClick={() => { setAnioDevol(''); setFDesdeDevol(''); setFHastaDevol(''); }}
-                title="Limpiar filtros de fecha"
+            {(anioDevol || fDesdeDevol || fHastaDevol || estadoDevol) && (
+              <span onClick={() => { setAnioDevol(''); setFDesdeDevol(''); setFHastaDevol(''); setEstadoDevol(''); }}
+                title="Limpiar filtros"
                 style={{ cursor: 'pointer', fontSize: 13, color: 'var(--t-text-muted)', padding: '0 4px', flex: '0 0 auto' }}>✕</span>
             )}
           </div>
@@ -4251,3 +4269,4 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
