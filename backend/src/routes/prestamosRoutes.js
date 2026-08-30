@@ -610,14 +610,53 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
     y -= 10;
   }
 
-  // ── Total general ─────────────────────────────────────────────────────────
-  checkY(22);
-  const totalGeneral = documentos.reduce((s, d) =>
-    s + (d.items || []).reduce((ss, i) => ss + Number(i.cantidad) * Number(i.precio_unitario || 0), 0), 0);
-  rect(ML, y - 18, CW, 18, GRIS_HD, GRIS_LIN, 0.5);
-  texto('VALOR TOTAL DEL CRUCE', ML + 6, y - 12, 9, fontBold, NEGRO);
-  texto('$' + totalGeneral.toLocaleString('es-CO'), ML + CW - 100, y - 12, 10, fontBold, AZUL);
-  y -= 28;
+  // ── Total general — discriminado: valor prestado vs. valor devuelto ────────
+  // (antes se sumaban préstamo + devolución en un solo número, lo cual duplicaba
+  // el valor real del cruce; ahora se muestra cada lado por separado, y solo se
+  // cuenta como "devuelto" la cantidad de cada código que realmente corresponde
+  // a lo prestado en este cruce — así una devolución con productos de otro
+  // préstamo no incluido aquí no infla el valor devuelto).
+  const tiposSalida     = ['egreso', 'ingreso'];
+  const tiposDevolucion = ['devolucion_egreso', 'devolucion_ingreso'];
+
+  const prestadoPorCodigo = {};
+  documentos.filter(d => tiposSalida.includes(d.tipo)).forEach(d => {
+    (d.items || []).forEach(i => {
+      if (!prestadoPorCodigo[i.codigo]) prestadoPorCodigo[i.codigo] = { cantidad: 0, precio: Number(i.precio_unitario || 0) };
+      prestadoPorCodigo[i.codigo].cantidad += Number(i.cantidad);
+    });
+  });
+
+  const devueltoPorCodigo = {};
+  documentos.filter(d => tiposDevolucion.includes(d.tipo)).forEach(d => {
+    (d.items || []).forEach(i => {
+      devueltoPorCodigo[i.codigo] = (devueltoPorCodigo[i.codigo] || 0) + Number(i.cantidad);
+    });
+  });
+
+  let valorPrestamos = 0, valorDevueltoAplicado = 0, cantPrestada = 0, cantDevueltaAplicada = 0;
+  Object.entries(prestadoPorCodigo).forEach(([codigo, info]) => {
+    valorPrestamos += info.cantidad * info.precio;
+    cantPrestada    += info.cantidad;
+    const devuelto = Math.min(devueltoPorCodigo[codigo] || 0, info.cantidad);
+    valorDevueltoAplicado += devuelto * info.precio;
+    cantDevueltaAplicada  += devuelto;
+  });
+
+  const esTotalEnEsteCruce  = cantPrestada > 0 && cantDevueltaAplicada >= cantPrestada;
+  const saldoPendienteValor = Math.max(0, valorPrestamos - valorDevueltoAplicado);
+
+  checkY(64);
+  rect(ML, y - 60, CW, 60, GRIS_HD, GRIS_LIN, 0.5);
+  texto('Valor préstamo(s) relacionado(s)', ML + 6, y - 12, 9, fontBold, NEGRO);
+  texto('$' + valorPrestamos.toLocaleString('es-CO'), ML + CW - 100, y - 12, 10, fontBold, NEGRO);
+  texto('Valor devuelto en este cruce', ML + 6, y - 30, 9, fontBold, NEGRO);
+  texto('$' + valorDevueltoAplicado.toLocaleString('es-CO'), ML + CW - 100, y - 30, 10, fontBold, NEGRO);
+  linH(y - 38, ML + 4, ML + CW - 4, GRIS_LIN);
+  texto(esTotalEnEsteCruce ? 'CRUCE TOTAL' : 'CRUCE PARCIAL', ML + 6, y - 50, 9, fontBold, esTotalEnEsteCruce ? rgb(0.06,0.55,0.2) : rgb(0.76,0.45,0.05));
+  texto(esTotalEnEsteCruce ? 'Cubre por completo lo prestado' : `Falta por devolver: $${saldoPendienteValor.toLocaleString('es-CO')}`,
+    ML + 130, y - 50, 8.5, font, NEGRO);
+  y -= 70;
 
   // ── Pie de página en todas las páginas ────────────────────────────────────
   const totalPags = pdfDoc.getPageCount();
@@ -947,4 +986,3 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
-
