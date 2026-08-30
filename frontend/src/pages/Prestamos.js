@@ -1843,6 +1843,19 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [expandedCruce,    setExpandedCruce]    = React.useState(null);
   const [reparando,        setReparando]        = React.useState(false);
   const [regenerandoPdfs,  setRegenerandoPdfs]   = React.useState(false);
+  const [regenerandoPdfId, setRegenerandoPdfId]  = React.useState(null);
+
+  async function regenerarPdfIndividual(c, e) {
+    e.stopPropagation();
+    setRegenerandoPdfId(c.id);
+    try {
+      await apiFetch(`/prestamos/cruces/${c.id}/regenerar-pdf`, { method: 'POST' });
+      onRefresh();
+    } catch (err) {
+      alert('Error regenerando el PDF: ' + err.message);
+    }
+    setRegenerandoPdfId(null);
+  }
 
   async function repararCrucesAntiguos() {
     setReparando(true);
@@ -2391,6 +2404,13 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                         title="Editar cruce (solo admin)"
                         style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
                         ✏️ Editar
+                      </button>
+                    )}
+                    {c.grupo_numero && (
+                      <button onClick={e => regenerarPdfIndividual(c, e)} disabled={regenerandoPdfId === c.id}
+                        title="Regenerar el PDF de este cruce (por si se editó algún documento después de emitirlo)"
+                        style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-primary)' }}>
+                        {regenerandoPdfId === c.id ? '…' : '🔄 PDF'}
                       </button>
                     )}
                     <button onClick={e => revertirCruce(c, e)}
