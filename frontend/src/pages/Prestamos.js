@@ -1883,6 +1883,13 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [editObs,        setEditObs]       = React.useState('');
   const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
   const [verKardex, setVerKardex] = React.useState(false);
+  const [editandoDocumento, setEditandoDocumento] = React.useState(null);
+
+  function abrirEditarDocumento(id, e) {
+    e.stopPropagation();
+    const doc = (prestamos || []).find(p => p.id === id);
+    if (doc) setEditandoDocumento(doc);
+  }
 
   function abrirEdicionCruce(c, e) {
     e.stopPropagation();
@@ -2345,8 +2352,24 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                       {expandedCruce === c.id ? '▼' : '▶'}
                     </span>
                     {c.prestamo_doc}
+                    {isAdmin && (
+                      <button onClick={e => abrirEditarDocumento(c.prestamo_id, e)}
+                        title="Editar este documento (solo admin)"
+                        style={{ marginLeft: 5, padding: '1px 5px', fontSize: 10, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-muted)' }}>
+                        ✏️
+                      </button>
+                    )}
                   </td>
-                  <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)' }}>{c.devolucion_doc}</td>
+                  <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)' }}>
+                    {c.devolucion_doc}
+                    {isAdmin && (
+                      <button onClick={e => abrirEditarDocumento(c.devolucion_id, e)}
+                        title="Editar este documento (solo admin)"
+                        style={{ marginLeft: 5, padding: '1px 5px', fontSize: 10, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-muted)' }}>
+                        ✏️
+                      </button>
+                    )}
+                  </td>
                   <td style={{ padding: '8px 10px' }}>
                     <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(c.estado_devolucion).bg, color: badgeEstado(c.estado_devolucion).color }}>
                       {badgeEstado(c.estado_devolucion).label}
@@ -2470,6 +2493,17 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       {verKardex && (
         <Modal onClose={() => setVerKardex(false)} titulo="📒 Kárdex por producto">
           <ModalKardexProducto prestamos={prestamos} productos={productos} clinicas={clinicas} />
+        </Modal>
+      )}
+      {editandoDocumento && (
+        <Modal onClose={() => setEditandoDocumento(null)} titulo={`Editar movimiento — ${editandoDocumento.documento_contable}`}>
+          <FormEditarMovimiento
+            movimiento={editandoDocumento}
+            clinicas={clinicas}
+            productos={productos}
+            onSaved={() => { setEditandoDocumento(null); onRefresh(); }}
+            onCancel={() => setEditandoDocumento(null)}
+          />
         </Modal>
       )}
     </div>
