@@ -450,6 +450,20 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
   const GRIS_LIN  = rgb(0.82, 0.82, 0.82);
   const NEGRO     = rgb(0.08, 0.08, 0.08);
   const BLANCO    = rgb(1, 1, 1);
+  const VERDE     = rgb(0.06, 0.55, 0.20);
+  const NARANJA   = rgb(0.76, 0.45, 0.05);
+  const GRIS_TXT  = rgb(0.45, 0.45, 0.45);
+
+  // El estado real (abierto/parcial/cerrado) de cada documento ya viene
+  // calculado por recalcularEstadoDocumento() considerando TODOS sus cruces
+  // — no solo los de este PDF — así que es la fuente de verdad correcta,
+  // a diferencia de una comparación que solo mire lo incluido en este cruce.
+  function colorEstadoDoc(e) {
+    return e === 'cerrado' ? VERDE : e === 'parcial' ? NARANJA : GRIS_TXT;
+  }
+  function labelEstadoDoc(e) {
+    return e === 'cerrado' ? 'CERRADO' : e === 'parcial' ? 'PARCIAL' : 'ABIERTO';
+  }
 
   const W = 612, H = 792;
   const ML = 45, MR = 45;  // márgenes izq/der
@@ -537,8 +551,8 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
   texto('Documentos incluidos en este cruce', ML + 6, y + 4, 9, fontBold, BLANCO);
   y -= 22;
 
-  // Anchos de columnas tabla documentos: Doc | Tipo | Clínica | Fecha | Valor
-  const DC = [0, 80, 145, 345, 425, 522]; // posiciones relativas al ML
+  // Anchos de columnas tabla documentos: Doc | Tipo | Clínica | Fecha | Estado | Valor
+  const DC = [0, 76, 136, 318, 380, 432, 522]; // posiciones relativas al ML
 
   for (const d of documentos) {
     const valor = (d.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
@@ -564,11 +578,12 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
 
     // Cabecera del documento — fondo azul claro con borde
     rect(ML, y - altoCabDoc + 4, CW, altoCabDoc, AZUL_LIGHT, AZUL, 0.6);
-    texto(d.documento_contable || '', ML + DC[0] + 4, y - 10, 9, fontBold, AZUL, 74);
-    texto(d.tipo || '', ML + DC[1] + 4, y - 10, 8, font, NEGRO, 60);
-    texto(d.clinica_nombre || '', ML + DC[2] + 4, y - 10, 8, font, NEGRO, 195);
-    texto(fechaDoc, ML + DC[3] + 4, y - 10, 8, font, NEGRO, 75);
-    texto('$' + valor.toLocaleString('es-CO'), ML + DC[4] + 4, y - 10, 8, fontBold, NEGRO, 90);
+    texto(d.documento_contable || '', ML + DC[0] + 4, y - 10, 9, fontBold, AZUL, DC[1] - DC[0] - 6);
+    texto(d.tipo || '', ML + DC[1] + 4, y - 10, 7.5, font, NEGRO, DC[2] - DC[1] - 6);
+    texto(d.clinica_nombre || '', ML + DC[2] + 4, y - 10, 8, font, NEGRO, DC[3] - DC[2] - 6);
+    texto(fechaDoc, ML + DC[3] + 4, y - 10, 7.5, font, NEGRO, DC[4] - DC[3] - 6);
+    texto(labelEstadoDoc(d.estado), ML + DC[4] + 4, y - 10, 7, fontBold, colorEstadoDoc(d.estado), DC[5] - DC[4] - 4);
+    texto('$' + valor.toLocaleString('es-CO'), ML + DC[5] + 4, y - 10, 8, fontBold, NEGRO, DC[6] - DC[5] - 8);
     y -= altoCabDoc + 2;
 
     // Descripción del documento (si tiene observaciones registradas)
@@ -643,20 +658,54 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
     cantDevueltaAplicada  += devuelto;
   });
 
-  const esTotalEnEsteCruce  = cantPrestada > 0 && cantDevueltaAplicada >= cantPrestada;
   const saldoPendienteValor = Math.max(0, valorPrestamos - valorDevueltoAplicado);
 
-  checkY(64);
-  rect(ML, y - 60, CW, 60, GRIS_HD, GRIS_LIN, 0.5);
+  // Estado real de cada lado — se toma del campo `estado` ya calculado en BD
+  // para cada documento (recalcularEstadoDocumento), que sí contempla TODOS
+  // los cruces del documento y no solo los incluidos en este PDF. Por eso el
+  // préstamo puede aparecer CERRADO mientras la devolución que lo cruzó sigue
+  // PARCIAL (le queda saldo pendiente con otros préstamos), y viceversa.
+  function estadoConjunto(docs) {
+    if (docs.length === 0) return null;
+    const set = new Set(docs.map(d => d.estado || 'abierto'));
+    return set.size === 1 ? [...set][0] : 'parcial';
+  }
+  const docsPrestamoLado    = documentos.filter(d => tiposSalida.includes(d.tipo));
+  const docsDevolucionLado  = documentos.filter(d => tiposDevolucion.includes(d.tipo));
+  const estadoPrestamos     = estadoConjunto(docsPrestamoLado);
+  const estadoDevoluciones  = estadoConjunto(docsDevolucionLado);
+
+  checkY(80);
+  rect(ML, y - 76, CW, 76, GRIS_HD, GRIS_LIN, 0.5);
   texto('Valor préstamo(s) relacionado(s)', ML + 6, y - 12, 9, fontBold, NEGRO);
   texto('$' + valorPrestamos.toLocaleString('es-CO'), ML + CW - 100, y - 12, 10, fontBold, NEGRO);
   texto('Valor devuelto en este cruce', ML + 6, y - 30, 9, fontBold, NEGRO);
   texto('$' + valorDevueltoAplicado.toLocaleString('es-CO'), ML + CW - 100, y - 30, 10, fontBold, NEGRO);
   linH(y - 38, ML + 4, ML + CW - 4, GRIS_LIN);
-  texto(esTotalEnEsteCruce ? 'CRUCE TOTAL' : 'CRUCE PARCIAL', ML + 6, y - 50, 9, fontBold, esTotalEnEsteCruce ? rgb(0.06,0.55,0.2) : rgb(0.76,0.45,0.05));
-  texto(esTotalEnEsteCruce ? 'Cubre por completo lo prestado' : `Falta por devolver: $${saldoPendienteValor.toLocaleString('es-CO')}`,
-    ML + 130, y - 50, 8.5, font, NEGRO);
-  y -= 70;
+
+  // Dos estados independientes — uno por lado — en vez de un único
+  // "CRUCE TOTAL/PARCIAL" que antes mezclaba ambos y podía ser engañoso.
+  if (estadoPrestamos) {
+    texto('Estado préstamo(s):', ML + 6, y - 52, 8.5, fontBold, NEGRO);
+    texto(labelEstadoDoc(estadoPrestamos), ML + 118, y - 52, 8.5, fontBold, colorEstadoDoc(estadoPrestamos));
+  }
+  if (estadoDevoluciones) {
+    texto('Estado devolución(es):', ML + 6, y - 66, 8.5, fontBold, NEGRO);
+    texto(labelEstadoDoc(estadoDevoluciones), ML + 118, y - 66, 8.5, fontBold, colorEstadoDoc(estadoDevoluciones));
+  }
+  texto(
+    estadoPrestamos === 'cerrado'
+      ? 'El préstamo relacionado quedó cubierto por completo.'
+      : `Al préstamo le falta por devolver: $${saldoPendienteValor.toLocaleString('es-CO')}`,
+    ML + 260, y - 52, 8, font, NEGRO, CW - 264
+  );
+  texto(
+    estadoDevoluciones === 'cerrado'
+      ? 'La devolución quedó aplicada por completo.'
+      : 'Aún tiene saldo pendiente con otro(s) préstamo(s).',
+    ML + 260, y - 66, 8, font, NEGRO, CW - 264
+  );
+  y -= 86;
 
   // ── Pie de página en todas las páginas ────────────────────────────────────
   const totalPags = pdfDoc.getPageCount();
