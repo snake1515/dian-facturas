@@ -646,6 +646,7 @@ router.get('/cruces', async (req, res) => {
         p.clinica_nombre,
         p.items              AS prestamo_items,
         d.documento_contable AS devolucion_doc,
+        d.estado              AS estado_devolucion,
         d.soporte_url          AS devolucion_soporte_url,
         d.items              AS devolucion_items,
         g.numero              AS grupo_numero,
@@ -928,6 +929,20 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
