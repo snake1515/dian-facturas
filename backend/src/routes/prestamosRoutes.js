@@ -892,6 +892,44 @@ router.post('/cruces/backfill', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Regenera y sobrescribe el PDF de un solo grupo de cruce (mismo path en Storage,
+// el consecutivo/link no cambia). Reutilizada por la regeneración individual y
+// la masiva.
+async function regenerarPdfDeGrupo(grupo) {
+  const { rows: cruceRows } = await pool.query(
+    'SELECT * FROM prestamo_cruces WHERE grupo_id = $1', [grupo.id]
+  );
+  if (cruceRows.length === 0) throw new Error('El cruce no tiene documentos asociados');
+
+  const idsUnicos = Array.from(new Set(cruceRows.flatMap(c => [c.prestamo_id, c.devolucion_id])));
+  const { rows: documentos } = await pool.query(
+    `SELECT * FROM prestamos WHERE id = ANY($1::int[])`, [idsUnicos]
+  );
+
+  const pdfBuffer = await generarPdfCruce({
+    numero: grupo.numero,
+    fecha: (grupo.created_at ? new Date(grupo.created_at) : new Date()).toISOString().substring(0, 10),
+    observaciones: grupo.observaciones || '', documentos,
+  });
+  await storageService.subirArchivo(pdfBuffer, grupo.pdf_url, 'application/pdf');
+}
+
+// Regenerar el PDF de UN cruce puntual — útil después de editar un documento
+// que ya tiene su PDF emitido (el PDF no se actualiza solo, es un archivo estático).
+router.post('/cruces/:id/regenerar-pdf', async (req, res) => {
+  try {
+    const { rows: [cruce] } = await pool.query('SELECT * FROM prestamo_cruces WHERE id = $1', [req.params.id]);
+    if (!cruce) return res.status(404).json({ error: 'Cruce no encontrado' });
+    if (!cruce.grupo_id) return res.status(400).json({ error: 'Este cruce no tiene un PDF generado (es anterior a la función de consecutivos — usa "Reparar cruces antiguos" primero)' });
+
+    const { rows: [grupo] } = await pool.query('SELECT * FROM cruce_grupos WHERE id = $1', [cruce.grupo_id]);
+    if (!grupo || !grupo.pdf_url) return res.status(400).json({ error: 'Este cruce no tiene un PDF generado todavía' });
+
+    await regenerarPdfDeGrupo(grupo);
+    res.json({ ok: true, numero: grupo.numero });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Regenerar el PDF de todos los cruces que ya tienen uno, con el formato actual
 // (por ejemplo, cuando se cambia el diseño del PDF y hay que actualizar los ya emitidos).
 // Sobrescribe el archivo en el mismo path de Storage, así el link/consecutivo no cambia.
@@ -906,22 +944,7 @@ router.post('/cruces/regenerar-pdfs', async (req, res) => {
 
     for (const grupo of grupos) {
       try {
-        const { rows: cruceRows } = await pool.query(
-          'SELECT * FROM prestamo_cruces WHERE grupo_id = $1', [grupo.id]
-        );
-        if (cruceRows.length === 0) continue;
-
-        const idsUnicos = Array.from(new Set(cruceRows.flatMap(c => [c.prestamo_id, c.devolucion_id])));
-        const { rows: documentos } = await pool.query(
-          `SELECT * FROM prestamos WHERE id = ANY($1::int[])`, [idsUnicos]
-        );
-
-        const pdfBuffer = await generarPdfCruce({
-          numero: grupo.numero,
-          fecha: (grupo.created_at ? new Date(grupo.created_at) : new Date()).toISOString().substring(0, 10),
-          observaciones: grupo.observaciones || '', documentos,
-        });
-        await storageService.subirArchivo(pdfBuffer, grupo.pdf_url, 'application/pdf');
+        await regenerarPdfDeGrupo(grupo);
         regenerados.push(grupo.numero);
       } catch (e) {
         console.error(`No se pudo regenerar el PDF de ${grupo.numero}:`, e.message);
