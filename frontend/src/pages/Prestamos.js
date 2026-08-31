@@ -1843,6 +1843,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [expandedCruce,    setExpandedCruce]    = React.useState(null);
   const [reparando,        setReparando]        = React.useState(false);
   const [regenerandoPdfs,  setRegenerandoPdfs]   = React.useState(false);
+  const [limpiandoHuerfanos, setLimpiandoHuerfanos] = React.useState(false);
   const [regenerandoPdfId, setRegenerandoPdfId]  = React.useState(null);
 
   async function regenerarPdfIndividual(c, e) {
@@ -1894,6 +1895,21 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       alert('Error regenerando PDFs: ' + e.message);
     }
     setRegenerandoPdfs(false);
+  }
+
+  async function limpiarHuerfanos() {
+    if (!window.confirm('¿Eliminar los grupos de cruce que quedaron sin documentos asociados (por ejemplo, tras revertir el único cruce de ese grupo)? Se borra el número CRU-xxxxx y su PDF; no afecta los préstamos ni devoluciones en sí.')) return;
+    setLimpiandoHuerfanos(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/limpiar-huerfanos', { method: 'POST' });
+      alert(r.eliminados > 0
+        ? `Se eliminaron ${r.eliminados} cruce(s) huérfano(s): ${r.detalle.slice(0, 15).join(', ')}${r.detalle.length > 15 ? '…' : ''}`
+        : 'No había cruces huérfanos.');
+      onRefresh();
+    } catch (e) {
+      alert('Error limpiando huérfanos: ' + e.message);
+    }
+    setLimpiandoHuerfanos(false);
   }
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
@@ -2350,6 +2366,13 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                   title="Regenera el PDF de todos los cruces ya emitidos con el formato actual (código, cantidad y fecha por producto)"
                   style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
                   {regenerandoPdfs ? 'Regenerando…' : '🔄 Actualizar PDFs al nuevo formato'}
+                </button>
+              )}
+              {isAdmin && (
+                <button onClick={limpiarHuerfanos} disabled={limpiandoHuerfanos}
+                  title="Elimina cruces (número + PDF) que quedaron sin ningún documento asociado, normalmente tras revertir el único cruce de ese grupo"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid #c0392b', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#c0392b' }}>
+                  {limpiandoHuerfanos ? 'Limpiando…' : '🧹 Limpiar cruces huérfanos'}
                 </button>
               )}
               {cruces.some(c => !c.grupo_numero) && (
@@ -4283,6 +4306,10 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
 
 
 
