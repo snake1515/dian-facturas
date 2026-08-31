@@ -473,9 +473,37 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
   let y = H - 48;
 
   // ── helpers ──────────────────────────────────────────────────────────────
+  // Las fuentes estándar (WinAnsi) no pueden codificar cualquier carácter
+  // Unicode. Los textos libres (observaciones/descripciones escritas por
+  // distintas personas) suelen traer guiones largos, comillas "curvas" o
+  // viñetas pegadas desde Word/Excel — sin esto, pdf-lib lanza un error y
+  // aborta el PDF completo por un solo carácter. Se normalizan los casos
+  // comunes a su equivalente ASCII y se descarta cualquier otro carácter
+  // no soportado, en vez de dejar que reviente la generación.
+  const MAPA_CARACTERES = {
+    '\u2013': '-', '\u2014': '-', '\u2012': '-', '\u2015': '-',   // guiones largos
+    '\u2018': "'", '\u2019': "'", '\u201A': "'",                   // comillas simples curvas
+    '\u201C': '"', '\u201D': '"', '\u201E': '"',                   // comillas dobles curvas
+    '\u2022': '-', '\u25CF': '-', '\u25AA': '-',                   // viñetas
+    '\u2026': '...',                                                // puntos suspensivos
+    '\u00A0': ' ', '\u2007': ' ', '\u202F': ' ',                    // espacios especiales
+    '\u2212': '-',                                                  // signo menos matemático
+  };
+  function sanearTexto(str) {
+    let out = '';
+    for (const ch of str) {
+      if (MAPA_CARACTERES[ch] !== undefined) { out += MAPA_CARACTERES[ch]; continue; }
+      const code = ch.codePointAt(0);
+      // WinAnsi cubre de forma segura Latin-1 básico + acentos españoles habituales
+      out += (code <= 0xFF) ? ch : '';
+    }
+    return out;
+  }
+
   function texto(t, x, cy, size, f, color, maxW) {
     if (!t) return;
-    const str = String(t);
+    const str = sanearTexto(String(t));
+    if (!str) return;
     // Truncar si es necesario para no salir del margen
     let s = str;
     if (maxW) {
@@ -688,23 +716,23 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
   if (estadoPrestamos) {
     texto('Estado préstamo(s):', ML + 6, y - 52, 8.5, fontBold, NEGRO);
     texto(labelEstadoDoc(estadoPrestamos), ML + 118, y - 52, 8.5, fontBold, colorEstadoDoc(estadoPrestamos));
+    texto(
+      estadoPrestamos === 'cerrado'
+        ? 'El préstamo relacionado quedó cubierto por completo.'
+        : `Al préstamo le falta por devolver: $${saldoPendienteValor.toLocaleString('es-CO')}`,
+      ML + 260, y - 52, 8, font, NEGRO, CW - 264
+    );
   }
   if (estadoDevoluciones) {
     texto('Estado devolución(es):', ML + 6, y - 66, 8.5, fontBold, NEGRO);
     texto(labelEstadoDoc(estadoDevoluciones), ML + 118, y - 66, 8.5, fontBold, colorEstadoDoc(estadoDevoluciones));
+    texto(
+      estadoDevoluciones === 'cerrado'
+        ? 'La devolución quedó aplicada por completo.'
+        : 'Aún tiene saldo pendiente con otro(s) préstamo(s).',
+      ML + 260, y - 66, 8, font, NEGRO, CW - 264
+    );
   }
-  texto(
-    estadoPrestamos === 'cerrado'
-      ? 'El préstamo relacionado quedó cubierto por completo.'
-      : `Al préstamo le falta por devolver: $${saldoPendienteValor.toLocaleString('es-CO')}`,
-    ML + 260, y - 52, 8, font, NEGRO, CW - 264
-  );
-  texto(
-    estadoDevoluciones === 'cerrado'
-      ? 'La devolución quedó aplicada por completo.'
-      : 'Aún tiene saldo pendiente con otro(s) préstamo(s).',
-    ML + 260, y - 66, 8, font, NEGRO, CW - 264
-  );
   y -= 86;
 
   // ── Pie de página en todas las páginas ────────────────────────────────────
