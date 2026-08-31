@@ -901,14 +901,63 @@ router.delete('/cruces/:id', async (req, res) => {
     await recalcularEstadoDocumento(client, cruce.prestamo_id);
     await recalcularEstadoDocumento(client, cruce.devolucion_id);
 
+    // Si este era el último cruce de su grupo, el grupo (número CRU-xxxxx + PDF)
+    // queda huérfano — sin documentos que mostrar. Se elimina para no dejar
+    // basura que luego truena al regenerar PDFs masivamente.
+    let grupoBorrado = null;
+    if (cruce.grupo_id) {
+      const { rows: [{ restantes }] } = await client.query(
+        'SELECT COUNT(*)::int AS restantes FROM prestamo_cruces WHERE grupo_id = $1', [cruce.grupo_id]
+      );
+      if (restantes === 0) {
+        const { rows: [grupo] } = await client.query(
+          'DELETE FROM cruce_grupos WHERE id = $1 RETURNING *', [cruce.grupo_id]
+        );
+        grupoBorrado = grupo || null;
+      }
+    }
+
     await client.query('COMMIT');
-    res.json({ ok: true });
+
+    // Borrar el PDF huérfano del storage — fuera de la transacción, best-effort
+    // (si falla no debe revertir la reversión del cruce).
+    if (grupoBorrado?.pdf_url) {
+      try { await storageService.eliminarArchivo(grupoBorrado.pdf_url); }
+      catch (e) { console.error('No se pudo borrar el PDF huérfano', grupoBorrado.pdf_url, e.message); }
+    }
+
+    res.json({ ok: true, grupo_eliminado: grupoBorrado?.numero || null });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: e.message });
   } finally {
     client.release();
   }
+});
+
+// Limpieza de grupos de cruce huérfanos (sin ningún prestamo_cruces asociado)
+// — quedan así cuando se revierte el único cruce de un grupo con código
+// anterior a este arreglo. Borra el registro y su PDF en storage.
+router.post('/cruces/limpiar-huerfanos', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { rows: huerfanos } = await pool.query(`
+      SELECT g.* FROM cruce_grupos g
+      LEFT JOIN prestamo_cruces c ON c.grupo_id = g.id
+      WHERE c.id IS NULL
+    `);
+
+    const eliminados = [];
+    for (const g of huerfanos) {
+      if (g.pdf_url) {
+        try { await storageService.eliminarArchivo(g.pdf_url); }
+        catch (e) { console.error('No se pudo borrar PDF de', g.numero, e.message); }
+      }
+      await pool.query('DELETE FROM cruce_grupos WHERE id = $1', [g.id]);
+      eliminados.push(g.numero);
+    }
+
+    res.json({ eliminados: eliminados.length, detalle: eliminados });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Reparar cruces antiguos: a los que no tienen grupo (creados antes del sistema de
@@ -1086,3 +1135,4 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
