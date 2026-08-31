@@ -582,10 +582,43 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
   // Anchos de columnas tabla documentos: Doc | Tipo | Clínica | Fecha | Estado | Valor
   const DC = [0, 76, 136, 318, 380, 432, 522]; // posiciones relativas al ML
 
+  // Cuánto se prestó de cada código en ESTE cruce (sumando solo los documentos
+  // de tipo préstamo incluidos aquí) — se usa para no mostrar, en la tabla de
+  // cada devolución, productos que en realidad pertenecen a OTRO préstamo no
+  // incluido en este cruce (aunque sí formen parte del documento de devolución
+  // completo). Antes se mostraba el documento entero, lo cual hacía ver como
+  // "cruzado aquí" algo que en realidad se cruzó en otro CRU-xxxxx distinto.
+  const tiposSalidaPre     = ['egreso', 'ingreso'];
+  const tiposDevolucionPre = ['devolucion_egreso', 'devolucion_ingreso'];
+  const prestadoPorCodigoPre = {};
+  documentos.filter(d => tiposSalidaPre.includes(d.tipo)).forEach(d => {
+    (d.items || []).forEach(i => {
+      prestadoPorCodigoPre[i.codigo] = (prestadoPorCodigoPre[i.codigo] || 0) + Number(i.cantidad);
+    });
+  });
+
   for (const d of documentos) {
-    const valor = (d.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
+    // Para documentos de devolución, solo se listan (y con la cantidad topada)
+    // los códigos que efectivamente corresponden a algún préstamo de este mismo
+    // cruce. Los documentos de préstamo siempre muestran su lista completa,
+    // porque esos productos sí son, en su totalidad, lo que se prestó.
+    let itemsDoc = d.items || [];
+    let itemsOcultos = 0;
+    if (tiposDevolucionPre.includes(d.tipo)) {
+      const original = itemsDoc;
+      itemsDoc = [];
+      for (const i of original) {
+        const disponible = prestadoPorCodigoPre[i.codigo] || 0;
+        if (disponible <= 0) { itemsOcultos++; continue; }
+        const cant = Math.min(Number(i.cantidad), disponible);
+        itemsDoc.push({ ...i, cantidad: cant });
+        prestadoPorCodigoPre[i.codigo] = disponible - cant; // no reusar el mismo saldo en otra fila
+      }
+    }
+
+    const valor = itemsDoc.reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
     const fechaDoc = d.fecha ? String(d.fecha).substring(0, 10) : '—';
-    const nItems = (d.items || []).length;
+    const nItems = itemsDoc.length;
     const altoCabDoc = 18;
 
     // Descripción propia del documento (observaciones de la EPO/IPE/IDP/ED),
@@ -600,7 +633,10 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
       }
       if (renglon.trim()) descLineas.push(renglon.trim());
     }
-    const altoDesc  = descLineas.length > 0 ? 4 + descLineas.length * 11 : 0;
+    const notaOcultos = itemsOcultos > 0
+      ? `${itemsOcultos} producto(s) de este documento pertenecen a otro préstamo (no incluido en este cruce) y no se listan aquí.`
+      : '';
+    const altoDesc  = (descLineas.length > 0 ? 4 + descLineas.length * 11 : 0) + (notaOcultos ? 11 : 0);
     const altoTabla = nItems > 0 ? 16 + nItems * 14 : 0;
     checkY(altoCabDoc + altoDesc + altoTabla + 8);
 
@@ -627,6 +663,11 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
       }
       y -= 3;
     }
+    if (notaOcultos) {
+      checkY(11);
+      texto(notaOcultos, ML + 4, y - 8, 7, font, GRIS_TXT, CW - 8);
+      y -= 11;
+    }
 
     // Tabla de items del documento
     if (nItems > 0) {
@@ -637,7 +678,7 @@ async function generarPdfCruce({ numero, fecha, observaciones, documentos }) {
       texto('Cant.', ML + CW - 38, y - 10, 7.5, fontBold, NEGRO);
       y -= 14;
 
-      for (const item of d.items) {
+      for (const item of itemsDoc) {
         checkY(14);
         // Fila con borde inferior
         rect(ML, y - 12, CW, 13, null, GRIS_LIN, 0.3);
@@ -1135,4 +1176,6 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
+
 
