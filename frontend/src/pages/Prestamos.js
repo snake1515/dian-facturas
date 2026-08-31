@@ -3810,10 +3810,15 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
       let sobranteValor = 0;
       const detalleProductos = [];
       const detalleSobrante = [];
+      // Filas a nivel de producto para ESTE cruce (una por cada producto de la
+      // devolución que cruza código con un producto del préstamo). Se agregan
+      // al arreglo final después de calcular el saldo posterior al cruce.
+      const filasProducto = [];
 
       itemsDevueltos.forEach(it => {
         const codigo = it.codigo;
         const cant = Number(it.cantidad);
+        const perteneceAlPrestamo = Object.prototype.hasOwnProperty.call(saldoPorCodigo, codigo);
         const precio = precioPorCodigo[codigo] != null ? precioPorCodigo[codigo] : Number(it.precio_unitario || 0);
         const disponible = Math.max(saldoPorCodigo[codigo] || 0, 0);
         const aplicada = Math.min(cant, disponible);
@@ -3829,7 +3834,34 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
           sobranteValor += sobranteItem * precio;
           detalleSobrante.push(`${nombrePorCodigo[codigo] || it.nombre || codigo} (+${sobranteItem})`);
         }
+
+        // Producto del préstamo (EPO/IPE) que corresponde por código — sólo se
+        // llena si el código de la devolución realmente existe en el préstamo,
+        // así el código/descripción del préstamo queda "al frente" del código
+        // de la devolución únicamente cuando ambos coinciden.
+        filasProducto.push({
+          codigo_producto_prestamo: perteneceAlPrestamo ? codigo : '',
+          descripcion_producto_prestamo: perteneceAlPrestamo ? (nombrePorCodigo[codigo] || '') : '',
+          producto_devuelto: it.nombre || nombrePorCodigo[codigo] || codigo,
+          codigo_producto_devuelto: codigo,
+          cantidad_devuelta_producto: aplicada,
+          valor_devuelto_producto: aplicada * precio,
+          tiene_sobrante_producto: sobranteItem > 0,
+          sobrante_cantidad_producto: sobranteItem,
+          sobrante_valor_producto: sobranteItem * precio,
+        });
       });
+
+      if (filasProducto.length === 0) {
+        // Cruce sin ítems de devolución detallados (caso raro): fila vacía en
+        // las columnas de producto para no perder el cruce del reporte.
+        filasProducto.push({
+          codigo_producto_prestamo: '', descripcion_producto_prestamo: '',
+          producto_devuelto: '', codigo_producto_devuelto: '',
+          cantidad_devuelta_producto: 0, valor_devuelto_producto: 0,
+          tiene_sobrante_producto: false, sobrante_cantidad_producto: 0, sobrante_valor_producto: 0,
+        });
+      }
 
       const saldoPendienteCantidad = Object.values(saldoPorCodigo).reduce((s, v) => s + Math.max(v, 0), 0);
       const saldoPendienteValor = Object.entries(saldoPorCodigo)
@@ -3838,29 +3870,40 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
       const descripcion = c.observaciones || c.grupo_observaciones
         || `Cruce ${tipoLabel} ${p.documento_contable} con ${tipoLabelDevol} ${c.devolucion_doc}`;
 
-      filas.push({
-        documento_prestamo: p.documento_contable,
-        tipo: tipoLabel,
-        clinica: p.clinica_nombre || '—',
-        fecha_prestamo: p.fecha,
-        numero_cruce: c.grupo_numero || '',
-        fecha_cruce: c.created_at,
-        documento_devolucion: c.devolucion_doc,
-        tipo_devolucion: tipoLabelDevol,
-        estado_devolucion: c.estado_devolucion || '',
-        descripcion,
-        productos_devueltos: detalleProductos.join(', ') || '—',
-        cantidad_devuelta: cantidadEsteC,
-        valor_devuelto: valorEsteC,
-        tiene_sobrante: sobranteCantidad > 0,
-        sobrante_cantidad: sobranteCantidad,
-        sobrante_valor: sobranteValor,
-        sobrante_detalle: detalleSobrante.join(', '),
-        saldo_pendiente_cantidad: saldoPendienteCantidad,
-        saldo_pendiente_valor: saldoPendienteValor,
-        cantidad_total_prestamo: cantidadTotalPrestamo,
-        valor_total_prestamo: valorTotalPrestamo,
-        estado_prestamo: p.estado,
+      // Una fila por producto cruzado (código igual entre préstamo y
+      // devolución), conservando el resto de la información del cruce
+      // (saldo pendiente, sobrante total, etc.) repetida en cada fila.
+      filasProducto.forEach(fp => {
+        filas.push({
+          documento_prestamo: p.documento_contable,
+          tipo: tipoLabel,
+          clinica: p.clinica_nombre || '—',
+          fecha_prestamo: p.fecha,
+          numero_cruce: c.grupo_numero || '',
+          fecha_cruce: c.created_at,
+          documento_devolucion: c.devolucion_doc,
+          tipo_devolucion: tipoLabelDevol,
+          estado_devolucion: c.estado_devolucion || '',
+          descripcion,
+          // ── 4 columnas nuevas: producto del préstamo (EPO/IPE) alineado
+          // con el producto devuelto (IDP/ED) por coincidencia de código ──
+          codigo_producto_prestamo: fp.codigo_producto_prestamo,
+          descripcion_producto_prestamo: fp.descripcion_producto_prestamo,
+          producto_devuelto: fp.producto_devuelto,
+          codigo_producto_devuelto: fp.codigo_producto_devuelto,
+          productos_devueltos: detalleProductos.join(', ') || '—',
+          cantidad_devuelta: fp.cantidad_devuelta_producto,
+          valor_devuelto: fp.valor_devuelto_producto,
+          tiene_sobrante: fp.tiene_sobrante_producto,
+          sobrante_cantidad: fp.sobrante_cantidad_producto,
+          sobrante_valor: fp.sobrante_valor_producto,
+          sobrante_detalle: detalleSobrante.join(', '),
+          saldo_pendiente_cantidad: saldoPendienteCantidad,
+          saldo_pendiente_valor: saldoPendienteValor,
+          cantidad_total_prestamo: cantidadTotalPrestamo,
+          valor_total_prestamo: valorTotalPrestamo,
+          estado_prestamo: p.estado,
+        });
       });
     });
   });
@@ -3932,9 +3975,13 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
       'Tipo Devolución': f.tipo_devolucion,
       'Estado Devolución': badgeEstado(f.estado_devolucion).label,
       'Descripción del Cruce': f.descripcion,
+      'Código Producto Préstamo (EPO/IPE)': f.codigo_producto_prestamo,
+      'Descripción Producto Préstamo (EPO/IPE)': f.descripcion_producto_prestamo,
+      'Producto Devuelto (IDP/ED)': f.producto_devuelto,
+      'Código Producto Devuelto': f.codigo_producto_devuelto,
       'Productos Devueltos en este Cruce': f.productos_devueltos,
-      'Cantidad Devuelta (este cruce)': f.cantidad_devuelta,
-      'Valor Devuelto (este cruce) $': f.valor_devuelto,
+      'Cantidad Devuelta (este producto)': f.cantidad_devuelta,
+      'Valor Devuelto (este producto) $': f.valor_devuelto,
       '⚠ Sobrante (revisar)': f.tiene_sobrante ? 'SÍ' : '',
       'Cantidad Sobrante': f.sobrante_cantidad || '',
       'Valor Sobrante $': f.sobrante_valor || '',
@@ -4070,6 +4117,10 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
               <th style={{ padding: '6px 8px' }}>Estado devolución</th>
               <th style={{ padding: '6px 8px' }}>Fecha cruce</th>
               <th style={{ padding: '6px 8px' }}>Descripción</th>
+              <th style={{ padding: '6px 8px' }}>Cód. producto préstamo</th>
+              <th style={{ padding: '6px 8px' }}>Descripción producto préstamo</th>
+              <th style={{ padding: '6px 8px' }}>Producto devuelto</th>
+              <th style={{ padding: '6px 8px' }}>Cód. producto devuelto</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>Cant. devuelta</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>Valor devuelto</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>Saldo pendiente</th>
@@ -4077,9 +4128,11 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
           </thead>
           <tbody>
             {filasCronologicas.length === 0 && (
-              <tr><td colSpan={10} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin cruces para este filtro</td></tr>
+              <tr><td colSpan={14} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin cruces para este filtro</td></tr>
             )}
-            {filasCronologicas.map((f, i) => (
+            {filasCronologicas.map((f, i) => {
+              const codigosCoinciden = f.codigo_producto_prestamo && f.codigo_producto_prestamo === f.codigo_producto_devuelto;
+              return (
               <tr key={i} style={{ borderTop: '1px solid var(--t-border)', background: f.tiene_sobrante ? 'rgba(239,68,68,0.08)' : 'transparent' }}
                 title={f.tiene_sobrante ? `Sobrante: ${f.sobrante_detalle} — Valor sobrante: ${fmt(f.sobrante_valor)}` : undefined}>
                 <td style={{ padding: '5px 8px', textAlign: 'center' }}>{f.tiene_sobrante ? '⚠️' : ''}</td>
@@ -4093,13 +4146,18 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
                 </td>
                 <td style={{ padding: '5px 8px' }}>{fmtFecha(f.fecha_cruce)}</td>
                 <td style={{ padding: '5px 8px', color: 'var(--t-text-muted)' }}>{f.descripcion}</td>
+                <td style={{ padding: '5px 8px', fontWeight: codigosCoinciden ? 600 : 400, color: codigosCoinciden ? '#22c55e' : 'var(--t-text-primary)' }}>{f.codigo_producto_prestamo || '—'}</td>
+                <td style={{ padding: '5px 8px' }}>{f.descripcion_producto_prestamo || '—'}</td>
+                <td style={{ padding: '5px 8px' }}>{f.producto_devuelto || '—'}</td>
+                <td style={{ padding: '5px 8px', fontWeight: codigosCoinciden ? 600 : 400, color: codigosCoinciden ? '#22c55e' : 'var(--t-text-primary)' }}>{f.codigo_producto_devuelto || '—'}</td>
                 <td style={{ padding: '5px 8px', textAlign: 'right' }}>{f.cantidad_devuelta}</td>
                 <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmt(f.valor_devuelto)}</td>
                 <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: f.saldo_pendiente_valor > 0 ? '#f59e0b' : '#22c55e' }}>
                   {fmt(f.saldo_pendiente_valor)}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
