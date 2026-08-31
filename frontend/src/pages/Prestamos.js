@@ -1874,7 +1874,21 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     setRegenerandoPdfs(true);
     try {
       const r = await apiFetch('/prestamos/cruces/regenerar-pdfs', { method: 'POST' });
-      alert(`Se regeneraron ${r.regenerados} PDF(s).${r.errores > 0 ? ` ${r.errores} con error.` : ''}`);
+      let msg = `Se regeneraron ${r.regenerados} PDF(s).`;
+      if (r.errores > 0) {
+        msg += ` ${r.errores} con error:\n\n`;
+        // Mostrar el motivo real de cada falla (agrupado, para no repetir el mismo
+        // mensaje 25 veces si todos comparten la misma causa raíz).
+        const porMotivo = {};
+        (r.detalle_errores || []).forEach(d => {
+          if (!porMotivo[d.motivo]) porMotivo[d.motivo] = [];
+          porMotivo[d.motivo].push(d.numero);
+        });
+        Object.entries(porMotivo).forEach(([motivo, numeros]) => {
+          msg += `• ${motivo}\n  (${numeros.length}): ${numeros.slice(0, 10).join(', ')}${numeros.length > 10 ? '…' : ''}\n\n`;
+        });
+      }
+      alert(msg);
       onRefresh();
     } catch (e) {
       alert('Error regenerando PDFs: ' + e.message);
@@ -4269,5 +4283,6 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
 
 
