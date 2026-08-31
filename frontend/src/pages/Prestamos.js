@@ -4067,6 +4067,7 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
               <th style={{ padding: '6px 8px' }}>Préstamo</th>
               <th style={{ padding: '6px 8px' }}>Tipo</th>
               <th style={{ padding: '6px 8px' }}>Devolución</th>
+              <th style={{ padding: '6px 8px' }}>Estado devolución</th>
               <th style={{ padding: '6px 8px' }}>Fecha cruce</th>
               <th style={{ padding: '6px 8px' }}>Descripción</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>Cant. devuelta</th>
@@ -4076,7 +4077,7 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
           </thead>
           <tbody>
             {filasCronologicas.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin cruces para este filtro</td></tr>
+              <tr><td colSpan={10} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin cruces para este filtro</td></tr>
             )}
             {filasCronologicas.map((f, i) => (
               <tr key={i} style={{ borderTop: '1px solid var(--t-border)', background: f.tiene_sobrante ? 'rgba(239,68,68,0.08)' : 'transparent' }}
@@ -4085,6 +4086,11 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
                 <td style={{ padding: '5px 8px', fontWeight: 600 }}>{f.documento_prestamo}</td>
                 <td style={{ padding: '5px 8px' }}>{f.tipo}</td>
                 <td style={{ padding: '5px 8px' }}>{f.documento_devolucion}</td>
+                <td style={{ padding: '5px 8px' }}>
+                  <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(f.estado_devolucion).bg, color: badgeEstado(f.estado_devolucion).color }}>
+                    {f.tipo_devolucion}: {badgeEstado(f.estado_devolucion).label}
+                  </span>
+                </td>
                 <td style={{ padding: '5px 8px' }}>{fmtFecha(f.fecha_cruce)}</td>
                 <td style={{ padding: '5px 8px', color: 'var(--t-text-muted)' }}>{f.descripcion}</td>
                 <td style={{ padding: '5px 8px', textAlign: 'right' }}>{f.cantidad_devuelta}</td>
