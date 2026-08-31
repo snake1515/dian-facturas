@@ -3792,13 +3792,18 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
     const saldoPorCodigo = {};
     const precioPorCodigo = {};
     const nombrePorCodigo = {};
+    const cantidadTotalPorCodigo = {};
+    const valorTotalPorCodigo = {};
     (p.items || []).forEach(i => {
       saldoPorCodigo[i.codigo] = Number(i.cantidad);
       precioPorCodigo[i.codigo] = Number(i.precio_unitario || 0);
       nombrePorCodigo[i.codigo] = i.nombre;
+      // Total prestado de ESTE producto puntual (no del documento completo),
+      // para que cada fila muestre la cantidad/valor que corresponde a su
+      // propio código y no el agregado de todo el préstamo repetido.
+      cantidadTotalPorCodigo[i.codigo] = Number(i.cantidad);
+      valorTotalPorCodigo[i.codigo] = Number(i.cantidad) * Number(i.precio_unitario || 0);
     });
-    const valorTotalPrestamo = (p.items || []).reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
-    const cantidadTotalPrestamo = (p.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
     const tipoLabel = p.tipo === 'egreso' ? 'EPO' : 'IPE';
     const tipoLabelDevol = p.tipo === 'egreso' ? 'IDP' : 'ED';
 
@@ -3849,6 +3854,10 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
           tiene_sobrante_producto: sobranteItem > 0,
           sobrante_cantidad_producto: sobranteItem,
           sobrante_valor_producto: sobranteItem * precio,
+          // Cantidad/valor total prestado de ESTE producto específico dentro
+          // del préstamo (no del documento completo).
+          cantidad_total_producto: perteneceAlPrestamo ? (cantidadTotalPorCodigo[codigo] || 0) : 0,
+          valor_total_producto: perteneceAlPrestamo ? (valorTotalPorCodigo[codigo] || 0) : 0,
         });
       });
 
@@ -3860,6 +3869,7 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
           producto_devuelto: '', codigo_producto_devuelto: '',
           cantidad_devuelta_producto: 0, valor_devuelto_producto: 0,
           tiene_sobrante_producto: false, sobrante_cantidad_producto: 0, sobrante_valor_producto: 0,
+          cantidad_total_producto: 0, valor_total_producto: 0,
         });
       }
 
@@ -3900,8 +3910,8 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
           sobrante_detalle: detalleSobrante.join(', '),
           saldo_pendiente_cantidad: saldoPendienteCantidad,
           saldo_pendiente_valor: saldoPendienteValor,
-          cantidad_total_prestamo: cantidadTotalPrestamo,
-          valor_total_prestamo: valorTotalPrestamo,
+          cantidad_total_prestamo: fp.cantidad_total_producto,
+          valor_total_prestamo: fp.valor_total_producto,
           estado_prestamo: p.estado,
         });
       });
@@ -4370,6 +4380,14 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
