@@ -3858,6 +3858,11 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
           // del préstamo (no del documento completo).
           cantidad_total_producto: perteneceAlPrestamo ? (cantidadTotalPorCodigo[codigo] || 0) : 0,
           valor_total_producto: perteneceAlPrestamo ? (valorTotalPorCodigo[codigo] || 0) : 0,
+          // Saldo pendiente de ESTE producto puntual después de este cruce
+          // (no el total del documento) — solo tiene sentido si el código
+          // pertenece al préstamo; si no, no hay saldo que rastrear aquí.
+          saldo_pendiente_cantidad_producto: perteneceAlPrestamo ? Math.max(saldoPorCodigo[codigo] || 0, 0) : 0,
+          saldo_pendiente_valor_producto: perteneceAlPrestamo ? Math.max(saldoPorCodigo[codigo] || 0, 0) * precio : 0,
         });
       });
 
@@ -3870,11 +3875,12 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
           cantidad_devuelta_producto: 0, valor_devuelto_producto: 0,
           tiene_sobrante_producto: false, sobrante_cantidad_producto: 0, sobrante_valor_producto: 0,
           cantidad_total_producto: 0, valor_total_producto: 0,
+          saldo_pendiente_cantidad_producto: 0, saldo_pendiente_valor_producto: 0,
         });
       }
 
-      const saldoPendienteCantidad = Object.values(saldoPorCodigo).reduce((s, v) => s + Math.max(v, 0), 0);
-      const saldoPendienteValor = Object.entries(saldoPorCodigo)
+      const saldoPendienteDocCantidad = Object.values(saldoPorCodigo).reduce((s, v) => s + Math.max(v, 0), 0);
+      const saldoPendienteDocValor = Object.entries(saldoPorCodigo)
         .reduce((s, [cod, v]) => s + Math.max(v, 0) * (precioPorCodigo[cod] || 0), 0);
 
       const descripcion = c.observaciones || c.grupo_observaciones
@@ -3882,7 +3888,7 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
 
       // Una fila por producto cruzado (código igual entre préstamo y
       // devolución), conservando el resto de la información del cruce
-      // (saldo pendiente, sobrante total, etc.) repetida en cada fila.
+      // (sobrante total, etc.) repetida en cada fila.
       filasProducto.forEach(fp => {
         filas.push({
           documento_prestamo: p.documento_contable,
@@ -3908,8 +3914,15 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
           sobrante_cantidad: fp.sobrante_cantidad_producto,
           sobrante_valor: fp.sobrante_valor_producto,
           sobrante_detalle: detalleSobrante.join(', '),
-          saldo_pendiente_cantidad: saldoPendienteCantidad,
-          saldo_pendiente_valor: saldoPendienteValor,
+          // Saldo pendiente de ESTE producto puntual (no del documento
+          // completo) — es lo que falta por devolver de este código
+          // específico después de este cruce.
+          saldo_pendiente_cantidad: fp.saldo_pendiente_cantidad_producto,
+          saldo_pendiente_valor: fp.saldo_pendiente_valor_producto,
+          // Se conserva aparte el saldo pendiente del documento completo
+          // (todos los productos), por si sirve de referencia general.
+          saldo_pendiente_documento_cantidad: saldoPendienteDocCantidad,
+          saldo_pendiente_documento_valor: saldoPendienteDocValor,
           cantidad_total_prestamo: fp.cantidad_total_producto,
           valor_total_prestamo: fp.valor_total_producto,
           estado_prestamo: p.estado,
@@ -3996,8 +4009,10 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
       'Cantidad Sobrante': f.sobrante_cantidad || '',
       'Valor Sobrante $': f.sobrante_valor || '',
       'Detalle del Sobrante': f.sobrante_detalle || '',
-      'Saldo Pendiente Cantidad (después de este cruce)': f.saldo_pendiente_cantidad,
-      'Saldo Pendiente Valor $ (después de este cruce)': f.saldo_pendiente_valor,
+      'Saldo Pendiente Cantidad (este producto, tras este cruce)': f.saldo_pendiente_cantidad,
+      'Saldo Pendiente Valor $ (este producto, tras este cruce)': f.saldo_pendiente_valor,
+      'Saldo Pendiente Cantidad (documento completo, tras este cruce)': f.saldo_pendiente_documento_cantidad,
+      'Saldo Pendiente Valor $ (documento completo, tras este cruce)': f.saldo_pendiente_documento_valor,
       'Cantidad Total del Préstamo': f.cantidad_total_prestamo,
       'Valor Total del Préstamo $': f.valor_total_prestamo,
       'Estado Actual del Préstamo': f.estado_prestamo,
@@ -4133,7 +4148,7 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
               <th style={{ padding: '6px 8px' }}>Cód. producto devuelto</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>Cant. devuelta</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>Valor devuelto</th>
-              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Saldo pendiente</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }} title="Saldo pendiente de este producto puntual, no del documento completo">Saldo pendiente (producto)</th>
             </tr>
           </thead>
           <tbody>
@@ -4380,6 +4395,21 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
