@@ -4011,8 +4011,6 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
       'Detalle del Sobrante': f.sobrante_detalle || '',
       'Saldo Pendiente Cantidad (este producto, tras este cruce)': f.saldo_pendiente_cantidad,
       'Saldo Pendiente Valor $ (este producto, tras este cruce)': f.saldo_pendiente_valor,
-      'Saldo Pendiente Cantidad (documento completo, tras este cruce)': f.saldo_pendiente_documento_cantidad,
-      'Saldo Pendiente Valor $ (documento completo, tras este cruce)': f.saldo_pendiente_documento_valor,
       'Cantidad Total del Préstamo': f.cantidad_total_prestamo,
       'Valor Total del Préstamo $': f.valor_total_prestamo,
       'Estado Actual del Préstamo': f.estado_prestamo,
@@ -4395,33 +4393,3 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
