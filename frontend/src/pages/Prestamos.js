@@ -3287,20 +3287,51 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
     }));
   }, [filtrados, modo, devoluciones, cruces]);
 
-  // ── Top productos pendientes (cantidad/valor ya neto de lo devuelto/cruzado) ──
+  // ── Top productos pendientes ────────────────────────────────────────────
+  // Saldo neto GLOBAL por código (igual criterio que el Kárdex por producto):
+  // total prestado del código (todos los documentos del tipo EPO/IPE que
+  // caen en los filtros actuales) menos total devuelto del código (todos
+  // los IDP/ED que caen en esos mismos filtros) — sin depender de si cada
+  // devolución quedó formalmente "cruzada" contra un préstamo puntual. Así
+  // coincide en unidades y saldo total con el Kárdex, en vez de sumar el
+  // pendiente documento por documento (que sobreestima cuando hay
+  // devoluciones aún no cruzadas contra un préstamo específico).
   const topProductosPendientes = useMemo(() => {
-    const mapa = {};
-    filtrados.filter(p => p.estado !== 'cerrado').forEach(p => {
-      const pendientes = itemsPendientesDe(p, devoluciones, cruces);
-      pendientes.forEach(i => {
+    const mapa = {}; // codigo -> { codigo, nombre, prestado, devuelto, precio_unitario, fechaPrecio }
+
+    filtrados.forEach(p => {
+      (p.items || []).forEach(i => {
         const k = i.codigo || i.nombre;
-        if (!mapa[k]) mapa[k] = { codigo: i.codigo, nombre: i.nombre, cantidad: 0, valor: 0 };
-        mapa[k].cantidad += Number(i.pendiente || 0);
-        mapa[k].valor    += Number(i.pendiente || 0) * Number(i.precio_unitario || 0);
+        if (!k) return;
+        if (!mapa[k]) mapa[k] = { codigo: i.codigo, nombre: i.nombre, prestado: 0, devuelto: 0, precio_unitario: 0, fechaPrecio: '' };
+        mapa[k].prestado += Number(i.cantidad || 0);
+        // Precio de referencia: el del documento de préstamo más reciente que tenga este código
+        if (Number(i.precio_unitario || 0) > 0 && (!mapa[k].fechaPrecio || String(p.fecha) > mapa[k].fechaPrecio)) {
+          mapa[k].precio_unitario = Number(i.precio_unitario);
+          mapa[k].fechaPrecio = String(p.fecha || '');
+        }
       });
     });
-    return Object.values(mapa).sort((a, b) => b.valor - a.valor).slice(0, 15);
-  }, [filtrados, devoluciones, cruces]);
+
+    devsFiltradas.forEach(d => {
+      (d.items || []).forEach(i => {
+        const k = i.codigo || i.nombre;
+        if (!k) return;
+        if (!mapa[k]) mapa[k] = { codigo: i.codigo, nombre: i.nombre, prestado: 0, devuelto: 0, precio_unitario: 0, fechaPrecio: '' };
+        mapa[k].devuelto += Number(i.cantidad || 0);
+      });
+    });
+
+    return Object.values(mapa)
+      .map(m => ({
+        codigo: m.codigo, nombre: m.nombre,
+        cantidad: Math.max(0, m.prestado - m.devuelto),
+        valor: Math.max(0, m.prestado - m.devuelto) * m.precio_unitario,
+      }))
+      .filter(m => m.cantidad > 0)
+      .sort((a, b) => b.valor - a.valor)
+      .slice(0, 15);
+  }, [filtrados, devsFiltradas]);
 
   // ── Descargar HTML ────────────────────────────────────────────────
   function descargarHTML() {
@@ -4420,4 +4451,6 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
 
