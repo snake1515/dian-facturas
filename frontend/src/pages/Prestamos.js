@@ -1830,21 +1830,6 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [soporteItemFiles, setSoporteItemFiles] = React.useState({});
   const [cantDevueltas,    setCantDevueltas]    = React.useState({});
 
-  // Una vez elegidos ambos lados (préstamo y devolución), la grilla de
-  // selección se contrae a un resumen compacto para dejarle espacio real al
-  // panel de “Cruzar” sin necesidad de scroll. “Cambiar selección” la vuelve a
-  // expandir sin perder lo ya elegido (útil para sumar más documentos a un
-  // multicruce).
-  const [seleccionExpandida, setSeleccionExpandida] = React.useState(true);
-  const hayPreseleccion = selPrestamos.length > 0 && selDevoluciones.length > 0;
-  const hayPreseleccionRef = React.useRef(hayPreseleccion);
-  React.useEffect(() => {
-    if (hayPreseleccionRef.current !== hayPreseleccion) {
-      hayPreseleccionRef.current = hayPreseleccion;
-      setSeleccionExpandida(!hayPreseleccion);
-    }
-  }, [hayPreseleccion]);
-
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
   const [anioPrest,    setAnioPrest]    = React.useState('');
@@ -1997,15 +1982,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
 
   return (
     <div>
-      {/* Panel de cruce — se contrae a un resumen compacto en cuanto hay
-          preselección en ambos lados, para dejarle espacio real al panel de
-          "Cruzar" sin depender de scroll. "Cambiar selección" la vuelve a
-          expandir sin perder lo ya elegido (útil para sumar más documentos
-          a un multicruce). Queda sticky al tope de la pestaña, así al bajar
-          a seguir mirando préstamos/devoluciones no se pierde de vista.
-      */}
-      <div style={{ position: 'sticky', top: 0, zIndex: 40, background: 'var(--t-bg-app)', paddingBottom: 4 }}>
-      {seleccionExpandida ? (
+      {/* Los listados de préstamos y devoluciones quedan siempre visibles;
+          ya no se contraen a un resumen al preseleccionar ambos lados. */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 24 }}>
         {/* Izquierda — préstamos */}
         <div>
@@ -2162,32 +2140,24 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
           </div>
         </div>
       </div>
-      ) : (
-        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '10px 16px', marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--t-text-primary)' }}>
-            <span style={{ color: 'var(--t-text-muted)' }}>Préstamo(s): </span>
-            <b>{selPrestamos.map(p => p.documento_contable).join(', ')}</b>
-            <span style={{ color: 'var(--t-text-muted)', margin: '0 8px' }}>↔</span>
-            <span style={{ color: 'var(--t-text-muted)' }}>Devolución(es): </span>
-            <b>{selDevoluciones.map(d => d.documento_contable).join(', ')}</b>
-          </div>
-          <button onClick={() => setSeleccionExpandida(true)}
-            style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 6, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
-            ✏️ Cambiar selección
-          </button>
-        </div>
-      )}
-      </div>
 
-      {/* Panel de acción cuando ambos seleccionados. Aparece en su lugar
-          natural, debajo de las listas — sin sticky ni scroll forzado, para
-          no empujar los buscadores de préstamos/devoluciones fuera de vista.
-          "Cruces registrados" se contrae mientras tanto para dejarle espacio. */}
+      {/* Resumen de la selección actual + panel de acción. Queda fijo (sticky)
+          al fondo de la pantalla para que "Registrar cruce" esté siempre
+          visible sin necesidad de hacer scroll, incluso con los listados de
+          préstamos/devoluciones abiertos arriba. */}
       {selPrestamos.length > 0 && selDevoluciones.length > 0 && (
         <div style={{
+          position: 'sticky', bottom: 0, zIndex: 30,
           background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 10, padding: 16, marginBottom: 24,
-          boxShadow: '0 6px 20px rgba(0,0,0,.35)',
+          boxShadow: '0 -6px 20px rgba(0,0,0,.45)',
         }}>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 8 }}>
+            <span>Préstamo(s): </span>
+            <b style={{ color: 'var(--t-text-primary)' }}>{selPrestamos.map(p => p.documento_contable).join(', ')}</b>
+            <span style={{ margin: '0 8px' }}>↔</span>
+            <span>Devolución(es): </span>
+            <b style={{ color: 'var(--t-text-primary)' }}>{selDevoluciones.map(d => d.documento_contable).join(', ')}</b>
+          </div>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: 'var(--t-text-primary)' }}>
             {selPrestamos.length === 1 && selDevoluciones.length === 1 ? (
               <>Cruzar <b>{selPrestamos[0].documento_contable}</b> con <b>{selDevoluciones[0].documento_contable}</b></>
@@ -4450,19 +4420,4 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
