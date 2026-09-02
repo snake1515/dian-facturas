@@ -246,6 +246,7 @@ export default function Prestamos() {
     { id: 'movimientos', label: 'Movimientos' },
     { id: 'nuevo',       label: 'Nuevo préstamo' },
     { id: 'cruces',      label: 'Cruces' },
+    { id: 'historial_cruces', label: 'Historial de Cruces' },
     { id: 'productos',   label: 'Productos' },
     { id: 'reportes',    label: 'Reportes' },
     { id: 'dashboard',   label: 'Dashboard' },
@@ -283,6 +284,7 @@ export default function Prestamos() {
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
+          {activeTab === 'historial_cruces' && <TabHistorialCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
           {activeTab === 'dashboard'   && (
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
@@ -1818,19 +1820,6 @@ function badgeEstado(estado) {
 }
 
 function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
-  const { isAdmin } = useAuth();
-
-  async function revertirCruce(cruce, e) {
-    e.stopPropagation();
-    if (!window.confirm(`¿Revertir el cruce entre ${cruce.prestamo_doc} y ${cruce.devolucion_doc}? El préstamo volverá a estado abierto.`)) return;
-    try {
-      await apiFetch(`/prestamos/cruces/${cruce.id}`, { method: 'DELETE' });
-      onRefresh();
-    } catch (err) {
-      alert('Error revirtiendo cruce: ' + err.message);
-    }
-  }
-
   const [selPrestamos,  setSelPrestamos]  = React.useState([]);
   const [selDevoluciones,setSelDevoluciones]= React.useState([]);
   const [tipoCruce,    setTipoCruce]    = React.useState('total');
@@ -1840,77 +1829,22 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [soporteFile,  setSoporteFile]  = React.useState(null);
   const [soporteItemFiles, setSoporteItemFiles] = React.useState({});
   const [cantDevueltas,    setCantDevueltas]    = React.useState({});
-  const [expandedCruce,    setExpandedCruce]    = React.useState(null);
-  const [reparando,        setReparando]        = React.useState(false);
-  const [regenerandoPdfs,  setRegenerandoPdfs]   = React.useState(false);
-  const [limpiandoHuerfanos, setLimpiandoHuerfanos] = React.useState(false);
-  const [regenerandoPdfId, setRegenerandoPdfId]  = React.useState(null);
 
-  async function regenerarPdfIndividual(c, e) {
-    e.stopPropagation();
-    setRegenerandoPdfId(c.id);
-    try {
-      await apiFetch(`/prestamos/cruces/${c.id}/regenerar-pdf`, { method: 'POST' });
-      onRefresh();
-    } catch (err) {
-      alert('Error regenerando el PDF: ' + err.message);
+  // Una vez elegidos ambos lados (préstamo y devolución), la grilla de
+  // selección se contrae a un resumen compacto para dejarle espacio real al
+  // panel de “Cruzar” sin necesidad de scroll. “Cambiar selección” la vuelve a
+  // expandir sin perder lo ya elegido (útil para sumar más documentos a un
+  // multicruce).
+  const [seleccionExpandida, setSeleccionExpandida] = React.useState(true);
+  const hayPreseleccion = selPrestamos.length > 0 && selDevoluciones.length > 0;
+  const hayPreseleccionRef = React.useRef(hayPreseleccion);
+  React.useEffect(() => {
+    if (hayPreseleccionRef.current !== hayPreseleccion) {
+      hayPreseleccionRef.current = hayPreseleccion;
+      setSeleccionExpandida(!hayPreseleccion);
     }
-    setRegenerandoPdfId(null);
-  }
+  }, [hayPreseleccion]);
 
-  async function repararCrucesAntiguos() {
-    setReparando(true);
-    try {
-      const r = await apiFetch('/prestamos/cruces/backfill', { method: 'POST' });
-      alert(`Se repararon ${r.actualizados} cruce(s) antiguo(s): ahora tienen consecutivo, estado y PDF.`);
-      onRefresh();
-    } catch (e) {
-      alert('Error reparando cruces: ' + e.message);
-    }
-    setReparando(false);
-  }
-
-  async function regenerarPdfs() {
-    if (!window.confirm('¿Regenerar el PDF de todos los cruces ya emitidos con el formato actual? Los archivos existentes se sobrescriben (el enlace no cambia).')) return;
-    setRegenerandoPdfs(true);
-    try {
-      const r = await apiFetch('/prestamos/cruces/regenerar-pdfs', { method: 'POST' });
-      let msg = `Se regeneraron ${r.regenerados} PDF(s).`;
-      if (r.errores > 0) {
-        msg += ` ${r.errores} con error:\n\n`;
-        // Mostrar el motivo real de cada falla (agrupado, para no repetir el mismo
-        // mensaje 25 veces si todos comparten la misma causa raíz).
-        const porMotivo = {};
-        (r.detalle_errores || []).forEach(d => {
-          if (!porMotivo[d.motivo]) porMotivo[d.motivo] = [];
-          porMotivo[d.motivo].push(d.numero);
-        });
-        Object.entries(porMotivo).forEach(([motivo, numeros]) => {
-          msg += `• ${motivo}\n  (${numeros.length}): ${numeros.slice(0, 10).join(', ')}${numeros.length > 10 ? '…' : ''}\n\n`;
-        });
-      }
-      alert(msg);
-      onRefresh();
-    } catch (e) {
-      alert('Error regenerando PDFs: ' + e.message);
-    }
-    setRegenerandoPdfs(false);
-  }
-
-  async function limpiarHuerfanos() {
-    if (!window.confirm('¿Eliminar los grupos de cruce que quedaron sin documentos asociados (por ejemplo, tras revertir el único cruce de ese grupo)? Se borra el número CRU-xxxxx y su PDF; no afecta los préstamos ni devoluciones en sí.')) return;
-    setLimpiandoHuerfanos(true);
-    try {
-      const r = await apiFetch('/prestamos/cruces/limpiar-huerfanos', { method: 'POST' });
-      alert(r.eliminados > 0
-        ? `Se eliminaron ${r.eliminados} cruce(s) huérfano(s): ${r.detalle.slice(0, 15).join(', ')}${r.detalle.length > 15 ? '…' : ''}`
-        : 'No había cruces huérfanos.');
-      onRefresh();
-    } catch (e) {
-      alert('Error limpiando huérfanos: ' + e.message);
-    }
-    setLimpiandoHuerfanos(false);
-  }
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
   const [anioPrest,    setAnioPrest]    = React.useState('');
@@ -1923,50 +1857,6 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [estadoDevol,  setEstadoDevol]  = React.useState(''); // '' | abierto | parcial | cerrado
   const [detalleCruce, setDetalleCruce] = React.useState(null);
   const [detalleCard,  setDetalleCard]  = React.useState(null);
-  const [filtroCruces, setFiltroCruces] = React.useState('');
-  const [editandoCruce, setEditandoCruce] = React.useState(null);
-  const [editObs,        setEditObs]       = React.useState('');
-  const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
-  const [verKardex, setVerKardex] = React.useState(false);
-  const [editandoDocumento, setEditandoDocumento] = React.useState(null);
-
-  function abrirEditarDocumento(id, e) {
-    e.stopPropagation();
-    const doc = (prestamos || []).find(p => p.id === id);
-    if (doc) setEditandoDocumento(doc);
-  }
-
-  function abrirEdicionCruce(c, e) {
-    e.stopPropagation();
-    setEditandoCruce(c);
-    setEditObs(c.observaciones || c.grupo_observaciones || '');
-  }
-
-  async function guardarEdicionCruce() {
-    setGuardandoEdicion(true);
-    try {
-      await apiFetch(`/prestamos/cruces/${editandoCruce.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ observaciones: editObs }),
-      });
-      setEditandoCruce(null);
-      onRefresh();
-    } catch (err) {
-      alert('Error editando cruce: ' + err.message);
-    }
-    setGuardandoEdicion(false);
-  }
-
-  function matchCruce(c, texto) {
-    if (!texto) return true;
-    const t = texto.toLowerCase().trim();
-    const campos = [c.grupo_numero, c.prestamo_doc, c.devolucion_doc, c.clinica_nombre, c.observaciones, c.grupo_observaciones]
-      .filter(Boolean).map(x => String(x).toLowerCase());
-    if (campos.some(x => x.includes(t))) return true;
-    const items = [...(c.prestamo_items || []), ...(c.devolucion_items || [])];
-    return items.some(i => (i.nombre || '').toLowerCase().includes(t) || (i.codigo || '').toLowerCase().includes(t));
-  }
 
   // Separar por tipo
   const prestamosBase  = prestamos.filter(p => ['ingreso','egreso'].includes(p.tipo));
@@ -2106,9 +1996,16 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const inputS = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', fontSize: 13, boxSizing: 'border-box' };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 260px)', minHeight: 500 }}>
-    <div style={{ overflowY: 'auto', flex: '1 1 50%', minHeight: 0, paddingRight: 4 }}>
-      {/* Panel de cruce */}
+    <div>
+      {/* Panel de cruce — se contrae a un resumen compacto en cuanto hay
+          preselección en ambos lados, para dejarle espacio real al panel de
+          "Cruzar" sin depender de scroll. "Cambiar selección" la vuelve a
+          expandir sin perder lo ya elegido (útil para sumar más documentos
+          a un multicruce). Queda sticky al tope de la pestaña, así al bajar
+          a seguir mirando préstamos/devoluciones no se pierde de vista.
+      */}
+      <div style={{ position: 'sticky', top: 0, zIndex: 40, background: 'var(--t-bg-app)', paddingBottom: 4 }}>
+      {seleccionExpandida ? (
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 24 }}>
         {/* Izquierda — préstamos */}
         <div>
@@ -2265,10 +2162,32 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
           </div>
         </div>
       </div>
+      ) : (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '10px 16px', marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--t-text-primary)' }}>
+            <span style={{ color: 'var(--t-text-muted)' }}>Préstamo(s): </span>
+            <b>{selPrestamos.map(p => p.documento_contable).join(', ')}</b>
+            <span style={{ color: 'var(--t-text-muted)', margin: '0 8px' }}>↔</span>
+            <span style={{ color: 'var(--t-text-muted)' }}>Devolución(es): </span>
+            <b>{selDevoluciones.map(d => d.documento_contable).join(', ')}</b>
+          </div>
+          <button onClick={() => setSeleccionExpandida(true)}
+            style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 6, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+            ✏️ Cambiar selección
+          </button>
+        </div>
+      )}
+      </div>
 
-      {/* Panel de acción cuando ambos seleccionados */}
+      {/* Panel de acción cuando ambos seleccionados. Aparece en su lugar
+          natural, debajo de las listas — sin sticky ni scroll forzado, para
+          no empujar los buscadores de préstamos/devoluciones fuera de vista.
+          "Cruces registrados" se contrae mientras tanto para dejarle espacio. */}
       {selPrestamos.length > 0 && selDevoluciones.length > 0 && (
-        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 24 }}>
+        <div style={{
+          background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 10, padding: 16, marginBottom: 24,
+          boxShadow: '0 6px 20px rgba(0,0,0,.35)',
+        }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: 'var(--t-text-primary)' }}>
             {selPrestamos.length === 1 && selDevoluciones.length === 1 ? (
               <>Cruzar <b>{selPrestamos[0].documento_contable}</b> con <b>{selDevoluciones[0].documento_contable}</b></>
@@ -2347,14 +2266,154 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
           </button>
         </div>
       )}
-    </div>
 
-    {/* Historial de cruces — panel inferior fijo con scroll propio */}
+      {detalleCard && (
+        <Modal onClose={() => setDetalleCard(null)} titulo={`Detalle ${detalleCard.documento_contable}`}>
+          <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+
+function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
+  const { isAdmin } = useAuth();
+
+  async function revertirCruce(cruce, e) {
+    e.stopPropagation();
+    if (!window.confirm(`¿Revertir el cruce entre ${cruce.prestamo_doc} y ${cruce.devolucion_doc}? El préstamo volverá a estado abierto.`)) return;
+    try {
+      await apiFetch(`/prestamos/cruces/${cruce.id}`, { method: 'DELETE' });
+      onRefresh();
+    } catch (err) {
+      alert('Error revirtiendo cruce: ' + err.message);
+    }
+  }
+
+  const [expandedCruce,    setExpandedCruce]    = React.useState(null);
+  const [reparando,        setReparando]        = React.useState(false);
+  const [regenerandoPdfs,  setRegenerandoPdfs]   = React.useState(false);
+  const [limpiandoHuerfanos, setLimpiandoHuerfanos] = React.useState(false);
+  const [regenerandoPdfId, setRegenerandoPdfId]  = React.useState(null);
+  async function regenerarPdfIndividual(c, e) {
+    e.stopPropagation();
+    setRegenerandoPdfId(c.id);
+    try {
+      await apiFetch(`/prestamos/cruces/${c.id}/regenerar-pdf`, { method: 'POST' });
+      onRefresh();
+    } catch (err) {
+      alert('Error regenerando el PDF: ' + err.message);
+    }
+    setRegenerandoPdfId(null);
+  }
+
+  async function repararCrucesAntiguos() {
+    setReparando(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/backfill', { method: 'POST' });
+      alert(`Se repararon ${r.actualizados} cruce(s) antiguo(s): ahora tienen consecutivo, estado y PDF.`);
+      onRefresh();
+    } catch (e) {
+      alert('Error reparando cruces: ' + e.message);
+    }
+    setReparando(false);
+  }
+
+  async function regenerarPdfs() {
+    if (!window.confirm('¿Regenerar el PDF de todos los cruces ya emitidos con el formato actual? Los archivos existentes se sobrescriben (el enlace no cambia).')) return;
+    setRegenerandoPdfs(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/regenerar-pdfs', { method: 'POST' });
+      let msg = `Se regeneraron ${r.regenerados} PDF(s).`;
+      if (r.errores > 0) {
+        msg += ` ${r.errores} con error:\n\n`;
+        // Mostrar el motivo real de cada falla (agrupado, para no repetir el mismo
+        // mensaje 25 veces si todos comparten la misma causa raíz).
+        const porMotivo = {};
+        (r.detalle_errores || []).forEach(d => {
+          if (!porMotivo[d.motivo]) porMotivo[d.motivo] = [];
+          porMotivo[d.motivo].push(d.numero);
+        });
+        Object.entries(porMotivo).forEach(([motivo, numeros]) => {
+          msg += `• ${motivo}\n  (${numeros.length}): ${numeros.slice(0, 10).join(', ')}${numeros.length > 10 ? '…' : ''}\n\n`;
+        });
+      }
+      alert(msg);
+      onRefresh();
+    } catch (e) {
+      alert('Error regenerando PDFs: ' + e.message);
+    }
+    setRegenerandoPdfs(false);
+  }
+
+  async function limpiarHuerfanos() {
+    if (!window.confirm('¿Eliminar los grupos de cruce que quedaron sin documentos asociados (por ejemplo, tras revertir el único cruce de ese grupo)? Se borra el número CRU-xxxxx y su PDF; no afecta los préstamos ni devoluciones en sí.')) return;
+    setLimpiandoHuerfanos(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/limpiar-huerfanos', { method: 'POST' });
+      alert(r.eliminados > 0
+        ? `Se eliminaron ${r.eliminados} cruce(s) huérfano(s): ${r.detalle.slice(0, 15).join(', ')}${r.detalle.length > 15 ? '…' : ''}`
+        : 'No había cruces huérfanos.');
+      onRefresh();
+    } catch (e) {
+      alert('Error limpiando huérfanos: ' + e.message);
+    }
+    setLimpiandoHuerfanos(false);
+  }
+  const [filtroCruces, setFiltroCruces] = React.useState('');
+  const [editandoCruce, setEditandoCruce] = React.useState(null);
+  const [editObs,        setEditObs]       = React.useState('');
+  const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
+  const [verKardex, setVerKardex] = React.useState(false);
+  const [editandoDocumento, setEditandoDocumento] = React.useState(null);
+  function abrirEditarDocumento(id, e) {
+    e.stopPropagation();
+    const doc = (prestamos || []).find(p => p.id === id);
+    if (doc) setEditandoDocumento(doc);
+  }
+
+  function abrirEdicionCruce(c, e) {
+    e.stopPropagation();
+    setEditandoCruce(c);
+    setEditObs(c.observaciones || c.grupo_observaciones || '');
+  }
+
+  async function guardarEdicionCruce() {
+    setGuardandoEdicion(true);
+    try {
+      await apiFetch(`/prestamos/cruces/${editandoCruce.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ observaciones: editObs }),
+      });
+      setEditandoCruce(null);
+      onRefresh();
+    } catch (err) {
+      alert('Error editando cruce: ' + err.message);
+    }
+    setGuardandoEdicion(false);
+  }
+
+  function matchCruce(c, texto) {
+    if (!texto) return true;
+    const t = texto.toLowerCase().trim();
+    const campos = [c.grupo_numero, c.prestamo_doc, c.devolucion_doc, c.clinica_nombre, c.observaciones, c.grupo_observaciones]
+      .filter(Boolean).map(x => String(x).toLowerCase());
+    if (campos.some(x => x.includes(t))) return true;
+    const items = [...(c.prestamo_items || []), ...(c.devolucion_items || [])];
+    return items.some(i => (i.nombre || '').toLowerCase().includes(t) || (i.codigo || '').toLowerCase().includes(t));
+  }
+
+  return (
+    <div>
     {cruces.length > 0 && (
-      <div style={{ flex: '1 1 50%', minHeight: 0, display: 'flex', flexDirection: 'column', borderTop: '2px solid var(--t-border)', marginTop: 12 }}>
-        <div style={{ flex: '0 0 auto', paddingTop: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: '0 0 auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
+            </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button onClick={() => setVerKardex(true)}
                 title="Saldo por producto: cuánto se ha prestado y devuelto en total, sin depender de cómo se hicieron los cruces"
@@ -2524,11 +2583,6 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
           </table>
         </div>
       </div>
-      )}
-      {detalleCard && (
-        <Modal onClose={() => setDetalleCard(null)} titulo={`Detalle ${detalleCard.documento_contable}`}>
-          <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]} />
-        </Modal>
       )}
       {editandoCruce && (
         <Modal onClose={() => setEditandoCruce(null)} titulo={`Editar cruce ${editandoCruce.grupo_numero || ''}`}>
@@ -4011,6 +4065,8 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
       'Detalle del Sobrante': f.sobrante_detalle || '',
       'Saldo Pendiente Cantidad (este producto, tras este cruce)': f.saldo_pendiente_cantidad,
       'Saldo Pendiente Valor $ (este producto, tras este cruce)': f.saldo_pendiente_valor,
+      'Saldo Pendiente Cantidad (documento completo, tras este cruce)': f.saldo_pendiente_documento_cantidad,
+      'Saldo Pendiente Valor $ (documento completo, tras este cruce)': f.saldo_pendiente_documento_valor,
       'Cantidad Total del Préstamo': f.cantidad_total_prestamo,
       'Valor Total del Préstamo $': f.valor_total_prestamo,
       'Estado Actual del Préstamo': f.estado_prestamo,
