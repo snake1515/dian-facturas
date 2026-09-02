@@ -2279,6 +2279,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
 
 function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const { isAdmin } = useAuth();
+  const inputS = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', fontSize: 13, boxSizing: 'border-box' };
 
   async function revertirCruce(cruce, e) {
     e.stopPropagation();
@@ -4449,3 +4450,19 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
