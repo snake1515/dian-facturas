@@ -3827,163 +3827,221 @@ function ModalReportePorPrestamo({ prestamos, cruces, clinicas, onClose }) {
 
 // ─── Reporte de cruces en orden cronológico, con saldo descontado por préstamo ─
 
-// Reporte de cruces en orden cronológico: recorre las devoluciones cruzadas
-// de cada préstamo en el orden en que se cruzaron (fecha del cruce) y va
-// descontando el saldo pendiente del préstamo a medida que avanza, para que
-// cada fila muestre cuánto quedó pendiente DESPUÉS de ese cruce puntual.
-// También marca cuando una devolución trae más cantidad de la que el
-// préstamo tenía pendiente en ese momento ("sobrante", para revisar).
+// Reporte de cruces en orden cronológico: recorre TODOS los cruces en el
+// orden global en que se registraron (fecha del cruce) y va descontando el
+// saldo pendiente de cada préstamo a medida que avanza, para que cada fila
+// muestre cuánto quedó pendiente DESPUÉS de ese cruce puntual.
+//
+// Una misma devolución puede cruzarse contra varios préstamos distintos
+// (ej. IDP5 repartida entre EPO1 y EPO2). El backend no guarda cuánta
+// cantidad de cada producto se le asignó a cada préstamo en particular —
+// cada cruce trae SIEMPRE el total de ítems del documento de devolución
+// completo. Por eso el "sobrante" no puede calcularse cruce por cruce de
+// forma aislada (eso duplicaría el mismo sobrante una vez por cada préstamo
+// que comparte la devolución): se lleva un pool COMPARTIDO por devolución +
+// código de producto, que se va descontando a medida que cada préstamo
+// cruzado con esa devolución reclama su parte. Lo que sobra en el pool
+// después de procesar todos los cruces de esa devolución es el sobrante
+// real, y se anota una sola vez (en la última fila cronológica que tocó esa
+// devolución+código), no una vez por préstamo.
 function construirReporteCrucesCronologico(prestamos, cruces) {
   const base = (prestamos || []).filter(p => ['ingreso', 'egreso'].includes(p.tipo));
+  const basePorId = new Map(base.map(p => [p.id, p]));
+
+  // Todos los cruces relevantes (cuyo préstamo cae dentro del set filtrado),
+  // en orden cronológico GLOBAL — no agrupados por préstamo — para que el
+  // pool compartido de cada devolución se reparta en el orden real en que
+  // se fue cruzando contra uno u otro préstamo.
+  const crucesRelevantes = (cruces || [])
+    .filter(c => basePorId.has(c.prestamo_id))
+    .slice()
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+  if (crucesRelevantes.length === 0) return [];
+
+  // Estado por préstamo (saldo restante por código, precios, totales) — se
+  // inicializa la primera vez que se toca ese préstamo.
+  const estadoPrestamo = new Map();
+  function getEstadoPrestamo(p) {
+    if (!estadoPrestamo.has(p.id)) {
+      const saldoPorCodigo = {}, precioPorCodigo = {}, nombrePorCodigo = {}, cantidadTotalPorCodigo = {}, valorTotalPorCodigo = {};
+      (p.items || []).forEach(i => {
+        saldoPorCodigo[i.codigo] = Number(i.cantidad);
+        precioPorCodigo[i.codigo] = Number(i.precio_unitario || 0);
+        nombrePorCodigo[i.codigo] = i.nombre;
+        // Total prestado de ESTE producto puntual (no del documento completo).
+        cantidadTotalPorCodigo[i.codigo] = Number(i.cantidad);
+        valorTotalPorCodigo[i.codigo] = Number(i.cantidad) * Number(i.precio_unitario || 0);
+      });
+      estadoPrestamo.set(p.id, { saldoPorCodigo, precioPorCodigo, nombrePorCodigo, cantidadTotalPorCodigo, valorTotalPorCodigo });
+    }
+    return estadoPrestamo.get(p.id);
+  }
+
+  // Pool compartido por devolución + código: cuánto de esa devolución queda
+  // sin aplicar a NINGÚN préstamo todavía. Se inicializa una sola vez con la
+  // cantidad total del documento (es la misma para todos los cruces que
+  // referencian esa devolución, ya que el backend siempre trae el total).
+  const poolDevolucion = new Map();
+  function getPoolDevolucion(c) {
+    if (!poolDevolucion.has(c.devolucion_id)) {
+      const pool = {};
+      (c.devolucion_items || []).forEach(it => {
+        pool[it.codigo] = (pool[it.codigo] || 0) + Number(it.cantidad);
+      });
+      poolDevolucion.set(c.devolucion_id, pool);
+    }
+    return poolDevolucion.get(c.devolucion_id);
+  }
+
   const filas = [];
+  // Última fila (por índice) que tocó cada combinación devolución+código —
+  // para anotarle ahí el sobrante final una vez se sepa cuánto quedó sin
+  // aplicar tras procesar TODOS los cruces de esa devolución.
+  const ultimaFilaPorDevolucionCodigo = new Map();
 
-  base.forEach(p => {
-    const crucesDe = (cruces || [])
-      .filter(c => c.prestamo_id === p.id)
-      .slice()
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  crucesRelevantes.forEach(c => {
+    const p = basePorId.get(c.prestamo_id);
+    const est = getEstadoPrestamo(p);
+    const pool = getPoolDevolucion(c);
+    const itemsDevueltos = c.devolucion_items || [];
 
-    if (crucesDe.length === 0) return; // sin devoluciones cruzadas, no aporta filas a este reporte
-
-    const saldoPorCodigo = {};
-    const precioPorCodigo = {};
-    const nombrePorCodigo = {};
-    const cantidadTotalPorCodigo = {};
-    const valorTotalPorCodigo = {};
-    (p.items || []).forEach(i => {
-      saldoPorCodigo[i.codigo] = Number(i.cantidad);
-      precioPorCodigo[i.codigo] = Number(i.precio_unitario || 0);
-      nombrePorCodigo[i.codigo] = i.nombre;
-      // Total prestado de ESTE producto puntual (no del documento completo),
-      // para que cada fila muestre la cantidad/valor que corresponde a su
-      // propio código y no el agregado de todo el préstamo repetido.
-      cantidadTotalPorCodigo[i.codigo] = Number(i.cantidad);
-      valorTotalPorCodigo[i.codigo] = Number(i.cantidad) * Number(i.precio_unitario || 0);
-    });
     const tipoLabel = p.tipo === 'egreso' ? 'EPO' : 'IPE';
     const tipoLabelDevol = p.tipo === 'egreso' ? 'IDP' : 'ED';
 
-    crucesDe.forEach(c => {
-      const itemsDevueltos = c.devolucion_items || [];
-      let cantidadEsteC = 0;
-      let valorEsteC = 0;
-      let sobranteCantidad = 0;
-      let sobranteValor = 0;
-      const detalleProductos = [];
-      const detalleSobrante = [];
-      // Filas a nivel de producto para ESTE cruce (una por cada producto de la
-      // devolución que cruza código con un producto del préstamo). Se agregan
-      // al arreglo final después de calcular el saldo posterior al cruce.
-      const filasProducto = [];
+    const detalleProductos = [];
+    const filasProducto = [];
 
-      itemsDevueltos.forEach(it => {
-        const codigo = it.codigo;
-        const cant = Number(it.cantidad);
-        const perteneceAlPrestamo = Object.prototype.hasOwnProperty.call(saldoPorCodigo, codigo);
-        const precio = precioPorCodigo[codigo] != null ? precioPorCodigo[codigo] : Number(it.precio_unitario || 0);
-        const disponible = Math.max(saldoPorCodigo[codigo] || 0, 0);
-        const aplicada = Math.min(cant, disponible);
-        const sobranteItem = cant - aplicada; // lo que la devolución trae de más y no cupo en el saldo de este préstamo
-        saldoPorCodigo[codigo] = disponible - aplicada;
-        if (aplicada > 0) {
-          cantidadEsteC += aplicada;
-          valorEsteC += aplicada * precio;
-          detalleProductos.push(`${nombrePorCodigo[codigo] || it.nombre || codigo} (${aplicada})`);
-        }
-        if (sobranteItem > 0) {
-          sobranteCantidad += sobranteItem;
-          sobranteValor += sobranteItem * precio;
-          detalleSobrante.push(`${nombrePorCodigo[codigo] || it.nombre || codigo} (+${sobranteItem})`);
-        }
+    itemsDevueltos.forEach(it => {
+      const codigo = it.codigo;
+      const perteneceAlPrestamo = Object.prototype.hasOwnProperty.call(est.saldoPorCodigo, codigo);
+      const precio = est.precioPorCodigo[codigo] != null ? est.precioPorCodigo[codigo] : Number(it.precio_unitario || 0);
 
-        // Producto del préstamo (EPO/IPE) que corresponde por código — sólo se
-        // llena si el código de la devolución realmente existe en el préstamo,
-        // así el código/descripción del préstamo queda "al frente" del código
-        // de la devolución únicamente cuando ambos coinciden.
-        filasProducto.push({
-          codigo_producto_prestamo: perteneceAlPrestamo ? codigo : '',
-          descripcion_producto_prestamo: perteneceAlPrestamo ? (nombrePorCodigo[codigo] || '') : '',
-          producto_devuelto: it.nombre || nombrePorCodigo[codigo] || codigo,
-          codigo_producto_devuelto: codigo,
-          cantidad_devuelta_producto: aplicada,
-          valor_devuelto_producto: aplicada * precio,
-          tiene_sobrante_producto: sobranteItem > 0,
-          sobrante_cantidad_producto: sobranteItem,
-          sobrante_valor_producto: sobranteItem * precio,
-          // Cantidad/valor total prestado de ESTE producto específico dentro
-          // del préstamo (no del documento completo).
-          cantidad_total_producto: perteneceAlPrestamo ? (cantidadTotalPorCodigo[codigo] || 0) : 0,
-          valor_total_producto: perteneceAlPrestamo ? (valorTotalPorCodigo[codigo] || 0) : 0,
-          // Saldo pendiente de ESTE producto puntual después de este cruce
-          // (no el total del documento) — solo tiene sentido si el código
-          // pertenece al préstamo; si no, no hay saldo que rastrear aquí.
-          saldo_pendiente_cantidad_producto: perteneceAlPrestamo ? Math.max(saldoPorCodigo[codigo] || 0, 0) : 0,
-          saldo_pendiente_valor_producto: perteneceAlPrestamo ? Math.max(saldoPorCodigo[codigo] || 0, 0) * precio : 0,
-        });
-      });
+      // Lo que queda del pool compartido de esta devolución para este código,
+      // topado por lo que este préstamo puntual todavía tiene pendiente.
+      const poolDisponible = Math.max(pool[codigo] || 0, 0);
+      const disponiblePrestamo = Math.max(est.saldoPorCodigo[codigo] || 0, 0);
+      const aplicada = Math.min(poolDisponible, disponiblePrestamo);
 
-      if (filasProducto.length === 0) {
-        // Cruce sin ítems de devolución detallados (caso raro): fila vacía en
-        // las columnas de producto para no perder el cruce del reporte.
-        filasProducto.push({
-          codigo_producto_prestamo: '', descripcion_producto_prestamo: '',
-          producto_devuelto: '', codigo_producto_devuelto: '',
-          cantidad_devuelta_producto: 0, valor_devuelto_producto: 0,
-          tiene_sobrante_producto: false, sobrante_cantidad_producto: 0, sobrante_valor_producto: 0,
-          cantidad_total_producto: 0, valor_total_producto: 0,
-          saldo_pendiente_cantidad_producto: 0, saldo_pendiente_valor_producto: 0,
-        });
+      pool[codigo] = poolDisponible - aplicada;
+      if (perteneceAlPrestamo) est.saldoPorCodigo[codigo] = disponiblePrestamo - aplicada;
+
+      if (aplicada > 0) {
+        detalleProductos.push(`${est.nombrePorCodigo[codigo] || it.nombre || codigo} (${aplicada})`);
       }
 
-      const saldoPendienteDocCantidad = Object.values(saldoPorCodigo).reduce((s, v) => s + Math.max(v, 0), 0);
-      const saldoPendienteDocValor = Object.entries(saldoPorCodigo)
-        .reduce((s, [cod, v]) => s + Math.max(v, 0) * (precioPorCodigo[cod] || 0), 0);
-
-      const descripcion = c.observaciones || c.grupo_observaciones
-        || `Cruce ${tipoLabel} ${p.documento_contable} con ${tipoLabelDevol} ${c.devolucion_doc}`;
-
-      // Una fila por producto cruzado (código igual entre préstamo y
-      // devolución), conservando el resto de la información del cruce
-      // (sobrante total, etc.) repetida en cada fila.
-      filasProducto.forEach(fp => {
-        filas.push({
-          documento_prestamo: p.documento_contable,
-          tipo: tipoLabel,
-          clinica: p.clinica_nombre || '—',
-          fecha_prestamo: p.fecha,
-          numero_cruce: c.grupo_numero || '',
-          fecha_cruce: c.created_at,
-          documento_devolucion: c.devolucion_doc,
-          tipo_devolucion: tipoLabelDevol,
-          estado_devolucion: c.estado_devolucion || '',
-          descripcion,
-          // ── 4 columnas nuevas: producto del préstamo (EPO/IPE) alineado
-          // con el producto devuelto (IDP/ED) por coincidencia de código ──
-          codigo_producto_prestamo: fp.codigo_producto_prestamo,
-          descripcion_producto_prestamo: fp.descripcion_producto_prestamo,
-          producto_devuelto: fp.producto_devuelto,
-          codigo_producto_devuelto: fp.codigo_producto_devuelto,
-          productos_devueltos: detalleProductos.join(', ') || '—',
-          cantidad_devuelta: fp.cantidad_devuelta_producto,
-          valor_devuelto: fp.valor_devuelto_producto,
-          tiene_sobrante: fp.tiene_sobrante_producto,
-          sobrante_cantidad: fp.sobrante_cantidad_producto,
-          sobrante_valor: fp.sobrante_valor_producto,
-          sobrante_detalle: detalleSobrante.join(', '),
-          // Saldo pendiente de ESTE producto puntual (no del documento
-          // completo) — es lo que falta por devolver de este código
-          // específico después de este cruce.
-          saldo_pendiente_cantidad: fp.saldo_pendiente_cantidad_producto,
-          saldo_pendiente_valor: fp.saldo_pendiente_valor_producto,
-          // Se conserva aparte el saldo pendiente del documento completo
-          // (todos los productos), por si sirve de referencia general.
-          saldo_pendiente_documento_cantidad: saldoPendienteDocCantidad,
-          saldo_pendiente_documento_valor: saldoPendienteDocValor,
-          cantidad_total_prestamo: fp.cantidad_total_producto,
-          valor_total_prestamo: fp.valor_total_producto,
-          estado_prestamo: p.estado,
-        });
+      // Producto del préstamo (EPO/IPE) que corresponde por código — sólo se
+      // llena si el código de la devolución realmente existe en el préstamo.
+      filasProducto.push({
+        codigo_producto_prestamo: perteneceAlPrestamo ? codigo : '',
+        descripcion_producto_prestamo: perteneceAlPrestamo ? (est.nombrePorCodigo[codigo] || '') : '',
+        producto_devuelto: it.nombre || est.nombrePorCodigo[codigo] || codigo,
+        codigo_producto_devuelto: codigo,
+        cantidad_devuelta_producto: aplicada,
+        valor_devuelto_producto: aplicada * precio,
+        // El sobrante de este producto se completa DESPUÉS de procesar todos
+        // los cruces (puede haber más de un préstamo compartiendo la misma
+        // devolución) — ver el bloque de "sobrante final" más abajo.
+        tiene_sobrante_producto: false,
+        sobrante_cantidad_producto: 0,
+        sobrante_valor_producto: 0,
+        // Cantidad/valor total prestado de ESTE producto específico dentro
+        // del préstamo (no del documento completo).
+        cantidad_total_producto: perteneceAlPrestamo ? (est.cantidadTotalPorCodigo[codigo] || 0) : 0,
+        valor_total_producto: perteneceAlPrestamo ? (est.valorTotalPorCodigo[codigo] || 0) : 0,
+        // Saldo pendiente de ESTE producto puntual después de este cruce.
+        saldo_pendiente_cantidad_producto: perteneceAlPrestamo ? Math.max(est.saldoPorCodigo[codigo] || 0, 0) : 0,
+        saldo_pendiente_valor_producto: perteneceAlPrestamo ? Math.max(est.saldoPorCodigo[codigo] || 0, 0) * precio : 0,
+        _codigo: codigo,
+        _precio: precio,
       });
+    });
+
+    if (filasProducto.length === 0) {
+      // Cruce sin ítems de devolución detallados (caso raro): fila vacía en
+      // las columnas de producto para no perder el cruce del reporte.
+      filasProducto.push({
+        codigo_producto_prestamo: '', descripcion_producto_prestamo: '',
+        producto_devuelto: '', codigo_producto_devuelto: '',
+        cantidad_devuelta_producto: 0, valor_devuelto_producto: 0,
+        tiene_sobrante_producto: false, sobrante_cantidad_producto: 0, sobrante_valor_producto: 0,
+        cantidad_total_producto: 0, valor_total_producto: 0,
+        saldo_pendiente_cantidad_producto: 0, saldo_pendiente_valor_producto: 0,
+        _codigo: null, _precio: 0,
+      });
+    }
+
+    const saldoPendienteDocCantidad = Object.values(est.saldoPorCodigo).reduce((s, v) => s + Math.max(v, 0), 0);
+    const saldoPendienteDocValor = Object.entries(est.saldoPorCodigo)
+      .reduce((s, [cod, v]) => s + Math.max(v, 0) * (est.precioPorCodigo[cod] || 0), 0);
+
+    const descripcion = c.observaciones || c.grupo_observaciones
+      || `Cruce ${tipoLabel} ${p.documento_contable} con ${tipoLabelDevol} ${c.devolucion_doc}`;
+
+    // Una fila por producto cruzado (código igual entre préstamo y
+    // devolución), conservando el resto de la información del cruce.
+    filasProducto.forEach(fp => {
+      const idx = filas.length;
+      filas.push({
+        documento_prestamo: p.documento_contable,
+        tipo: tipoLabel,
+        clinica: p.clinica_nombre || '—',
+        fecha_prestamo: p.fecha,
+        numero_cruce: c.grupo_numero || '',
+        fecha_cruce: c.created_at,
+        documento_devolucion: c.devolucion_doc,
+        tipo_devolucion: tipoLabelDevol,
+        estado_devolucion: c.estado_devolucion || '',
+        descripcion,
+        // ── 4 columnas: producto del préstamo (EPO/IPE) alineado con el
+        // producto devuelto (IDP/ED) por coincidencia de código ──
+        codigo_producto_prestamo: fp.codigo_producto_prestamo,
+        descripcion_producto_prestamo: fp.descripcion_producto_prestamo,
+        producto_devuelto: fp.producto_devuelto,
+        codigo_producto_devuelto: fp.codigo_producto_devuelto,
+        productos_devueltos: detalleProductos.join(', ') || '—',
+        cantidad_devuelta: fp.cantidad_devuelta_producto,
+        valor_devuelto: fp.valor_devuelto_producto,
+        tiene_sobrante: fp.tiene_sobrante_producto,
+        sobrante_cantidad: fp.sobrante_cantidad_producto,
+        sobrante_valor: fp.sobrante_valor_producto,
+        sobrante_detalle: '',
+        // Saldo pendiente de ESTE producto puntual (no del documento
+        // completo) — es lo que falta por devolver de este código
+        // específico después de este cruce.
+        saldo_pendiente_cantidad: fp.saldo_pendiente_cantidad_producto,
+        saldo_pendiente_valor: fp.saldo_pendiente_valor_producto,
+        // Se conserva aparte el saldo pendiente del documento completo
+        // (todos los productos), por si sirve de referencia general.
+        saldo_pendiente_documento_cantidad: saldoPendienteDocCantidad,
+        saldo_pendiente_documento_valor: saldoPendienteDocValor,
+        cantidad_total_prestamo: fp.cantidad_total_producto,
+        valor_total_prestamo: fp.valor_total_producto,
+        estado_prestamo: p.estado,
+      });
+
+      if (fp._codigo) {
+        ultimaFilaPorDevolucionCodigo.set(`${c.devolucion_id}|${fp._codigo}`, { idx, precio: fp._precio, nombre: fp.producto_devuelto });
+      }
+    });
+  });
+
+  // ── Sobrante final por devolución+código ──────────────────────────
+  // Ya se procesaron todos los cruces de todos los préstamos que comparten
+  // cada devolución: lo que quede en el pool es lo que esa devolución trajo
+  // de más y ningún préstamo pudo absorber. Se anota UNA sola vez, en la
+  // última fila cronológica que tocó esa devolución+código — así no se
+  // duplica el mismo sobrante en cada préstamo con el que se cruzó.
+  poolDevolucion.forEach((porCodigo, devId) => {
+    Object.entries(porCodigo).forEach(([codigo, sobrante]) => {
+      if (sobrante <= 0) return;
+      const ref = ultimaFilaPorDevolucionCodigo.get(`${devId}|${codigo}`);
+      if (!ref) return;
+      const fila = filas[ref.idx];
+      fila.tiene_sobrante = true;
+      fila.sobrante_cantidad = sobrante;
+      fila.sobrante_valor = sobrante * ref.precio;
+      fila.sobrante_detalle = `${ref.nombre} (+${sobrante})`;
     });
   });
 
@@ -4451,6 +4509,7 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
 
 
 
