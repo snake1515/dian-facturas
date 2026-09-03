@@ -416,15 +416,18 @@ router.post('/importar-masivo', async (req, res) => {
 async function recalcularEstadoDocumento(client, documentoId) {
   const { rows: [doc] } = await client.query('SELECT items FROM prestamos WHERE id = $1', [documentoId]);
   if (!doc) return null;
-  const totalDoc = (doc.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
+  const misItems = doc.items || [];
+  const totalDoc = misItems.reduce((s, i) => s + Number(i.cantidad), 0);
+  // Cuánto necesito de cada código propio — se usa para topar lo que aporta
+  // cada cruce antiguo (ver sumarCruce) y no dejar que un producto abundante
+  // en el documento contrario "cubra" a otro producto distinto que nunca se
+  // tocó realmente.
+  const misCantidadesPorCodigo = {};
+  misItems.forEach(i => { misCantidadesPorCodigo[i.codigo] = Number(i.cantidad); });
 
   // Cuando el cruce ya tiene items_cruzados (la asignación real por producto
   // registrada desde el panel de "Cruzar" — único o multicruce), se usa esa
-  // cantidad exacta en vez de sumar el documento contrario completo. Los
-  // cruces de antes de este cambio no tienen items_cruzados (quedó NULL), así
-  // que para esos se sigue sumando el documento contrario completo, igual que
-  // se hacía antes — esto es puramente retrocompatible, no cambia el estado
-  // de ningún cruce histórico.
+  // cantidad exacta, que es dato preciso y no necesita ninguna heurística.
   const { rows: comoPrest } = await client.query(
     `SELECT c.items_cruzados, d.items AS items_documento
      FROM prestamo_cruces c JOIN prestamos d ON d.id = c.devolucion_id
@@ -439,8 +442,23 @@ async function recalcularEstadoDocumento(client, documentoId) {
   );
 
   function sumarCruce(row) {
-    const items = row.items_cruzados || row.items_documento || [];
-    return items.reduce((a, i) => a + Number(i.cantidad), 0);
+    if (row.items_cruzados) return row.items_cruzados.reduce((a, i) => a + Number(i.cantidad), 0);
+    // Cruce de antes de items_cruzados (quedó NULL): no hay dato exacto de
+    // cuánto se cruzó de cada producto en ESE par puntual, así que se
+    // aproxima comparando producto por producto (mismo código) contra el
+    // documento contrario completo, topando cada código a lo que este
+    // documento realmente necesita de él. Antes se sumaba el documento
+    // contrario entero sin filtrar por código, lo que hacía que un producto
+    // sobrante (p. ej. jeringas) "cerrara" el documento aunque otro producto
+    // muy distinto (p. ej. furosemida) nunca se hubiera devuelto — quedaba
+    // al revés: documentos con saldo real pendiente salían CERRADO, y
+    // devoluciones que sí entregaron todo salían PARCIAL.
+    const items = row.items_documento || [];
+    return items.reduce((a, i) => {
+      const necesito = misCantidadesPorCodigo[i.codigo];
+      if (necesito === undefined) return a; // producto sin relación con este documento
+      return a + Math.min(Number(i.cantidad), necesito);
+    }, 0);
   }
   const cruzado = [...comoPrest, ...comoDevo].reduce((s, r) => s + sumarCruce(r), 0);
 
@@ -1017,6 +1035,30 @@ router.post('/cruces/limpiar-huerfanos', authMiddleware, adminOnly, async (req, 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Recalcula el estado (abierto/parcial/cerrado) de TODOS los préstamos y
+// devoluciones con la lógica vigente de recalcularEstadoDocumento. Necesario
+// para corregir de una sola vez los documentos cuyo estado quedó mal
+// calculado con una versión anterior de esa lógica (el campo `estado` queda
+// guardado en la fila y no se recalcula solo — solo cuando se crea o revierte
+// un cruce sobre ESE documento en particular).
+router.post('/recalcular-estados', authMiddleware, adminOnly, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { rows: docs } = await client.query('SELECT id, estado FROM prestamos');
+    let cambiados = 0;
+    const detalle = [];
+    for (const doc of docs) {
+      const nuevo = await recalcularEstadoDocumento(client, doc.id);
+      if (nuevo && nuevo !== doc.estado) {
+        cambiados++;
+        detalle.push({ id: doc.id, antes: doc.estado, ahora: nuevo });
+      }
+    }
+    res.json({ revisados: docs.length, cambiados, detalle });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
 // Reparar cruces antiguos: a los que no tienen grupo (creados antes del sistema de
 // consecutivo + PDF) les asigna número, recalcula su estado y genera su PDF.
 router.post('/cruces/backfill', async (req, res) => {
@@ -1192,6 +1234,7 @@ router.delete('/:id/soporte', async (req, res) => {
 });
 
 module.exports = router;
+
 
 
 
