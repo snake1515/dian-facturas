@@ -1859,7 +1859,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       });
     });
     setFilasAsignacion(nuevas);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
   }, [idsDevolSeleccionadas]);
 
   function actualizarFila(id, campo, valor) {
@@ -4652,6 +4652,8 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
 
 
 
