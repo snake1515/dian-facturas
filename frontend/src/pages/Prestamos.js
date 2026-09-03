@@ -1966,15 +1966,6 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     matchDoc(p, filtroPrest.toLowerCase()) && matchFecha(p, anioPrest, fDesdePrest, fHastaPrest) &&
     (!estadoPrest || p.estado === estadoPrest));
 
-  // Inicializar cantidades al seleccionar devolución
-  React.useEffect(() => {
-    if (selDevoluciones.length === 1) {
-      const init = {};
-      (selDevoluciones[0].items || []).forEach(i => { init[i.codigo] = i.cantidad; });
-      setCantDevueltas(init);
-    }
-  }, [selDevoluciones]);
-
   function toggleSelPrestamo(p) {
     setSelPrestamos(prev => prev.some(x => x.id === p.id) ? prev.filter(x => x.id !== p.id) : [...prev, p]);
   }
@@ -4702,6 +4693,8 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
 
 
 
