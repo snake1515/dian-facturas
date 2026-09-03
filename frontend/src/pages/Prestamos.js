@@ -1841,26 +1841,51 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   // que el usuario ya haya llenado si simplemente suma/quita un préstamo al
   // multicruce a mitad de camino.
   const idsDevolSeleccionadas = selDevoluciones.map(d => d.id).join(',');
+  const idsPrestSeleccionados = selPrestamos.map(p => p.id).join(',');
   React.useEffect(() => {
-    const nuevas = [];
-    selDevoluciones.forEach(d => {
-      (d.items || []).forEach(item => {
-        nuevas.push({
-          id: `${d.id}_${item.codigo}`,
-          devolucion_id: d.id,
-          devolucion_doc: d.documento_contable,
-          codigo: item.codigo,
-          nombre: item.nombre,
-          precio_unitario: item.precio_unitario,
-          cantidad_item: Number(item.cantidad),
-          prestamo_id: selPrestamos.length === 1 ? selPrestamos[0].id : '',
-          cantidad: selPrestamos.length === 1 ? Number(item.cantidad) : 0,
+    setFilasAsignacion(prev => {
+      const idsDevolPrevias = new Set(prev.map(f => f.devolucion_id));
+      const idsDevolActuales = new Set(selDevoluciones.map(d => d.id));
+      const mismasDevoluciones = idsDevolPrevias.size === idsDevolActuales.size
+        && [...idsDevolActuales].every(id => idsDevolPrevias.has(id));
+
+      if (!mismasDevoluciones) {
+        // Cambió el conjunto de devoluciones elegidas -> se reconstruyen las
+        // filas desde cero (una por cada producto de cada devolución).
+        const nuevas = [];
+        selDevoluciones.forEach(d => {
+          (d.items || []).forEach(item => {
+            nuevas.push({
+              id: `${d.id}_${item.codigo}`,
+              devolucion_id: d.id,
+              devolucion_doc: d.documento_contable,
+              codigo: item.codigo,
+              nombre: item.nombre,
+              precio_unitario: item.precio_unitario,
+              cantidad_item: Number(item.cantidad),
+              prestamo_id: selPrestamos.length === 1 ? selPrestamos[0].id : '',
+              cantidad: selPrestamos.length === 1 ? Number(item.cantidad) : 0,
+            });
+          });
         });
-      });
+        return nuevas;
+      }
+
+      // Las devoluciones no cambiaron (lo que cambió fue la selección de
+      // préstamos, o no cambió nada). Si ahora queda exactamente un préstamo
+      // elegido, se le asigna automáticamente a cualquier fila que todavía no
+      // tenga destino — sin importar si el préstamo se eligió antes o después
+      // de la devolución, y sin pisar cantidades que el usuario ya haya
+      // editado a mano.
+      if (selPrestamos.length === 1) {
+        const unico = selPrestamos[0].id;
+        return prev.map(f => f.prestamo_id
+          ? f
+          : { ...f, prestamo_id: unico, cantidad: f.cantidad || f.cantidad_item });
+      }
+      return prev;
     });
-    setFilasAsignacion(nuevas);
-    // eslint-disable-next-line
-  }, [idsDevolSeleccionadas]);
+  }, [idsDevolSeleccionadas, idsPrestSeleccionados]);
 
   function actualizarFila(id, campo, valor) {
     setFilasAsignacion(prev => prev.map(f => f.id === id ? { ...f, [campo]: valor } : f));
@@ -1940,6 +1965,15 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const prestFiltrados = prestamosBase.filter(p =>
     matchDoc(p, filtroPrest.toLowerCase()) && matchFecha(p, anioPrest, fDesdePrest, fHastaPrest) &&
     (!estadoPrest || p.estado === estadoPrest));
+
+  // Inicializar cantidades al seleccionar devolución
+  React.useEffect(() => {
+    if (selDevoluciones.length === 1) {
+      const init = {};
+      (selDevoluciones[0].items || []).forEach(i => { init[i.codigo] = i.cantidad; });
+      setCantDevueltas(init);
+    }
+  }, [selDevoluciones]);
 
   function toggleSelPrestamo(p) {
     setSelPrestamos(prev => prev.some(x => x.id === p.id) ? prev.filter(x => x.id !== p.id) : [...prev, p]);
@@ -2410,6 +2444,24 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
     }
     setLimpiandoHuerfanos(false);
   }
+  const [recalculandoEstados, setRecalculandoEstados] = React.useState(false);
+  async function recalcularEstados() {
+    if (!window.confirm('¿Recalcular el estado (abierto/parcial/cerrado) de todos los préstamos y devoluciones con la lógica actual? Solo corrige el campo de estado, no toca cruces ni cantidades.')) return;
+    setRecalculandoEstados(true);
+    try {
+      const r = await apiFetch('/prestamos/recalcular-estados', { method: 'POST' });
+      let msg = `Revisados: ${r.revisados}. Cambiaron: ${r.cambiados}.`;
+      if (r.cambiados > 0) {
+        msg += '\n\n' + r.detalle.slice(0, 20).map(d => `#${d.id}: ${d.antes} → ${d.ahora}`).join('\n');
+        if (r.detalle.length > 20) msg += `\n… y ${r.detalle.length - 20} más`;
+      }
+      alert(msg);
+      onRefresh();
+    } catch (e) {
+      alert('Error recalculando estados: ' + e.message);
+    }
+    setRecalculandoEstados(false);
+  }
   const [filtroCruces, setFiltroCruces] = React.useState('');
   const [editandoCruce, setEditandoCruce] = React.useState(null);
   const [editObs,        setEditObs]       = React.useState('');
@@ -2509,6 +2561,13 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
                   title="Elimina cruces (número + PDF) que quedaron sin ningún documento asociado, normalmente tras revertir el único cruce de ese grupo"
                   style={{ padding: '5px 12px', fontSize: 11, border: '1px solid #c0392b', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#c0392b' }}>
                   {limpiandoHuerfanos ? 'Limpiando…' : '🧹 Limpiar cruces huérfanos'}
+                </button>
+              )}
+              {isAdmin && (
+                <button onClick={recalcularEstados} disabled={recalculandoEstados}
+                  title="Recalcula abierto/parcial/cerrado de todos los préstamos y devoluciones con la lógica actual (útil tras corregir un bug de cálculo de estado)"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid #16a34a', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#16a34a' }}>
+                  {recalculandoEstados ? 'Recalculando…' : '🔁 Recalcular estados'}
                 </button>
               )}
               {cruces.some(c => !c.grupo_numero) && (
@@ -4643,6 +4702,10 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
 
 
 
