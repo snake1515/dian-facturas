@@ -2249,6 +2249,38 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
             )}
           </div>
 
+          {/* Productos de los préstamos seleccionados — referencia visual
+              mientras se asigna, para ver de un vistazo qué código/nombre
+              tiene cada EPO/IPE (y su pendiente) sin salir de este panel, en
+              paralelo a los productos de la devolución de abajo. Es solo
+              informativo: la asignación real se sigue haciendo en el bloque
+              de devoluciones, donde se decide cuánto se le paga a cada uno. */}
+          <div style={{ marginBottom: 14 }}>
+            {selPrestamos.map(p => {
+              const pendientes = itemsPendientesDe(p, devoluciones, cruces);
+              return (
+                <div key={p.id} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b', marginBottom: 6 }}>
+                    {p.documento_contable} tiene pendiente:
+                  </div>
+                  {pendientes.length === 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--t-text-muted)', paddingLeft: 4 }}>
+                      Sin saldo pendiente registrado para este préstamo (según los cruces ya hechos).
+                    </div>
+                  )}
+                  {pendientes.map(item => (
+                    <div key={item.codigo} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '6px 10px', marginBottom: 4, background: 'var(--t-bg-inner)', borderRadius: 6 }}>
+                      <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)', minWidth: 90 }}>{item.codigo}</span>
+                      <span style={{ flex: 1, color: 'var(--t-text-primary)' }}>{item.nombre}</span>
+                      <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>prestado: {item.cantidad}</span>
+                      <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>pendiente: {item.pendiente}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+
           {/* Asignación item por item: por cada devolución seleccionada se listan
               sus productos; cada uno tiene una cantidad a pagar y, si hay más de
               un préstamo elegido (multicruce), un desplegable para decidir a
@@ -2795,6 +2827,43 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
               {!editandoCruce.items_cruzados && (
                 <><br /><strong style={{ color: '#f59e0b' }}>⚠ Este cruce es anterior a la asignación exacta por producto</strong>: las cantidades de abajo son una aproximación inicial — revísalas antes de guardar.</>
               )}
+            </div>
+
+            {/* Referencia lado a lado: productos tal como están en cada
+                documento original (préstamo y devolución), para poder
+                comparar códigos/nombres de un vistazo — por ejemplo, para
+                detectar cuando es el mismo insumo con código distinto en
+                cada documento. Es solo informativo: lo que realmente se
+                guarda es la tabla editable de abajo. */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 160px', minWidth: 160 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Productos del préstamo {editandoCruce.prestamo_doc}
+                </div>
+                {(editandoCruce.prestamo_items || []).length === 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Sin productos</div>
+                )}
+                {(editandoCruce.prestamo_items || []).map((it, i) => (
+                  <div key={i} style={{ fontSize: 11, padding: '4px 6px', background: 'var(--t-bg-inner)', borderRadius: 5, marginBottom: 3 }}>
+                    <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)' }}>{it.codigo}</span> — {it.nombre}{' '}
+                    <span style={{ color: 'var(--t-text-muted)' }}>({it.cantidad})</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ flex: '1 1 160px', minWidth: 160 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Productos de la devolución {editandoCruce.devolucion_doc}
+                </div>
+                {(editandoCruce.devolucion_items || []).length === 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Sin productos</div>
+                )}
+                {(editandoCruce.devolucion_items || []).map((it, i) => (
+                  <div key={i} style={{ fontSize: 11, padding: '4px 6px', background: 'var(--t-bg-inner)', borderRadius: 5, marginBottom: 3 }}>
+                    <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)' }}>{it.codigo}</span> — {it.nombre}{' '}
+                    <span style={{ color: 'var(--t-text-muted)' }}>({it.cantidad})</span>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div>
@@ -4775,35 +4844,3 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
