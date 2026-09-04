@@ -948,20 +948,52 @@ router.post('/cruces', async (req, res) => {
 
 // Editar tipo_cruce / observaciones de un cruce — solo admin
 router.patch('/cruces/:id', authMiddleware, adminOnly, async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { tipo_cruce, observaciones } = req.body;
+    const { tipo_cruce, observaciones, items_cruzados } = req.body;
     if (tipo_cruce && !['total', 'parcial'].includes(tipo_cruce))
       return res.status(400).json({ error: "tipo_cruce debe ser 'total' o 'parcial'" });
 
-    const { rows: [actual] } = await pool.query('SELECT * FROM prestamo_cruces WHERE id = $1', [req.params.id]);
-    if (!actual) return res.status(404).json({ error: 'Cruce no encontrado' });
+    // Si vienen items_cruzados, deben ser un arreglo de {codigo, nombre,
+    // cantidad, precio_unitario} con cantidad numérica > 0 — es la corrección
+    // manual de "cuánto de cada producto se cruzó realmente" en este par
+    // puntual, sin tener que revertir el cruce y volver a crearlo.
+    if (items_cruzados !== undefined && items_cruzados !== null) {
+      if (!Array.isArray(items_cruzados) || items_cruzados.length === 0)
+        return res.status(400).json({ error: 'items_cruzados debe ser un arreglo con al menos un producto' });
+      for (const it of items_cruzados) {
+        if (!it.codigo || !(Number(it.cantidad) > 0))
+          return res.status(400).json({ error: 'Cada producto de items_cruzados necesita código y cantidad mayor a cero' });
+      }
+    }
 
-    const { rows } = await pool.query(
-      'UPDATE prestamo_cruces SET tipo_cruce = $1, observaciones = $2 WHERE id = $3 RETURNING *',
-      [tipo_cruce || actual.tipo_cruce, observaciones !== undefined ? observaciones : actual.observaciones, req.params.id]
+    await client.query('BEGIN');
+    const { rows: [actual] } = await client.query('SELECT * FROM prestamo_cruces WHERE id = $1', [req.params.id]);
+    if (!actual) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Cruce no encontrado' }); }
+
+    const nuevosItems = items_cruzados !== undefined ? items_cruzados : actual.items_cruzados;
+    const { rows } = await client.query(
+      'UPDATE prestamo_cruces SET tipo_cruce = $1, observaciones = $2, items_cruzados = $3 WHERE id = $4 RETURNING *',
+      [tipo_cruce || actual.tipo_cruce, observaciones !== undefined ? observaciones : actual.observaciones,
+       nuevosItems ? JSON.stringify(nuevosItems) : null, req.params.id]
     );
+
+    // Si se editaron las cantidades, el saldo pendiente de AMBOS documentos
+    // (préstamo y devolución) puede haber cambiado — se recalcula su estado
+    // con la misma lógica que usa el resto del sistema.
+    if (items_cruzados !== undefined) {
+      await recalcularEstadoDocumento(client, actual.prestamo_id);
+      await recalcularEstadoDocumento(client, actual.devolucion_id);
+    }
+
+    await client.query('COMMIT');
     res.json(rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 // Revertir (eliminar) un cruce individual — el o los documentos vuelven a recalcular su estado
