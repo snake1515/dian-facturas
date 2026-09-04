@@ -2005,8 +2005,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       const cant = Number(f.cantidad) || 0;
       if (!f.prestamo_id || cant <= 0) continue;
       const key = `${f.prestamo_id}_${f.devolucion_id}`;
-      if (!gruposMap[key]) gruposMap[key] = { prestamo_id: f.prestamo_id, devolucion_id: f.devolucion_id, items: [] };
-      gruposMap[key].items.push({ codigo: f.codigo, nombre: f.nombre, cantidad: cant, precio_unitario: f.precio_unitario });
+      if (!gruposMap[key]) gruposMap[key] = { prestamo_id: f.prestamo_id, devolucion_id: f.devolucion_id, items_cruzados: [] };
+      gruposMap[key].items_cruzados.push({ codigo: f.codigo, nombre: f.nombre, cantidad: cant, precio_unitario: f.precio_unitario });
     }
     const pares = Object.values(gruposMap);
     if (pares.length === 0) {
@@ -2456,6 +2456,7 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
   const [filtroCruces, setFiltroCruces] = React.useState('');
   const [editandoCruce, setEditandoCruce] = React.useState(null);
   const [editObs,        setEditObs]       = React.useState('');
+  const [editItems,      setEditItems]     = React.useState([]);
   const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
   const [verKardex, setVerKardex] = React.useState(false);
   const [editandoDocumento, setEditandoDocumento] = React.useState(null);
@@ -2469,15 +2470,51 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
     e.stopPropagation();
     setEditandoCruce(c);
     setEditObs(c.observaciones || c.grupo_observaciones || '');
+    // Si el cruce ya tiene items_cruzados (la asignación exacta por
+    // producto), se parte de ahí. Si es un cruce viejo (items_cruzados en
+    // NULL), se arma un punto de partida razonable a partir de lo devuelto,
+    // topado por lo que el préstamo realmente tiene de ese código — así el
+    // admin puede corregirlo aquí mismo y de paso queda guardado el dato
+    // exacto para adelante.
+    if (c.items_cruzados && c.items_cruzados.length > 0) {
+      setEditItems(c.items_cruzados.map(it => ({ ...it })));
+    } else {
+      const cantidadesPrestamo = {};
+      (c.prestamo_items || []).forEach(i => { cantidadesPrestamo[i.codigo] = Number(i.cantidad); });
+      const items = (c.devolucion_items || []).map(it => ({
+        codigo: it.codigo,
+        nombre: it.nombre,
+        precio_unitario: it.precio_unitario,
+        cantidad: cantidadesPrestamo[it.codigo] !== undefined
+          ? Math.min(Number(it.cantidad), cantidadesPrestamo[it.codigo])
+          : Number(it.cantidad),
+      }));
+      setEditItems(items);
+    }
+  }
+
+  function actualizarCantidadEditItem(codigo, valor) {
+    setEditItems(prev => prev.map(it => it.codigo === codigo ? { ...it, cantidad: valor } : it));
+  }
+
+  function quitarEditItem(codigo) {
+    setEditItems(prev => prev.filter(it => it.codigo !== codigo));
   }
 
   async function guardarEdicionCruce() {
+    const itemsValidos = editItems
+      .map(it => ({ ...it, cantidad: Number(it.cantidad) || 0 }))
+      .filter(it => it.cantidad > 0);
+    if (itemsValidos.length === 0) {
+      alert('Debe quedar al menos un producto con cantidad mayor a cero.');
+      return;
+    }
     setGuardandoEdicion(true);
     try {
       await apiFetch(`/prestamos/cruces/${editandoCruce.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ observaciones: editObs }),
+        body: JSON.stringify({ observaciones: editObs, items_cruzados: itemsValidos }),
       });
       setEditandoCruce(null);
       onRefresh();
@@ -2741,7 +2778,7 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
       )}
       {editandoCruce && (
         <Modal onClose={() => setEditandoCruce(null)} titulo={`Editar cruce ${editandoCruce.grupo_numero || ''}`}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 320 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 380 }}>
             <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
               {editandoCruce.prestamo_doc} ↔ {editandoCruce.devolucion_doc}
             </div>
@@ -2754,8 +2791,53 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
               </span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>
-              El estado se calcula solo a partir de las cantidades reales — no es editable.
+              El estado se recalcula automáticamente a partir de las cantidades de abajo — no es editable directamente.
+              {!editandoCruce.items_cruzados && (
+                <><br /><strong style={{ color: '#f59e0b' }}>⚠ Este cruce es anterior a la asignación exacta por producto</strong>: las cantidades de abajo son una aproximación inicial — revísalas antes de guardar.</>
+              )}
             </div>
+
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Productos y cantidades cruzadas en este par</label>
+              <div style={{ marginTop: 6, border: '1px solid var(--t-border)', borderRadius: 8, overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--t-bg-inner)', textAlign: 'left', color: 'var(--t-text-muted)' }}>
+                      <th style={{ padding: '6px 8px' }}>Código</th>
+                      <th style={{ padding: '6px 8px' }}>Producto</th>
+                      <th style={{ padding: '6px 8px', width: 90 }}>Cantidad</th>
+                      <th style={{ padding: '6px 8px', width: 30 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {editItems.length === 0 && (
+                      <tr><td colSpan={4} style={{ padding: 12, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin productos — se eliminarán todos si guardas así.</td></tr>
+                    )}
+                    {editItems.map(it => (
+                      <tr key={it.codigo} style={{ borderTop: '1px solid var(--t-border)' }}>
+                        <td style={{ padding: '5px 8px' }}>{it.codigo}</td>
+                        <td style={{ padding: '5px 8px' }}>{it.nombre}</td>
+                        <td style={{ padding: '5px 8px' }}>
+                          <input type="number" min="0" value={it.cantidad}
+                            onChange={e => actualizarCantidadEditItem(it.codigo, e.target.value)}
+                            style={{ width: '100%', padding: '4px 6px', border: '1px solid var(--t-border)', borderRadius: 5, fontSize: 12, background: 'var(--t-bg-card)', color: 'var(--t-text-primary)', boxSizing: 'border-box' }} />
+                        </td>
+                        <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                          <button onClick={() => quitarEditItem(it.codigo)} title="Quitar este producto del cruce"
+                            style={{ border: 'none', background: 'transparent', color: '#ef4444', cursor: 'pointer', fontSize: 14 }}>
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 4 }}>
+                Corrige aquí la cantidad que realmente le corresponde a este préstamo de cada producto. Al guardar, se recalcula el saldo pendiente del préstamo y de la devolución con estas cantidades — no hace falta revertir el cruce.
+              </div>
+            </div>
+
             <div>
               <label style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 500 }}>Observaciones</label>
               <input value={editObs} onChange={e => setEditObs(e.target.value)}
@@ -4693,6 +4775,22 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
