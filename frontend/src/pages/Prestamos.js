@@ -247,6 +247,7 @@ export default function Prestamos() {
     { id: 'nuevo',       label: 'Nuevo préstamo' },
     { id: 'cruces',      label: 'Cruces' },
     { id: 'historial_cruces', label: 'Historial de Cruces' },
+    { id: 'kardex',      label: 'Kárdex' },
     { id: 'productos',   label: 'Productos' },
     { id: 'reportes',    label: 'Reportes' },
     { id: 'dashboard',   label: 'Dashboard' },
@@ -285,6 +286,7 @@ export default function Prestamos() {
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'historial_cruces' && <TabHistorialCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
+          {activeTab === 'kardex'      && <TabKardex prestamos={prestamos} productos={productos} clinicas={clinicas} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
           {activeTab === 'dashboard'   && (
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
@@ -2554,7 +2556,6 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
   const [editObs,        setEditObs]       = React.useState('');
   const [editItems,      setEditItems]     = React.useState([]);
   const [guardandoEdicion, setGuardandoEdicion] = React.useState(false);
-  const [verKardex, setVerKardex] = React.useState(false);
   const [editandoDocumento, setEditandoDocumento] = React.useState(null);
   function abrirEditarDocumento(id, e) {
     e.stopPropagation();
@@ -2661,11 +2662,6 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
               <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t-text-primary)' }}>Cruces registrados</div>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button onClick={() => setVerKardex(true)}
-                title="Saldo por producto: cuánto se ha prestado y devuelto en total, sin depender de cómo se hicieron los cruces"
-                style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
-                📒 Kárdex por producto
-              </button>
               {crucesConSobrante.length > 0 && (
                 <button onClick={() => setVerSobrantes(v => !v)}
                   title="Devoluciones donde, al repartir los productos entre los préstamos, quedaron unidades sin asignar"
@@ -2989,11 +2985,6 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
           </div>
         </Modal>
       )}
-      {verKardex && (
-        <Modal onClose={() => setVerKardex(false)} titulo="📒 Kárdex por producto">
-          <ModalKardexProducto prestamos={prestamos} productos={productos} clinicas={clinicas} />
-        </Modal>
-      )}
       {editandoDocumento && (
         <Modal onClose={() => setEditandoDocumento(null)} titulo={`Editar movimiento — ${editandoDocumento.documento_contable}`}>
           <FormEditarMovimiento
@@ -3014,7 +3005,8 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
 // cantidades reales (documentos de préstamo vs. documentos de devolución),
 // sin depender de cómo quedaron armados los cruces. Es la fuente de verdad
 // para "¿cuánto va pendiente de este producto en total?".
-function ModalKardexProducto({ prestamos, productos, clinicas }) {
+// ─── TAB KÁRDEX ─────────────────────────────────────────────────────────────
+function TabKardex({ prestamos, productos, clinicas }) {
   const [busqueda, setBusqueda] = React.useState('');
   const [codigoSel, setCodigoSel] = React.useState(null);
   const [tipoMov, setTipoMov] = React.useState('otorgados'); // otorgados (EPO→IDP) | recibidos (IPE→ED)
@@ -3076,10 +3068,107 @@ function ModalKardexProducto({ prestamos, productos, clinicas }) {
   const totalDevuelto = movimientos.reduce((s, m) => s + m.sale, 0);
   const saldoFinal = totalPrestado - totalDevuelto;
 
+  // Últimos productos consultados en esta sesión (no se guarda entre
+  // recargas — es solo un atajo mientras se navega). Se actualiza cada vez
+  // que se elige un producto, sea por búsqueda o por un acceso rápido.
+  const [busquedasRecientes, setBusquedasRecientes] = React.useState([]);
+  function seleccionarProducto(codigo, nombre, tm) {
+    setTipoMov(tm);
+    setCodigoSel(codigo);
+    setBusqueda('');
+    setBusquedasRecientes(prev => {
+      const sinDuplicado = prev.filter(r => !(r.codigo === codigo && r.tipoMov === tm));
+      return [{ codigo, nombre, tipoMov: tm }, ...sinDuplicado].slice(0, 5);
+    });
+  }
+
+  // Accesos rápidos para la pantalla de inicio (antes de elegir un
+  // producto): saldo neto global por código y tipo de movimiento — mismo
+  // criterio que el resto del kárdex (todo prestado - todo devuelto, sin
+  // depender de cruces formales) — y, de paso, el mismo cálculo agrupado
+  // por clínica para dar accesos rápidos también por clínica, además de un
+  // valor total pendiente $ como KPI de la pantalla de inicio.
+  const { topPendientesGlobal, valorPendienteTotal, pendientePorClinica } = React.useMemo(() => {
+    const porCodigo = {};        // "tipoMov|codigo" -> {...}
+    const porClinicaCodigo = {}; // "clinica|tipoMov|codigo" -> {...}
+
+    ['otorgados', 'recibidos'].forEach(tm => {
+      const tSalida = tm === 'otorgados' ? 'egreso' : 'ingreso';
+      const tEntrada = tm === 'otorgados' ? 'devolucion_ingreso' : 'devolucion_egreso';
+      (prestamos || []).forEach(p => {
+        const esSalida = p.tipo === tSalida, esEntrada = p.tipo === tEntrada;
+        if (!esSalida && !esEntrada) return;
+        const clinica = p.clinica_nombre || '—';
+        (p.items || []).forEach(it => {
+          if (!it.codigo) return;
+          const keyG = `${tm}|${it.codigo}`;
+          if (!porCodigo[keyG]) porCodigo[keyG] = { codigo: it.codigo, nombre: it.nombre, tipoMov: tm, prestado: 0, devuelto: 0, precio: 0, fechaPrecio: '' };
+          const keyC = `${clinica}|${tm}|${it.codigo}`;
+          if (!porClinicaCodigo[keyC]) porClinicaCodigo[keyC] = { clinica, prestado: 0, devuelto: 0, precio: 0 };
+
+          if (esSalida) {
+            porCodigo[keyG].prestado += Number(it.cantidad || 0);
+            porClinicaCodigo[keyC].prestado += Number(it.cantidad || 0);
+            if (Number(it.precio_unitario || 0) > 0 && (!porCodigo[keyG].fechaPrecio || String(p.fecha) > porCodigo[keyG].fechaPrecio)) {
+              porCodigo[keyG].precio = Number(it.precio_unitario);
+              porCodigo[keyG].fechaPrecio = String(p.fecha || '');
+            }
+            if (Number(it.precio_unitario || 0) > 0) porClinicaCodigo[keyC].precio = Number(it.precio_unitario);
+          } else {
+            porCodigo[keyG].devuelto += Number(it.cantidad || 0);
+            porClinicaCodigo[keyC].devuelto += Number(it.cantidad || 0);
+          }
+        });
+      });
+    });
+
+    const pendientesGlobalCompleto = Object.values(porCodigo)
+      .map(m => ({ ...m, pendiente: m.prestado - m.devuelto }))
+      .filter(m => m.pendiente > 0);
+
+    const valorTotal = pendientesGlobalCompleto.reduce((s, m) => s + m.pendiente * m.precio, 0);
+
+    const valorPorClinica = {};
+    Object.values(porClinicaCodigo).forEach(m => {
+      const pend = m.prestado - m.devuelto;
+      if (pend <= 0) return;
+      valorPorClinica[m.clinica] = (valorPorClinica[m.clinica] || 0) + pend * (m.precio || 0);
+    });
+    const clinicasTop = Object.entries(valorPorClinica)
+      .map(([clinica, valor]) => ({ clinica, valor }))
+      .filter(c => c.valor > 0)
+      .sort((a, b) => b.valor - a.valor)
+      .slice(0, 6);
+
+    return {
+      topPendientesGlobal: pendientesGlobalCompleto.sort((a, b) => b.pendiente - a.pendiente).slice(0, 8),
+      valorPendienteTotal: valorTotal,
+      pendientePorClinica: clinicasTop,
+    };
+  }, [prestamos]);
+
+  // Actividad reciente (últimos documentos registrados, de cualquier tipo),
+  // como referencia de contexto en la pantalla de inicio.
+  const actividadReciente = React.useMemo(() => {
+    return (prestamos || [])
+      .filter(p => p.fecha)
+      .slice()
+      .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
+      .slice(0, 6);
+  }, [prestamos]);
+
+  const etiquetaTipoDoc = { egreso: 'EPO', ingreso: 'IPE', devolucion_ingreso: 'IDP', devolucion_egreso: 'ED' };
+
   const inputS = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', fontSize: 13, boxSizing: 'border-box' };
 
   return (
-    <div style={{ minWidth: 480, maxWidth: 720 }}>
+    <div style={{ maxWidth: 900 }}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t-text-primary)' }}>📒 Kárdex por producto</div>
+        <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>
+          Saldo real por producto: todo lo prestado menos todo lo devuelto, sin depender de si cada devolución quedó formalmente cruzada.
+        </div>
+      </div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
         {['otorgados','recibidos'].map(t => (
           <button key={t} onClick={() => setTipoMov(t)} style={{
@@ -3099,7 +3188,7 @@ function ModalKardexProducto({ prestamos, productos, clinicas }) {
           {!codigoSel && sugerencias.length > 0 && (
             <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 6, maxHeight: 220, overflowY: 'auto', marginTop: 2 }}>
               {sugerencias.map(p => (
-                <div key={p.codigo} onClick={() => { setCodigoSel(p.codigo); setBusqueda(''); }}
+                <div key={p.codigo} onClick={() => seleccionarProducto(p.codigo, p.nombre, tipoMov)}
                   style={{ padding: '7px 10px', fontSize: 12, cursor: 'pointer', borderBottom: '1px solid var(--t-border)' }}>
                   <span style={{ fontFamily: 'monospace', color: 'var(--t-accent)' }}>{p.codigo}</span>{' — '}{p.nombre}
                 </div>
@@ -3114,8 +3203,101 @@ function ModalKardexProducto({ prestamos, productos, clinicas }) {
       </div>
 
       {!codigoSel ? (
-        <div style={{ textAlign: 'center', padding: '40px 10px', color: 'var(--t-text-muted)', fontSize: 13 }}>
-          Busca y selecciona un producto para ver su kárdex.
+        <div>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 220, background: 'var(--t-bg-card)', border: '1px solid #f59e0b', borderRadius: 8, padding: '12px 14px' }}>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Valor total pendiente (todos los productos)</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: '#f59e0b' }}>{fmt(valorPendienteTotal)}</div>
+            </div>
+          </div>
+
+          <div style={{ textAlign: 'center', padding: '8px 10px 8px', color: 'var(--t-text-muted)', fontSize: 13 }}>
+            Busca un producto arriba para ver su kárdex completo (todo lo prestado y devuelto, con saldo acumulado).
+          </div>
+
+          {busquedasRecientes.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Buscados recientemente
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {busquedasRecientes.map(r => (
+                  <div key={`${r.tipoMov}|${r.codigo}`} onClick={() => seleccionarProducto(r.codigo, r.nombre, r.tipoMov)}
+                    style={{ fontSize: 12, padding: '5px 10px', borderRadius: 14, background: 'var(--t-bg-inner)', border: '1px solid var(--t-border)', cursor: 'pointer', color: 'var(--t-text-primary)' }}>
+                    <span style={{ fontFamily: 'monospace', color: 'var(--t-accent)' }}>{r.codigo}</span> — {r.nombre}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {pendientePorClinica.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Acceso rápido — clínicas con mayor valor pendiente
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {pendientePorClinica.map(c => (
+                  <div key={c.clinica} onClick={() => setClinicaSel(c.clinica)}
+                    title="Filtra el kárdex a esta clínica — luego busca el producto que quieras ver"
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12,
+                      background: clinicaSel === c.clinica ? 'var(--t-accent)' : 'var(--t-bg-card)',
+                      color: clinicaSel === c.clinica ? '#fff' : 'var(--t-text-primary)',
+                      border: '1px solid var(--t-border)' }}>
+                    <span>{c.clinica}</span>
+                    <span style={{ fontWeight: 700, color: clinicaSel === c.clinica ? '#fff' : '#f59e0b' }}>{fmt(c.valor)}</span>
+                  </div>
+                ))}
+              </div>
+              {clinicaSel !== 'todas' && (
+                <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 6 }}>
+                  Filtro activo: <b>{clinicaSel}</b>. <span onClick={() => setClinicaSel('todas')} style={{ cursor: 'pointer', textDecoration: 'underline' }}>Quitar filtro</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {topPendientesGlobal.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Acceso rápido — productos con mayor saldo pendiente
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {topPendientesGlobal.map(p => (
+                  <div key={`${p.tipoMov}|${p.codigo}`}
+                    onClick={() => seleccionarProducto(p.codigo, p.nombre, p.tipoMov)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, cursor: 'pointer' }}>
+                    <span style={{ fontFamily: 'monospace', color: 'var(--t-accent)', fontSize: 12, minWidth: 90 }}>{p.codigo}</span>
+                    <span style={{ flex: 1, fontSize: 13, color: 'var(--t-text-primary)' }}>{p.nombre}</span>
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: 'var(--t-bg-inner)', color: 'var(--t-text-muted)' }}>
+                      {p.tipoMov === 'otorgados' ? 'EPO/IDP' : 'IPE/ED'}
+                    </span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b' }}>pendiente: {p.pendiente}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {actividadReciente.length > 0 && (
+            <div style={{ marginTop: 22 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Actividad reciente
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {actividadReciente.map(p => (
+                  <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', background: 'var(--t-bg-inner)', borderRadius: 8, fontSize: 12 }}>
+                    <span style={{ color: 'var(--t-text-muted)', minWidth: 82 }}>{String(p.fecha).substring(0, 10)}</span>
+                    <span style={{ fontWeight: 600, color: 'var(--t-text-primary)', minWidth: 90 }}>{p.documento_contable}</span>
+                    <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 8, background: 'var(--t-bg-card)', color: 'var(--t-text-muted)' }}>
+                      {etiquetaTipoDoc[p.tipo] || p.tipo}
+                    </span>
+                    <span style={{ flex: 1, color: 'var(--t-text-muted)' }}>{p.clinica_nombre}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -4908,4 +5090,6 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
 
