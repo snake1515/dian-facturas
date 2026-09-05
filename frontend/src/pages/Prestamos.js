@@ -1984,6 +1984,17 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     return m;
   }, [cruces]);
 
+  // Cruces ya realizados por devolucion_id — igual que arriba pero desde el
+  // lado de la devolución, para mostrar el mismo listado expandible ahí.
+  const crucesPorDevolucion = React.useMemo(() => {
+    const m = {};
+    cruces.forEach(c => {
+      if (!m[c.devolucion_id]) m[c.devolucion_id] = [];
+      m[c.devolucion_id].push(c);
+    });
+    return m;
+  }, [cruces]);
+
   // Texto corto de qué productos de la devolución se cruzaron en un cruce
   // puntual — usa items_cruzados (la asignación exacta) cuando existe; si es
   // un cruce viejo sin eso, cae de vuelta a los ítems crudos de la
@@ -2313,6 +2324,33 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                 {d.observaciones && (
                   <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2, opacity: 0.7, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>
                     {d.observaciones}
+                  </div>
+                )}
+                {crucesPorDevolucion[d.id]?.length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    <div
+                      onClick={e => { e.stopPropagation(); setDetalleCruce(detalleCruce === d.id ? null : d.id); }}
+                      style={{ fontSize: 10, color: 'var(--t-accent)', cursor: 'pointer', userSelect: 'none' }}>
+                      {detalleCruce === d.id ? '▾' : '▸'} {crucesPorDevolucion[d.id].length} cruce(s) registrado(s)
+                    </div>
+                    {detalleCruce === d.id && (
+                      <div style={{ marginTop: 4, paddingLeft: 8, borderLeft: '2px solid var(--t-accent)' }}>
+                        {crucesPorDevolucion[d.id].map(c => (
+                          <div key={c.id} style={{ fontSize: 10, color: 'var(--t-text-muted)', marginBottom: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>
+                              <span style={{ color: 'var(--t-text-primary)', fontWeight: 600 }}>{c.prestamo_doc}</span>
+                              {' · '}<span style={{ color: badgeEstado(c.estado_devolucion).color, fontWeight: 600 }}>{badgeEstado(c.estado_devolucion).label}</span>
+                              {resumenProductosCruzados(c) && <span style={{ opacity: 0.7 }}> · {resumenProductosCruzados(c)}</span>}
+                            </span>
+                            <span style={{ color: c.soporte_url ? 'var(--t-accent)' : 'var(--t-text-muted)', marginLeft: 6 }}>
+                              {c.soporte_url
+                                ? <a href={`${API_BASE}/prestamos/soporte/${c.soporte_url}`} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: 'var(--t-accent)' }}>📄</a>
+                                : '—'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -5151,35 +5189,5 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
