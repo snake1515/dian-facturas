@@ -3085,31 +3085,38 @@ function TabKardex({ prestamos, productos, clinicas }) {
       if (clinicaSel !== 'todas' && p.clinica_nombre !== clinicaSel) return;
       const item = (p.items || []).find(i => i.codigo === codigoSel);
       if (!item || !Number(item.cantidad)) return;
+      const precio = Number(item.precio_unitario || 0);
       if (p.tipo === tipoSalida) {
         filas.push({
           fecha: p.fecha, documento: p.documento_contable, clinica: p.clinica_nombre,
           movimiento: tipoMov === 'otorgados' ? 'Préstamo otorgado' : 'Préstamo recibido',
-          entra: Number(item.cantidad), sale: 0,
+          entra: Number(item.cantidad), sale: 0, precio,
+          entraValor: Number(item.cantidad) * precio, saleValor: 0,
         });
       } else if (p.tipo === tipoEntrada) {
         filas.push({
           fecha: p.fecha, documento: p.documento_contable, clinica: p.clinica_nombre,
           movimiento: tipoMov === 'otorgados' ? 'Devolución recibida' : 'Devolución entregada',
-          entra: 0, sale: Number(item.cantidad),
+          entra: 0, sale: Number(item.cantidad), precio,
+          entraValor: 0, saleValor: Number(item.cantidad) * precio,
         });
       }
     });
     filas.sort((a, b) => (a.fecha || '').localeCompare(b.fecha || '') || a.documento.localeCompare(b.documento));
-    let saldo = 0;
+    let saldo = 0, saldoValor = 0;
     return filas.map(f => {
       saldo += f.entra - f.sale;
-      return { ...f, saldo };
+      saldoValor += f.entraValor - f.saleValor;
+      return { ...f, saldo, saldoValor };
     });
   }, [prestamos, codigoSel, clinicaSel, tipoSalida, tipoEntrada, tipoMov]);
 
   const totalPrestado = movimientos.reduce((s, m) => s + m.entra, 0);
   const totalDevuelto = movimientos.reduce((s, m) => s + m.sale, 0);
   const saldoFinal = totalPrestado - totalDevuelto;
+  const valorTotalPrestado = movimientos.reduce((s, m) => s + m.entraValor, 0);
+  const valorTotalDevuelto = movimientos.reduce((s, m) => s + m.saleValor, 0);
+  const valorSaldoFinal = valorTotalPrestado - valorTotalDevuelto;
 
   // Últimos productos consultados en esta sesión (no se guarda entre
   // recargas — es solo un atajo mientras se navega). Se actualiza cada vez
@@ -3316,6 +3323,7 @@ function TabKardex({ prestamos, productos, clinicas }) {
                       {p.tipoMov === 'otorgados' ? 'EPO/IDP' : 'IPE/ED'}
                     </span>
                     <span style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b' }}>pendiente: {p.pendiente}</span>
+                    <span style={{ fontSize: 12, color: '#f59e0b', minWidth: 90, textAlign: 'right' }}>{fmt(p.pendiente * p.precio)}</span>
                   </div>
                 ))}
               </div>
@@ -3349,17 +3357,20 @@ function TabKardex({ prestamos, productos, clinicas }) {
             ← Volver al inicio
           </button>
           <div style={{ display: 'flex', gap: 10, margin: '14px 0', flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: 120, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
+            <div style={{ flex: 1, minWidth: 150, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
               <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Total prestado</div>
               <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t-text-primary)' }}>{totalPrestado}</div>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>{fmt(valorTotalPrestado)}</div>
             </div>
-            <div style={{ flex: 1, minWidth: 120, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
+            <div style={{ flex: 1, minWidth: 150, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
               <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Total devuelto</div>
               <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t-text-primary)' }}>{totalDevuelto}</div>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>{fmt(valorTotalDevuelto)}</div>
             </div>
-            <div style={{ flex: 1, minWidth: 120, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
+            <div style={{ flex: 1, minWidth: 150, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
               <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Saldo pendiente</div>
               <div style={{ fontSize: 18, fontWeight: 700, color: saldoFinal > 0 ? '#f59e0b' : '#22c55e' }}>{saldoFinal}</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: saldoFinal > 0 ? '#f59e0b' : '#22c55e', marginTop: 2 }}>{fmt(valorSaldoFinal)}</div>
             </div>
           </div>
 
@@ -3368,12 +3379,12 @@ function TabKardex({ prestamos, productos, clinicas }) {
               No hay movimientos de este producto{clinicaSel !== 'todas' ? ' en esta clínica' : ''}.
             </div>
           ) : (
-            <div style={{ maxHeight: 340, overflowY: 'auto', border: '1px solid var(--t-border)', borderRadius: 8 }}>
+            <div style={{ maxHeight: 340, overflow: 'auto', border: '1px solid var(--t-border)', borderRadius: 8 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: 'var(--t-bg-card)' }}>
-                    {['Fecha','Documento','Clínica','Movimiento','Entra','Sale','Saldo'].map(h => (
-                      <th key={h} style={{ padding: '7px 9px', textAlign: h === 'Entra' || h === 'Sale' || h === 'Saldo' ? 'right' : 'left', color: 'var(--t-text-muted)', fontWeight: 600, position: 'sticky', top: 0, background: 'var(--t-bg-card)' }}>{h}</th>
+                    {['Fecha','Documento','Clínica','Movimiento','Entra','Sale','Saldo','Valor entra','Valor sale','Saldo $'].map(h => (
+                      <th key={h} style={{ padding: '7px 9px', whiteSpace: 'nowrap', textAlign: ['Entra','Sale','Saldo','Valor entra','Valor sale','Saldo $'].includes(h) ? 'right' : 'left', color: 'var(--t-text-muted)', fontWeight: 600, position: 'sticky', top: 0, background: 'var(--t-bg-card)' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -3387,6 +3398,9 @@ function TabKardex({ prestamos, productos, clinicas }) {
                       <td style={{ padding: '6px 9px', textAlign: 'right', color: '#22c55e' }}>{m.entra > 0 ? `+${m.entra}` : ''}</td>
                       <td style={{ padding: '6px 9px', textAlign: 'right', color: '#ef4444' }}>{m.sale > 0 ? `-${m.sale}` : ''}</td>
                       <td style={{ padding: '6px 9px', textAlign: 'right', fontWeight: 700, color: 'var(--t-text-primary)' }}>{m.saldo}</td>
+                      <td style={{ padding: '6px 9px', textAlign: 'right', color: '#22c55e', whiteSpace: 'nowrap' }}>{m.entraValor > 0 ? fmt(m.entraValor) : ''}</td>
+                      <td style={{ padding: '6px 9px', textAlign: 'right', color: '#ef4444', whiteSpace: 'nowrap' }}>{m.saleValor > 0 ? fmt(m.saleValor) : ''}</td>
+                      <td style={{ padding: '6px 9px', textAlign: 'right', fontWeight: 700, color: 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>{fmt(m.saldoValor)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -5137,6 +5151,22 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
