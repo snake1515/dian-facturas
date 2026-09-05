@@ -1899,16 +1899,35 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
 
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
+  const [tipoPrest,    setTipoPrest]    = React.useState(''); // '' | 'egreso' (EPO) | 'ingreso' (IPE)
   const [anioPrest,    setAnioPrest]    = React.useState('');
+  const [mesPrest,     setMesPrest]     = React.useState(''); // '' | '01'..'12'
   const [fDesdePrest,  setFDesdePrest]  = React.useState('');
   const [fHastaPrest,  setFHastaPrest]  = React.useState('');
   const [estadoPrest,  setEstadoPrest]  = React.useState(''); // '' | abierto | parcial | cerrado
+  const [ordenPrest,   setOrdenPrest]   = React.useState(''); // '' | 'asc' | 'desc' — por consecutivo del documento
+  const [tipoDevol,    setTipoDevol]    = React.useState(''); // '' | 'devolucion_egreso' (ED) | 'devolucion_ingreso' (IDP)
   const [anioDevol,    setAnioDevol]    = React.useState('');
+  const [mesDevol,     setMesDevol]     = React.useState(''); // '' | '01'..'12'
   const [fDesdeDevol,  setFDesdeDevol]  = React.useState('');
   const [fHastaDevol,  setFHastaDevol]  = React.useState('');
   const [estadoDevol,  setEstadoDevol]  = React.useState(''); // '' | abierto | parcial | cerrado
+  const [ordenDevol,   setOrdenDevol]   = React.useState(''); // '' | 'asc' | 'desc' — por consecutivo del documento
   const [detalleCruce, setDetalleCruce] = React.useState(null);
   const [detalleCard,  setDetalleCard]  = React.useState(null);
+
+  const MESES = [
+    { v: '01', n: 'Enero' }, { v: '02', n: 'Febrero' }, { v: '03', n: 'Marzo' },
+    { v: '04', n: 'Abril' }, { v: '05', n: 'Mayo' }, { v: '06', n: 'Junio' },
+    { v: '07', n: 'Julio' }, { v: '08', n: 'Agosto' }, { v: '09', n: 'Septiembre' },
+    { v: '10', n: 'Octubre' }, { v: '11', n: 'Noviembre' }, { v: '12', n: 'Diciembre' },
+  ];
+  // Número de consecutivo del documento (ej. "EPO921" -> 921, "IPE1038" -> 1038),
+  // para poder ordenar de menor a mayor o viceversa independientemente del texto.
+  function numeroConsecutivo(p) {
+    const m = (p.documento_contable || '').match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
 
   // Separar por tipo
   const prestamosBase  = prestamos.filter(p => ['ingreso','egreso'].includes(p.tipo));
@@ -1952,19 +1971,22 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       obs.replace(/[^0-9]/g, '').includes(q);  // número solo en observaciones
   }
 
-  function matchFecha(p, anio, desde, hasta) {
-    if (!anio && !desde && !hasta) return true;
+  function matchFecha(p, anio, mes, desde, hasta) {
+    if (!anio && !mes && !desde && !hasta) return true;
     const f = p.fecha ? String(p.fecha).substring(0, 10) : '';
     if (!f) return false;
     if (anio && f.substring(0, 4) !== anio) return false;
+    if (mes && f.substring(5, 7) !== mes) return false;
     if (desde && f < desde) return false;
     if (hasta && f > hasta) return false;
     return true;
   }
 
   const prestFiltrados = prestamosBase.filter(p =>
-    matchDoc(p, filtroPrest.toLowerCase()) && matchFecha(p, anioPrest, fDesdePrest, fHastaPrest) &&
-    (!estadoPrest || p.estado === estadoPrest));
+    matchDoc(p, filtroPrest.toLowerCase()) && matchFecha(p, anioPrest, mesPrest, fDesdePrest, fHastaPrest) &&
+    (!estadoPrest || p.estado === estadoPrest) &&
+    (!tipoPrest || p.tipo === tipoPrest)
+  ).sort((a, b) => ordenPrest ? (ordenPrest === 'asc' ? numeroConsecutivo(a) - numeroConsecutivo(b) : numeroConsecutivo(b) - numeroConsecutivo(a)) : 0);
 
   function toggleSelPrestamo(p) {
     setSelPrestamos(prev => prev.some(x => x.id === p.id) ? prev.filter(x => x.id !== p.id) : [...prev, p]);
@@ -1979,9 +2001,10 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
         sp.tipo === 'egreso' ? 'devolucion_ingreso' : 'devolucion_egreso'));
       if (!tiposRequeridos.has(p.tipo)) return false;
     }
-    return matchDoc(p, filtroDevol.toLowerCase()) && matchFecha(p, anioDevol, fDesdeDevol, fHastaDevol) &&
-      (!estadoDevol || p.estado === estadoDevol);
-  });
+    return matchDoc(p, filtroDevol.toLowerCase()) && matchFecha(p, anioDevol, mesDevol, fDesdeDevol, fHastaDevol) &&
+      (!estadoDevol || p.estado === estadoDevol) &&
+      (!tipoDevol || p.tipo === tipoDevol);
+  }).sort((a, b) => ordenDevol ? (ordenDevol === 'asc' ? numeroConsecutivo(a) - numeroConsecutivo(b) : numeroConsecutivo(b) - numeroConsecutivo(a)) : 0);
 
   function totalItems(p) {
     return (p.items || []).reduce((s, i) => s + Number(i.cantidad), 0);
@@ -2071,11 +2094,22 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
           </div>
           <input value={filtroPrest} onChange={e => setFiltroPrest(e.target.value)}
             placeholder="Buscar documento, clínica, producto o código…" style={{ ...inputS, marginBottom: 8 }} />
-          <div style={{ display: 'flex', gap: 6, marginBottom: 10, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <select value={anioPrest} onChange={e => setAnioPrest(e.target.value)}
               style={{ ...inputS, flex: '0 0 84px', padding: '6px 6px', fontSize: 12 }}>
               <option value="">Año</option>
               {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <select value={mesPrest} onChange={e => setMesPrest(e.target.value)}
+              title="Filtrar por mes" style={{ ...inputS, flex: '0 0 100px', padding: '6px 6px', fontSize: 12 }}>
+              <option value="">Mes: todos</option>
+              {MESES.map(m => <option key={m.v} value={m.v}>{m.n}</option>)}
+            </select>
+            <select value={tipoPrest} onChange={e => setTipoPrest(e.target.value)}
+              title="Filtrar por tipo de documento" style={{ ...inputS, flex: '0 0 90px', padding: '6px 6px', fontSize: 12 }}>
+              <option value="">Tipo: todos</option>
+              <option value="egreso">EPO</option>
+              <option value="ingreso">IPE</option>
             </select>
             <select value={estadoPrest} onChange={e => setEstadoPrest(e.target.value)}
               title="Filtrar por estado" style={{ ...inputS, flex: '0 0 100px', padding: '6px 6px', fontSize: 12 }}>
@@ -2084,12 +2118,18 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               <option value="parcial">Parcial</option>
               <option value="cerrado">Cerrado</option>
             </select>
+            <select value={ordenPrest} onChange={e => setOrdenPrest(e.target.value)}
+              title="Ordenar por consecutivo del documento" style={{ ...inputS, flex: '0 0 130px', padding: '6px 6px', fontSize: 12 }}>
+              <option value="">Sin ordenar</option>
+              <option value="asc">Consecutivo ↑</option>
+              <option value="desc">Consecutivo ↓</option>
+            </select>
             <input type="date" value={fDesdePrest} onChange={e => setFDesdePrest(e.target.value)}
               title="Desde" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
             <input type="date" value={fHastaPrest} onChange={e => setFHastaPrest(e.target.value)}
               title="Hasta" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
-            {(anioPrest || fDesdePrest || fHastaPrest || estadoPrest) && (
-              <span onClick={() => { setAnioPrest(''); setFDesdePrest(''); setFHastaPrest(''); setEstadoPrest(''); }}
+            {(anioPrest || mesPrest || fDesdePrest || fHastaPrest || estadoPrest || ordenPrest || tipoPrest) && (
+              <span onClick={() => { setAnioPrest(''); setMesPrest(''); setFDesdePrest(''); setFHastaPrest(''); setEstadoPrest(''); setOrdenPrest(''); setTipoPrest(''); }}
                 title="Limpiar filtros"
                 style={{ cursor: 'pointer', fontSize: 13, color: 'var(--t-text-muted)', padding: '0 4px', flex: '0 0 auto' }}>✕</span>
             )}
@@ -2161,11 +2201,22 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
           </div>
           <input value={filtroDevol} onChange={e => setFiltroDevol(e.target.value)}
             placeholder="Buscar documento, clínica, producto o código…" style={{ ...inputS, marginBottom: 8 }} />
-          <div style={{ display: 'flex', gap: 6, marginBottom: 10, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <select value={anioDevol} onChange={e => setAnioDevol(e.target.value)}
               style={{ ...inputS, flex: '0 0 84px', padding: '6px 6px', fontSize: 12 }}>
               <option value="">Año</option>
               {aniosDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <select value={mesDevol} onChange={e => setMesDevol(e.target.value)}
+              title="Filtrar por mes" style={{ ...inputS, flex: '0 0 100px', padding: '6px 6px', fontSize: 12 }}>
+              <option value="">Mes: todos</option>
+              {MESES.map(m => <option key={m.v} value={m.v}>{m.n}</option>)}
+            </select>
+            <select value={tipoDevol} onChange={e => setTipoDevol(e.target.value)}
+              title="Filtrar por tipo de documento" style={{ ...inputS, flex: '0 0 90px', padding: '6px 6px', fontSize: 12 }}>
+              <option value="">Tipo: todos</option>
+              <option value="devolucion_egreso">ED</option>
+              <option value="devolucion_ingreso">IDP</option>
             </select>
             <select value={estadoDevol} onChange={e => setEstadoDevol(e.target.value)}
               title="Filtrar por estado" style={{ ...inputS, flex: '0 0 100px', padding: '6px 6px', fontSize: 12 }}>
@@ -2174,12 +2225,18 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               <option value="parcial">Parcial</option>
               <option value="cerrado">Cerrado</option>
             </select>
+            <select value={ordenDevol} onChange={e => setOrdenDevol(e.target.value)}
+              title="Ordenar por consecutivo del documento" style={{ ...inputS, flex: '0 0 130px', padding: '6px 6px', fontSize: 12 }}>
+              <option value="">Sin ordenar</option>
+              <option value="asc">Consecutivo ↑</option>
+              <option value="desc">Consecutivo ↓</option>
+            </select>
             <input type="date" value={fDesdeDevol} onChange={e => setFDesdeDevol(e.target.value)}
               title="Desde" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
             <input type="date" value={fHastaDevol} onChange={e => setFHastaDevol(e.target.value)}
               title="Hasta" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
-            {(anioDevol || fDesdeDevol || fHastaDevol || estadoDevol) && (
-              <span onClick={() => { setAnioDevol(''); setFDesdeDevol(''); setFHastaDevol(''); setEstadoDevol(''); }}
+            {(anioDevol || mesDevol || fDesdeDevol || fHastaDevol || estadoDevol || ordenDevol || tipoDevol) && (
+              <span onClick={() => { setAnioDevol(''); setMesDevol(''); setFDesdeDevol(''); setFHastaDevol(''); setEstadoDevol(''); setOrdenDevol(''); setTipoDevol(''); }}
                 title="Limpiar filtros"
                 style={{ cursor: 'pointer', fontSize: 13, color: 'var(--t-text-muted)', padding: '0 4px', flex: '0 0 auto' }}>✕</span>
             )}
@@ -4844,3 +4901,4 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
