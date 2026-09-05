@@ -2287,14 +2287,21 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
           background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 10, padding: 16, marginBottom: 24,
           boxShadow: '0 -6px 20px rgba(0,0,0,.45)',
         }}>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 8 }}>
+          <button onClick={() => { setSelPrestamos([]); setSelDevoluciones([]); }}
+            title="Cerrar — quita la selección de préstamos y devoluciones"
+            style={{
+              position: 'absolute', top: 10, right: 10, width: 26, height: 26, lineHeight: '24px', textAlign: 'center',
+              borderRadius: '50%', border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)',
+              color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 14, padding: 0,
+            }}>✕</button>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 8, paddingRight: 30 }}>
             <span>Préstamo(s): </span>
             <b style={{ color: 'var(--t-text-primary)' }}>{selPrestamos.map(p => p.documento_contable).join(', ')}</b>
             <span style={{ margin: '0 8px' }}>↔</span>
             <span>Devolución(es): </span>
             <b style={{ color: 'var(--t-text-primary)' }}>{selDevoluciones.map(d => d.documento_contable).join(', ')}</b>
           </div>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: 'var(--t-text-primary)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: 'var(--t-text-primary)', paddingRight: 30 }}>
             {selPrestamos.length === 1 && selDevoluciones.length === 1 ? (
               <>Cruzar <b>{selPrestamos[0].documento_contable}</b> con <b>{selDevoluciones[0].documento_contable}</b></>
             ) : (
