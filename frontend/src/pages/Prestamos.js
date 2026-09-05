@@ -869,6 +869,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
 // ─── DETALLE PRÉSTAMO ───────────────────────────────────────────────────────────
 
 function DetallePrestamoModal({ prestamo, devoluciones, cruces = [] }) {
+  const [expandido, setExpandido] = React.useState(null);
   const thS = { textAlign: 'left', padding: '7px 10px', fontSize: 11, color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)', fontWeight: 500 };
   const tdS = { padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontSize: 13 };
 
@@ -938,9 +939,16 @@ function DetallePrestamoModal({ prestamo, devoluciones, cruces = [] }) {
           {cruces.map(c => {
             const esDevolucion = c.devolucion_id === prestamo.id;
             const docContraparte = esDevolucion ? c.prestamo_doc : c.devolucion_doc;
+            // Productos realmente cruzados: la asignación exacta
+            // (items_cruzados) cuando existe; si es un cruce viejo sin eso,
+            // cae de vuelta a los ítems crudos de la devolución.
+            const productosCruzados = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+            const abierto = expandido === c.id;
             return (
               <div key={c.id} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden' }}>
-                <div style={{ background: 'var(--t-bg-card)', padding: '8px 12px', display: 'flex', gap: 12, alignItems: 'center', fontSize: 13, flexWrap: 'wrap' }}>
+                <div onClick={() => setExpandido(abierto ? null : c.id)}
+                  style={{ background: 'var(--t-bg-card)', padding: '8px 12px', display: 'flex', gap: 12, alignItems: 'center', fontSize: 13, flexWrap: 'wrap', cursor: 'pointer' }}>
+                  <span style={{ color: 'var(--t-accent)', fontSize: 11 }}>{abierto ? '▾' : '▸'}</span>
                   <span style={{ fontWeight: 500 }}>🔗 {esDevolucion ? 'Cruce con préstamo' : 'Cruce con devolución'} {docContraparte}</span>
                   <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: badgeEstado(c.estado_prestamo).bg, color: badgeEstado(c.estado_prestamo).color }}>
                     préstamo: {badgeEstado(c.estado_prestamo).label}
@@ -950,14 +958,36 @@ function DetallePrestamoModal({ prestamo, devoluciones, cruces = [] }) {
                   </span>
                   <span style={{ color: 'var(--t-text-muted)', fontSize: 12 }}>{c.created_at?.substring(0, 10)}</span>
                 </div>
-                <div style={{ padding: '10px 12px' }}>
-                  {c.observaciones && (
-                    <div style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 8, lineHeight: 1.5 }}>
-                      <span style={{ color: 'var(--t-text-muted)', fontWeight: 500 }}>Notas: </span>{c.observaciones}
-                    </div>
-                  )}
-                  <CruceSoportes cruce={c} />
-                </div>
+                {abierto && (
+                  <div style={{ padding: '10px 12px' }}>
+                    {productosCruzados.length > 0 && (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 10 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ ...thS, padding: '4px 8px' }}>Código</th>
+                            <th style={{ ...thS, padding: '4px 8px' }}>Producto cruzado</th>
+                            <th style={{ ...thS, padding: '4px 8px', textAlign: 'right' }}>Cantidad</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {productosCruzados.map((it, i) => (
+                            <tr key={i}>
+                              <td style={{ padding: '4px 8px', fontSize: 12, fontFamily: 'monospace', color: 'var(--t-text-muted)' }}>{it.codigo}</td>
+                              <td style={{ padding: '4px 8px', fontSize: 12 }}>{it.nombre}</td>
+                              <td style={{ padding: '4px 8px', fontSize: 12, textAlign: 'right' }}>{it.cantidad}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    {c.observaciones && (
+                      <div style={{ fontSize: 12, color: 'var(--t-text-secondary)', marginBottom: 8, lineHeight: 1.5 }}>
+                        <span style={{ color: 'var(--t-text-muted)', fontWeight: 500 }}>Notas: </span>{c.observaciones}
+                      </div>
+                    )}
+                    <CruceSoportes cruce={c} />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -2452,7 +2482,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
 
       {detalleCard && (
         <Modal onClose={() => setDetalleCard(null)} titulo={`Detalle ${detalleCard.documento_contable}`}>
-          <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]} />
+          <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]}
+            cruces={cruces.filter(c => c.prestamo_id === detalleCard.id || c.devolucion_id === detalleCard.id)} />
         </Modal>
       )}
     </div>
@@ -5106,6 +5137,14 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
