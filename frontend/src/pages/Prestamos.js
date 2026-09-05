@@ -1954,6 +1954,18 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     return m;
   }, [cruces]);
 
+  // Texto corto de qué productos de la devolución se cruzaron en un cruce
+  // puntual — usa items_cruzados (la asignación exacta) cuando existe; si es
+  // un cruce viejo sin eso, cae de vuelta a los ítems crudos de la
+  // devolución como mejor aproximación disponible.
+  function resumenProductosCruzados(c) {
+    const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+    if (items.length === 0) return null;
+    const MAX = 2;
+    const texto = items.slice(0, MAX).map(it => `${it.nombre} (${it.cantidad})`).join(', ');
+    return items.length > MAX ? `${texto} +${items.length - MAX} más` : texto;
+  }
+
   function matchDoc(p, q) {
     if (!q) return true;
     const doc = (p.documento_contable || '').toLowerCase();
@@ -2178,7 +2190,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                             <span>
                               <span style={{ color: 'var(--t-text-primary)', fontWeight: 600 }}>{c.devolucion_doc}</span>
                               {' · '}<span style={{ color: badgeEstado(c.estado_prestamo).color, fontWeight: 600 }}>{badgeEstado(c.estado_prestamo).label}</span>
-                              {c.observaciones && <span style={{ opacity: 0.7 }}> · {c.observaciones.substring(0, 40)}</span>}
+                              {resumenProductosCruzados(c) && <span style={{ opacity: 0.7 }}> · {resumenProductosCruzados(c)}</span>}
                             </span>
                             <span style={{ color: c.soporte_url ? 'var(--t-accent)' : 'var(--t-text-muted)', marginLeft: 6 }}>
                               {c.soporte_url
@@ -5094,6 +5106,7 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
 
 
 
