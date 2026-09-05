@@ -3301,6 +3301,10 @@ function TabKardex({ prestamos, productos, clinicas }) {
         </div>
       ) : (
         <>
+          <button onClick={() => setCodigoSel(null)}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', marginTop: 10, border: '1px solid var(--t-border)', borderRadius: 6, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', fontSize: 12 }}>
+            ← Volver al inicio
+          </button>
           <div style={{ display: 'flex', gap: 10, margin: '14px 0', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 120, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 10, textAlign: 'center' }}>
               <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Total prestado</div>
@@ -5090,6 +5094,10 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
 
 
 
