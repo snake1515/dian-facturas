@@ -248,6 +248,7 @@ export default function Prestamos() {
     { id: 'cruces',      label: 'Cruces' },
     { id: 'historial_cruces', label: 'Historial de Cruces' },
     { id: 'kardex',      label: 'Kárdex' },
+    { id: 'soportes_pendientes', label: 'Soportes pendientes' },
     { id: 'productos',   label: 'Productos' },
     { id: 'reportes',    label: 'Reportes' },
     { id: 'dashboard',   label: 'Dashboard' },
@@ -287,6 +288,7 @@ export default function Prestamos() {
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'historial_cruces' && <TabHistorialCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'kardex'      && <TabKardex prestamos={prestamos} productos={productos} clinicas={clinicas} />}
+          {activeTab === 'soportes_pendientes' && <TabSoportesPendientes onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
           {activeTab === 'dashboard'   && (
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
@@ -496,13 +498,6 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
     }
   }
 
-  // Normaliza un texto de código (documento_contable o nombre de archivo)
-  // dejando solo letras/números en mayúscula, para poder comparar
-  // "EPO851" (documento) con "EPO-851" (nombre de archivo).
-  function normalizarCodigo(txt) {
-    return String(txt || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  }
-
   const [subiendoLote, setSubiendoLote] = useState(false);
   const [resultadoLote, setResultadoLote] = useState(null); // { subidos: [], noEncontrados: [] }
 
@@ -512,45 +507,30 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
 
     setSubiendoLote(true);
     setResultadoLote(null);
-    const subidos = [];
-    const noEncontrados = [];
 
-    for (const file of files) {
-      const nombreBase = file.name.replace(/\.pdf$/i, '');
-      const codigoArchivo = normalizarCodigo(nombreBase);
-      const match = prestamos.find(p => normalizarCodigo(p.documento_contable) === codigoArchivo);
+    try {
+      const formData = new FormData();
+      files.forEach(f => formData.append('soportes', f));
+      const data = await apiFetch('/prestamos/soportes-pendientes', { method: 'POST', body: formData, headers: {} });
 
-      if (!match) {
-        noEncontrados.push(file.name);
-        continue;
-      }
+      const subidos = (data.adjuntados || []).map(a => `${a.archivo} → ${a.documento}`);
+      const noEncontrados = (data.pendientes || []).map(p => `${p.nombre_archivo} (guardado en "Soportes pendientes")`);
 
-      try {
-        const formData = new FormData();
-        formData.append('soporte', file);
-        await apiFetch(`/prestamos/${match.id}/soporte`, {
-          method: 'PATCH',
-          body: formData,
-          headers: {},
-        });
-        subidos.push(`${file.name} → ${match.documento_contable}`);
-      } catch (err) {
-        noEncontrados.push(`${file.name} (error: ${err.message})`);
-      }
+      setResultadoLote({ subidos, noEncontrados });
+
+      // Aviso nativo del navegador — no depende de estilos ni de que el modal
+      // se renderice correctamente, siempre se ve.
+      let resumen = `Carga de PDFs terminada.\n\n✓ Adjuntados correctamente: ${subidos.length}`;
+      if (subidos.length > 0) resumen += `\n${subidos.map(s => '  • ' + s).join('\n')}`;
+      resumen += `\n\n📥 Sin coincidencia (guardados en "Soportes pendientes"): ${noEncontrados.length}`;
+      if (noEncontrados.length > 0) resumen += `\n${(data.pendientes || []).map(p => '  • ' + p.nombre_archivo).join('\n')}`;
+      window.alert(resumen);
+
+      onRefresh();
+    } catch (err) {
+      window.alert('Error al subir los PDFs: ' + err.message);
     }
-
     setSubiendoLote(false);
-    setResultadoLote({ subidos, noEncontrados });
-
-    // Aviso nativo del navegador — no depende de estilos ni de que el modal
-    // se renderice correctamente, siempre se ve.
-    let resumen = `Carga de PDFs terminada.\n\n✓ Subidos correctamente: ${subidos.length}`;
-    if (subidos.length > 0) resumen += `\n${subidos.map(s => '  • ' + s).join('\n')}`;
-    resumen += `\n\n✕ Sin coincidencia: ${noEncontrados.length}`;
-    if (noEncontrados.length > 0) resumen += `\n${noEncontrados.map(s => '  • ' + s).join('\n')}`;
-    window.alert(resumen);
-
-    onRefresh();
   }
 
   const [busqueda,    setBusqueda]    = useState('');
@@ -658,16 +638,16 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
             onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <strong style={{ fontSize: 15, color: 'var(--t-text-primary)' }}>
-                {resultadoLote.noEncontrados.length === 0 ? '✅ Carga de PDFs completa' : '⚠️ Carga de PDFs con avisos'}
+                {resultadoLote.noEncontrados.length === 0 ? '✅ Carga de PDFs completa' : '📥 Carga de PDFs — algunos quedaron pendientes'}
               </strong>
               <span onClick={() => setResultadoLote(null)} style={{ cursor: 'pointer', color: 'var(--t-text-muted)', fontSize: 16 }}>✕</span>
             </div>
             <div style={{ fontSize: 13, color: 'var(--t-text-primary)', marginBottom: 12 }}>
-              {resultadoLote.subidos.length} archivo(s) subido(s) correctamente · {resultadoLote.noEncontrados.length} sin coincidencia
+              {resultadoLote.subidos.length} archivo(s) adjuntado(s) correctamente · {resultadoLote.noEncontrados.length} sin coincidencia (guardados en "Soportes pendientes")
             </div>
             {resultadoLote.subidos.length > 0 && (
               <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#22c55e', marginBottom: 6 }}>✓ Subidos correctamente</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#22c55e', marginBottom: 6 }}>✓ Adjuntados correctamente</div>
                 {resultadoLote.subidos.map((s, i) => (
                   <div key={i} style={{ fontSize: 12, color: 'var(--t-text-primary)', padding: '3px 0', borderBottom: '1px solid var(--t-border)' }}>{s}</div>
                 ))}
@@ -675,7 +655,10 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
             )}
             {resultadoLote.noEncontrados.length > 0 && (
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#ef4444', marginBottom: 6 }}>✕ Sin coincidencia</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#f59e0b', marginBottom: 6 }}>📥 Guardados en "Soportes pendientes"</div>
+                <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                  No se perdieron: ve a la pestaña "Soportes pendientes" y usa "Sincronizar" cuando ya exista el documento correspondiente.
+                </div>
                 {resultadoLote.noEncontrados.map((s, i) => (
                   <div key={i} style={{ fontSize: 12, color: 'var(--t-text-primary)', padding: '3px 0', borderBottom: '1px solid var(--t-border)' }}>{s}</div>
                 ))}
@@ -3453,6 +3436,145 @@ function TabKardex({ prestamos, productos, clinicas }) {
 
 // ─── TAB PRODUCTOS ──────────────────────────────────────────────────────────────
 
+// ─── TAB SOPORTES PENDIENTES ────────────────────────────────────────────────
+// PDFs de carga masiva que no encontraron un documento con quién emparejar
+// en el momento de subirlos. Antes se perdían silenciosamente; ahora quedan
+// guardados aquí para poder verlos/descargarlos y reintentar el emparejado
+// (por ejemplo, justo después de subir el Excel masivo que trae los
+// documentos que antes faltaban) con el botón "Sincronizar soportes".
+function TabSoportesPendientes({ onRefresh }) {
+  const [pendientes, setPendientes] = React.useState([]);
+  const [cargando, setCargando] = React.useState(true);
+  const [sincronizando, setSincronizando] = React.useState(false);
+  const [subiendo, setSubiendo] = React.useState(false);
+  const [error, setError] = React.useState('');
+
+  async function cargar() {
+    setCargando(true);
+    try {
+      const data = await apiFetch('/prestamos/soportes-pendientes');
+      setPendientes(data || []);
+    } catch (err) {
+      setError('Error cargando soportes pendientes: ' + err.message);
+    }
+    setCargando(false);
+  }
+
+  React.useEffect(() => { cargar(); }, []);
+
+  async function subirPdfs(fileList) {
+    const files = Array.from(fileList || []).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    if (files.length === 0) return;
+    setSubiendo(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      files.forEach(f => formData.append('soportes', f));
+      const data = await apiFetch('/prestamos/soportes-pendientes', { method: 'POST', body: formData, headers: {} });
+      const adjuntados = data.adjuntados || [];
+      if (adjuntados.length > 0) {
+        window.alert(`${adjuntados.length} archivo(s) encontraron documento y se adjuntaron de una vez:\n${adjuntados.map(a => `• ${a.archivo} → ${a.documento}`).join('\n')}`);
+        onRefresh && onRefresh();
+      }
+      await cargar();
+    } catch (err) {
+      setError('Error subiendo PDFs: ' + err.message);
+    }
+    setSubiendo(false);
+  }
+
+  async function sincronizar() {
+    setSincronizando(true);
+    setError('');
+    try {
+      const data = await apiFetch('/prestamos/soportes-pendientes/sincronizar', { method: 'POST' });
+      const adjuntados = data.adjuntados || [];
+      setPendientes(data.pendientes || []);
+      window.alert(adjuntados.length > 0
+        ? `✓ ${adjuntados.length} soporte(s) encontraron su documento y se adjuntaron:\n${adjuntados.map(a => `• ${a.archivo} → ${a.documento}`).join('\n')}`
+        : 'Ningún soporte pendiente encontró documento todavía.');
+      if (adjuntados.length > 0) onRefresh && onRefresh();
+    } catch (err) {
+      setError('Error sincronizando: ' + err.message);
+    }
+    setSincronizando(false);
+  }
+
+  async function eliminar(id, nombre) {
+    if (!window.confirm(`¿Eliminar "${nombre}" de soportes pendientes? No se podrá recuperar.`)) return;
+    try {
+      await apiFetch(`/prestamos/soportes-pendientes/${id}`, { method: 'DELETE' });
+      setPendientes(prev => prev.filter(p => p.id !== id));
+    } catch (err) {
+      alert('Error eliminando: ' + err.message);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t-text-primary)' }}>📥 Soportes pendientes</div>
+        <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>
+          PDFs subidos por lote (desde Movimientos o aquí mismo) que no encontraron un documento con quién emparejarse en su momento. No se pierden: quedan aquí hasta que exista el documento y los sincronices.
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        <input id="pendientes-soporte-input" type="file" accept=".pdf" multiple style={{ display: 'none' }}
+          onChange={e => { subirPdfs(e.target.files); e.target.value = ''; }} />
+        <button onClick={() => document.getElementById('pendientes-soporte-input').click()}
+          disabled={subiendo}
+          style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: subiendo ? 'default' : 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', opacity: subiendo ? 0.6 : 1 }}>
+          {subiendo ? 'Subiendo…' : '📎 Subir PDFs por lote'}
+        </button>
+        <button onClick={sincronizar} disabled={sincronizando || pendientes.length === 0}
+          style={{ padding: '7px 13px', border: '1px solid var(--t-accent)', borderRadius: 7, fontSize: 13, cursor: (sincronizando || pendientes.length === 0) ? 'default' : 'pointer', background: 'transparent', color: 'var(--t-accent)', opacity: (sincronizando || pendientes.length === 0) ? 0.5 : 1 }}>
+          {sincronizando ? 'Sincronizando…' : '🔄 Sincronizar soportes'}
+        </button>
+      </div>
+
+      {error && <div style={{ color: '#ef4444', fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+      {cargando ? (
+        <div style={{ textAlign: 'center', padding: 30, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
+      ) : pendientes.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 30, color: 'var(--t-text-muted)', fontSize: 13 }}>
+          No hay soportes pendientes. Todos los PDFs subidos encontraron su documento. ✅
+        </div>
+      ) : (
+        <div style={{ border: '1px solid var(--t-border)', borderRadius: 8, overflow: 'hidden' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: 'var(--t-bg-card)' }}>
+                {['Archivo', 'Subido el', 'Ver / Descargar', ''].map(h => (
+                  <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 11, color: 'var(--t-text-muted)', fontWeight: 600 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {pendientes.map(p => (
+                <tr key={p.id} style={{ borderTop: '1px solid var(--t-border)' }}>
+                  <td style={{ padding: '8px 10px', color: 'var(--t-text-primary)' }}>{p.nombre_archivo}</td>
+                  <td style={{ padding: '8px 10px', color: 'var(--t-text-muted)' }}>{String(p.fecha_subida).substring(0, 10)}</td>
+                  <td style={{ padding: '8px 10px' }}>
+                    <a href={`${API_BASE}/prestamos/soporte/${p.soporte_url}`} target="_blank" rel="noreferrer" style={{ color: 'var(--t-accent)' }}>📄 Ver</a>
+                  </td>
+                  <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+                    <button onClick={() => eliminar(p.id, p.nombre_archivo)}
+                      style={{ padding: '4px 10px', border: '1px solid #ef4444', borderRadius: 6, fontSize: 11, cursor: 'pointer', background: 'transparent', color: '#ef4444' }}>
+                      🗑 Eliminar
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TabProductos({ productos: productosProp, onRefresh }) {
   const [busqueda,        setBusqueda]        = useState('');
   const [filtroCat,       setFiltroCat]        = useState('');
@@ -5189,5 +5311,8 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
 
 
