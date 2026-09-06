@@ -120,7 +120,7 @@ router.delete('/usuarios/:id', authMiddleware, adminOnly, async (req, res) => {
 router.put('/tema', authMiddleware, async (req, res) => {
   try {
     const { tema } = req.body;
-    const temas = ['oscuro', 'blanco', 'rosado', 'morado', 'azul', 'verde'];
+    const temas = ['oscuro', 'blanco', 'rosado', 'morado', 'azul', 'verde', 'gris', 'grisClaro', 'grafito', 'medianoche', 'arena'];
     if (!temas.includes(tema)) return res.status(400).json({ error: 'Tema inválido' });
     await pool.query('UPDATE usuarios SET tema = $1 WHERE id = $2', [tema, req.user.id]);
     res.json({ ok: true, tema });
@@ -130,6 +130,25 @@ router.put('/tema', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
