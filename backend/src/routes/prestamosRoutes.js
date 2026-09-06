@@ -1265,7 +1265,108 @@ router.delete('/:id/soporte', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── Soportes pendientes (PDFs de carga masiva que no encontraron documento) ─
+// Se crea aquí (no en models/db.js) para que quede garantizado que existe
+// apenas arranca el servidor, sin depender de otras migraciones del proyecto.
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS soportes_pendientes (
+        id SERIAL PRIMARY KEY,
+        nombre_archivo VARCHAR(300) NOT NULL,
+        soporte_url VARCHAR(500) NOT NULL,
+        fecha_subida TIMESTAMP DEFAULT NOW()
+      );
+    `);
+  } catch (e) { console.error('Error creando tabla soportes_pendientes:', e.message); }
+})();
+
+// Normaliza un texto de código (documento_contable o nombre de archivo)
+// dejando solo letras/números en mayúscula — mismo criterio que el frontend,
+// para poder comparar "EPO851" (documento) con "EPO-851" (nombre de archivo).
+function normalizarCodigoDoc(txt) {
+  return String(txt || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+// Carga masiva de soportes: cada PDF que SÍ encuentra su documento se adjunta
+// de una vez (igual que antes); el que no encuentra pareja ya NO se pierde —
+// queda guardado en "soportes_pendientes" para poder revisarlo/descargarlo y
+// reintentar más adelante con "Sincronizar soportes".
+router.post('/soportes-pendientes', upload.array('soportes', 200), async (req, res) => {
+  try {
+    const { rows: prestamosTodos } = await pool.query('SELECT id, documento_contable FROM prestamos');
+    const adjuntados = [];
+    const pendientes = [];
+
+    for (const file of (req.files || [])) {
+      const nombreBase = file.originalname.replace(/\.pdf$/i, '');
+      const codigoArchivo = normalizarCodigoDoc(nombreBase);
+      const match = prestamosTodos.find(p => normalizarCodigoDoc(p.documento_contable) === codigoArchivo);
+
+      if (match) {
+        const soporte_url = await subirPDF(file, 'documentos');
+        await pool.query('UPDATE prestamos SET soporte_url = $1 WHERE id = $2', [soporte_url, match.id]);
+        adjuntados.push({ archivo: file.originalname, documento: match.documento_contable });
+      } else {
+        const soporte_url = await subirPDF(file, 'pendientes');
+        const { rows } = await pool.query(
+          'INSERT INTO soportes_pendientes (nombre_archivo, soporte_url) VALUES ($1, $2) RETURNING *',
+          [file.originalname, soporte_url]
+        );
+        pendientes.push(rows[0]);
+      }
+    }
+
+    res.json({ adjuntados, pendientes });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get('/soportes-pendientes', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM soportes_pendientes ORDER BY fecha_subida DESC');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Reintenta emparejar cada PDF pendiente contra los documentos que existan
+// AHORA (por ejemplo, justo después de subir el Excel masivo de movimientos
+// que trae los documentos que antes faltaban). Los que sí encuentran pareja
+// se adjuntan y se sacan de la lista de pendientes; los demás se quedan.
+router.post('/soportes-pendientes/sincronizar', async (req, res) => {
+  try {
+    const { rows: pendientes } = await pool.query('SELECT * FROM soportes_pendientes ORDER BY fecha_subida ASC');
+    const { rows: prestamosTodos } = await pool.query('SELECT id, documento_contable FROM prestamos');
+    const adjuntados = [];
+
+    for (const pend of pendientes) {
+      const nombreBase = pend.nombre_archivo.replace(/\.pdf$/i, '');
+      const codigoArchivo = normalizarCodigoDoc(nombreBase);
+      const match = prestamosTodos.find(p => normalizarCodigoDoc(p.documento_contable) === codigoArchivo);
+      if (!match) continue;
+
+      await pool.query('UPDATE prestamos SET soporte_url = $1 WHERE id = $2', [pend.soporte_url, match.id]);
+      await pool.query('DELETE FROM soportes_pendientes WHERE id = $1', [pend.id]);
+      adjuntados.push({ archivo: pend.nombre_archivo, documento: match.documento_contable });
+    }
+
+    const { rows: siguenPendientes } = await pool.query('SELECT * FROM soportes_pendientes ORDER BY fecha_subida DESC');
+    res.json({ adjuntados, pendientes: siguenPendientes });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/soportes-pendientes/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM soportes_pendientes WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
+
+
+
+
+
 
 
 
