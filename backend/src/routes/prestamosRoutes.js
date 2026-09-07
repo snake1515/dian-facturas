@@ -899,12 +899,48 @@ router.post('/cruces', async (req, res) => {
       const cruceRows = [];
       for (const par of pares) {
         if (!par.prestamo_id || !par.devolucion_id) continue;
-        const { rows } = await client.query(`
-          INSERT INTO prestamo_cruces (prestamo_id, devolucion_id, tipo_cruce, observaciones, grupo_id, items_cruzados)
-          VALUES ($1, $2, $3, $4, $5, $6) RETURNING *
-        `, [par.prestamo_id, par.devolucion_id, par.tipo_cruce || 'total', par.observaciones || observaciones || null, grupo.id,
-            par.items_cruzados ? JSON.stringify(par.items_cruzados) : null]);
-        cruceRows.push(rows[0]);
+
+        // ¿Ya existe un cruce registrado para este mismo par préstamo/devolución?
+        // La tabla tiene UNIQUE(prestamo_id, devolucion_id), así que un segundo
+        // INSERT para el mismo par siempre fallaría (duplicate key). En vez de
+        // eso, se fusiona: se suman las cantidades por código de producto sobre
+        // la fila existente y se actualiza al grupo/consecutivo más reciente.
+        const { rows: existentes } = await client.query(
+          `SELECT * FROM prestamo_cruces WHERE prestamo_id = $1 AND devolucion_id = $2`,
+          [par.prestamo_id, par.devolucion_id]
+        );
+
+        if (existentes.length > 0) {
+          const existente = existentes[0];
+          const mapaItems = new Map();
+          (existente.items_cruzados || []).forEach(it => mapaItems.set(it.codigo, { ...it }));
+          (par.items_cruzados || []).forEach(it => {
+            if (mapaItems.has(it.codigo)) {
+              const acc = mapaItems.get(it.codigo);
+              acc.cantidad = Number(acc.cantidad) + Number(it.cantidad);
+            } else {
+              mapaItems.set(it.codigo, { ...it });
+            }
+          });
+          const itemsFusionados = mapaItems.size > 0 ? Array.from(mapaItems.values()) : null;
+
+          const { rows } = await client.query(`
+            UPDATE prestamo_cruces
+            SET tipo_cruce = $1, observaciones = $2, grupo_id = $3, items_cruzados = $4, created_at = NOW()
+            WHERE id = $5
+            RETURNING *
+          `, [par.tipo_cruce || existente.tipo_cruce || 'total',
+              par.observaciones || observaciones || existente.observaciones,
+              grupo.id, itemsFusionados ? JSON.stringify(itemsFusionados) : null, existente.id]);
+          cruceRows.push(rows[0]);
+        } else {
+          const { rows } = await client.query(`
+            INSERT INTO prestamo_cruces (prestamo_id, devolucion_id, tipo_cruce, observaciones, grupo_id, items_cruzados)
+            VALUES ($1, $2, $3, $4, $5, $6) RETURNING *
+          `, [par.prestamo_id, par.devolucion_id, par.tipo_cruce || 'total', par.observaciones || observaciones || null, grupo.id,
+              par.items_cruzados ? JSON.stringify(par.items_cruzados) : null]);
+          cruceRows.push(rows[0]);
+        }
       }
 
       if (cruceRows.length === 0) {
@@ -1362,6 +1398,15 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
 
 
 
