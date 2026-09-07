@@ -405,6 +405,93 @@ router.post('/importar-masivo', async (req, res) => {
   } catch (e) { console.error('importar-masivo ERROR:', e.message); res.status(500).json({ error: e.message }); }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  REPARAR DOCUMENTOS YA IMPORTADOS (bug histórico: filas con el mismo código
+//  repetidas en una misma hoja se perdían en vez de sumarse — ya corregido en
+//  procesarExcelMasivo del frontend, pero los documentos importados ANTES de
+//  ese arreglo quedaron con cantidades/items incompletos en la base de datos).
+//  Recibe el mismo array `documentos` (re-parseado del Excel original con la
+//  lógica ya corregida) y, SOLO para los documentos que ya existen, compara
+//  el total contra lo guardado: si el nuevo total es mayor (o sea, se estaban
+//  perdiendo líneas), reemplaza los items y recalcula el estado. Nunca reduce
+//  cantidades — si el archivo re-subido diera un total menor, se omite ese
+//  documento como medida de seguridad, para no perder datos por accidente.
+// ═══════════════════════════════════════════════════════════════════════════
+router.post('/reparar-items', async (req, res) => {
+  try {
+    const { documentos } = req.body;
+    if (!Array.isArray(documentos) || documentos.length === 0)
+      return res.status(400).json({ error: 'documentos requerido' });
+
+    const client = await pool.connect();
+    const corregidos = [];
+    const sinCambios = [];
+    const omitidosPorReduccion = [];
+    const noEncontrados = [];
+
+    try {
+      await client.query('BEGIN');
+
+      for (const doc of documentos) {
+        const { rows: existentes } = await client.query(
+          'SELECT * FROM prestamos WHERE documento_contable = $1',
+          [doc.documento_contable]
+        );
+        if (existentes.length === 0) {
+          noEncontrados.push(doc.documento_contable);
+          continue;
+        }
+        const actual = existentes[0];
+        const itemsActuales = actual.items || [];
+        const itemsNuevos = doc.items || [];
+
+        const cantidadActual = itemsActuales.reduce((s, i) => s + Number(i.cantidad), 0);
+        const cantidadNueva = itemsNuevos.reduce((s, i) => s + Number(i.cantidad), 0);
+        const valorActual = itemsActuales.reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
+        const valorNuevo = itemsNuevos.reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
+
+        if (cantidadNueva <= cantidadActual) {
+          // No hay corrección que hacer (o el archivo re-subido trae MENOS
+          // de lo que ya había registrado — no se toca, por seguridad).
+          if (cantidadNueva < cantidadActual) {
+            omitidosPorReduccion.push({
+              documento_contable: doc.documento_contable,
+              cantidad_actual: cantidadActual, cantidad_en_archivo: cantidadNueva,
+            });
+          } else {
+            sinCambios.push(doc.documento_contable);
+          }
+          continue;
+        }
+
+        await client.query('UPDATE prestamos SET items = $1 WHERE id = $2', [JSON.stringify(itemsNuevos), actual.id]);
+        const nuevoEstado = await recalcularEstadoDocumento(client, actual.id);
+
+        corregidos.push({
+          documento_contable: doc.documento_contable,
+          cantidad_antes: cantidadActual, cantidad_despues: cantidadNueva,
+          valor_antes: valorActual, valor_despues: valorNuevo,
+          estado_despues: nuevoEstado,
+        });
+      }
+
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    res.json({
+      corregidos: corregidos.length, corregidos_detalle: corregidos,
+      sin_cambios: sinCambios.length,
+      omitidos_por_reduccion: omitidosPorReduccion.length, omitidos_por_reduccion_detalle: omitidosPorReduccion,
+      no_encontrados: noEncontrados.length, no_encontrados_docs: noEncontrados,
+    });
+  } catch (e) { console.error('reparar-items ERROR:', e.message); res.status(500).json({ error: e.message }); }
+});
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  CRUCES  (soporta multicruce: un préstamo con varias devoluciones,
@@ -1398,6 +1485,22 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
