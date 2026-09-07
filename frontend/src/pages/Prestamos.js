@@ -1334,6 +1334,8 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
   const [error,       setError]       = useState('');
   const [importando,  setImportando]  = useState(false);
   const [importResult,setImportResult]= useState(null);
+  const [reparando,   setReparando]   = useState(false);
+  const [repararResult, setRepararResult] = useState(null);
 
   // Nueva clínica rápida
   const [nuevaClinica, setNuevaClinica] = useState('');
@@ -1463,6 +1465,22 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       onSaved();
     } catch (e) { setError('Error importando: ' + e.message); }
     setImportando(false);
+  }
+
+  async function repararMasivo() {
+    if (!excelData) return;
+    setReparando(true); setError('');
+    try {
+      const { documentos } = procesarExcelMasivo(excelData);
+      if (documentos.length === 0) { setError('No se encontraron documentos válidos'); setReparando(false); return; }
+      const result = await apiFetch('/prestamos/reparar-items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentos }),
+      });
+      setRepararResult(result);
+      onSaved();
+    } catch (e) { setError('Error reparando: ' + e.message); }
+    setReparando(false);
   }
 
   async function buscarEnExcel() {
@@ -1690,6 +1708,13 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
             }}>
               {importando ? 'Importando…' : '⚡ Importar todo'}
             </button>
+            <button onClick={repararMasivo} disabled={reparando} title="Para documentos que ya existen: si este Excel trae más cantidad de la que quedó guardada (p. ej. filas repetidas que antes se perdían), corrige el total. Nunca reduce cantidades."
+              style={{
+                padding: '5px 14px', fontSize: 12, cursor: 'pointer', borderRadius: 6,
+                background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', fontWeight: 600,
+              }}>
+              {reparando ? 'Reparando…' : '🩹 Reparar documentos existentes'}
+            </button>
           </div>
         )}
         {importResult && (
@@ -1706,6 +1731,41 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
                   ))}
                 </ul>
               </div>
+            )}
+          </div>
+        )}
+        {repararResult && (
+          <div style={{ marginTop: 8, fontSize: 12, padding: '8px 12px', borderRadius: 6, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)' }}>
+            {repararResult.corregidos > 0 ? (
+              <>
+                🩹 <b>{repararResult.corregidos}</b> documento(s) corregido(s):
+                <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                  {repararResult.corregidos_detalle.map(c => (
+                    <li key={c.documento_contable}>
+                      {c.documento_contable}: {c.cantidad_antes} → <b>{c.cantidad_despues}</b> unidades
+                      {' '}({fmt(c.valor_antes)} → <b>{fmt(c.valor_despues)}</b>) · estado: {c.estado_despues}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <span style={{ color: 'var(--t-text-muted)' }}>Sin correcciones — los documentos de este Excel ya coinciden con lo guardado.</span>
+            )}
+            {repararResult.sin_cambios > 0 && (
+              <div style={{ color: 'var(--t-text-muted)', marginTop: 4 }}>{repararResult.sin_cambios} documento(s) ya estaban correctos.</div>
+            )}
+            {repararResult.omitidos_por_reduccion > 0 && (
+              <div style={{ color: '#f59e0b', marginTop: 4 }}>
+                ⚠️ {repararResult.omitidos_por_reduccion} documento(s) omitidos porque este Excel trae MENOS cantidad de la que ya está guardada (no se tocaron, por seguridad):
+                <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                  {repararResult.omitidos_por_reduccion_detalle.map(o => (
+                    <li key={o.documento_contable}>{o.documento_contable}: guardado {o.cantidad_actual} vs. archivo {o.cantidad_en_archivo}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {repararResult.no_encontrados > 0 && (
+              <div style={{ color: 'var(--t-text-muted)', marginTop: 4 }}>{repararResult.no_encontrados} documento(s) del Excel no existen todavía en el sistema (usa "Importar todo" para esos).</div>
             )}
           </div>
         )}
@@ -5329,6 +5389,17 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
