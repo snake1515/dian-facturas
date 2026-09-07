@@ -765,7 +765,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
 
       {detalle && (
         <Modal onClose={() => setDetalle(null)} titulo={`Préstamo ${detalle.documento_contable}`}>
-          <DetallePrestamoModal prestamo={detalle} devoluciones={devoluciones.filter(d => d.prestamo_id === detalle.id)} cruces={crucesDe(detalle)} />
+          <DetallePrestamoModal prestamo={detalle} devoluciones={devoluciones.filter(d => d.prestamo_id === detalle.id)} cruces={crucesDe(detalle)} prestamos={prestamos} />
         </Modal>
       )}
 
@@ -851,7 +851,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
 
 // ─── DETALLE PRÉSTAMO ───────────────────────────────────────────────────────────
 
-function DetallePrestamoModal({ prestamo, devoluciones, cruces = [] }) {
+function DetallePrestamoModal({ prestamo, devoluciones, cruces = [], prestamos = [] }) {
   const [expandido, setExpandido] = React.useState(null);
   const thS = { textAlign: 'left', padding: '7px 10px', fontSize: 11, color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)', fontWeight: 500 };
   const tdS = { padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontSize: 13 };
@@ -923,9 +923,27 @@ function DetallePrestamoModal({ prestamo, devoluciones, cruces = [] }) {
             const esDevolucion = c.devolucion_id === prestamo.id;
             const docContraparte = esDevolucion ? c.prestamo_doc : c.devolucion_doc;
             // Productos realmente cruzados: la asignación exacta
-            // (items_cruzados) cuando existe; si es un cruce viejo sin eso,
-            // cae de vuelta a los ítems crudos de la devolución.
-            const productosCruzados = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+            // (items_cruzados) cuando existe. Si es un cruce viejo sin eso,
+            // se aproxima topando cada código del documento de devolución
+            // por lo que el PRÉSTAMO de este par puntual realmente necesita
+            // de ese producto — igual criterio que en el resto de la app —
+            // en vez de mostrar el documento de devolución completo sin
+            // filtrar (que antes hacía ver el mismo listado repetido en
+            // todos los cruces de esa devolución, sin importar con cuál
+            // préstamo se estuviera cruzando en cada caso).
+            let productosCruzados;
+            if (c.items_cruzados && c.items_cruzados.length > 0) {
+              productosCruzados = c.items_cruzados;
+            } else {
+              const prestamoDoc = esDevolucion ? prestamos.find(p => p.id === c.prestamo_id) : prestamo;
+              const cantidadesPrestamo = {};
+              (prestamoDoc?.items || []).forEach(i => {
+                cantidadesPrestamo[i.codigo] = (cantidadesPrestamo[i.codigo] || 0) + Number(i.cantidad);
+              });
+              productosCruzados = (c.devolucion_items || [])
+                .filter(i => cantidadesPrestamo[i.codigo] !== undefined)
+                .map(i => ({ ...i, cantidad: Math.min(Number(i.cantidad), cantidadesPrestamo[i.codigo]) }));
+            }
             const abierto = expandido === c.id;
             return (
               <div key={c.id} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden' }}>
@@ -2503,7 +2521,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
 
       {detalleCard && (
         <Modal onClose={() => setDetalleCard(null)} titulo={`Detalle ${detalleCard.documento_contable}`}>
-          <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]}
+          <DetallePrestamoModal prestamo={detalleCard} devoluciones={[]} prestamos={prestamos}
             cruces={cruces.filter(c => c.prestamo_id === detalleCard.id || c.devolucion_id === detalleCard.id)} />
         </Modal>
       )}
@@ -5311,6 +5329,11 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
 
 
 
