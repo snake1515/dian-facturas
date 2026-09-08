@@ -3864,7 +3864,7 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-        <div style={cardStyle} onClick={() => exportar(p => p.estado !== 'cerrado', 'prestamos_abiertos')}>
+        <div style={cardStyle} onClick={() => exportar(p => ['egreso', 'ingreso'].includes(p.tipo) && p.estado !== 'cerrado', 'prestamos_abiertos')}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
             <span style={{ fontSize: 18 }}>🕐</span>
             <span style={{ fontWeight: 500, fontSize: 13 }}>Préstamos abiertos</span>
@@ -5389,24 +5389,3 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
