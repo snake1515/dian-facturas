@@ -3837,6 +3837,9 @@ function TabReportes({ prestamos, devoluciones, cruces, clinicas }) {
   function exportar(filtro, nombre) {
     const datos = prestamos.filter(filtro).map(p => ({
       Documento:   p.documento_contable,
+      // Solo la parte numérica del documento (EPO100 → 100, IDP322 → 322),
+      // como número real (no texto) para poder ordenar/filtrar en Excel.
+      Consecutivo: Number((p.documento_contable || '').match(/\d+/)?.[0]) || '',
       Fecha:       p.fecha,
       Clínica:     p.clinica_nombre,
       Bodega:      `${p.bodega_nombre} (${p.bodega_codigo})`,
@@ -5389,3 +5392,4 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
