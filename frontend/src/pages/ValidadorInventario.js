@@ -1,685 +1,825 @@
-import React, { useState, useEffect, useCallback, useRef, useContext } from 'react';
-import * as XLSX from 'xlsx';
-import api from '../services/api';
-import AuthContext from '../context/AuthContext';
+// backend/src/routes/validadorInventarioRoutes.js
+// PostgreSQL — mismo patrón que las demás rutas del proyecto
 
-// ── Bodegas conocidas (mismo listado que usa Préstamos) ───────────────────────
-const BODEGAS = [
-  { codigo: 'ST', nombre: 'SERVICIO TRANSFUSIONAL' },
-  { codigo: '99', nombre: 'OXIGENO UCI' },
-  { codigo: 'AF', nombre: 'ACTIVOS FIJOS' },
-  { codigo: 'AG', nombre: 'ALMACÉN GENERAL' },
-  { codigo: 'AP', nombre: 'FARMACIA AA' },
-  { codigo: 'BN', nombre: 'NEFROLOGÍA' },
-  { codigo: 'BO', nombre: 'BODEGA OBRA SANTANDER' },
-  { codigo: 'LB', nombre: 'LABORATORIO' },
-  { codigo: 'BV', nombre: 'BODEGA OBRA BOLÍVAR' },
-  { codigo: 'CU', nombre: 'CUARENTENA' },
-  { codigo: 'EF', nombre: 'SERVICIO DIAGNÓSTICO' },
-  { codigo: 'FP', nombre: 'FARMACIA UCIS' },
-  { codigo: 'NP', nombre: 'CME (CENTRAL DE MEZCLAS DE EGRESO)' },
-  { codigo: 'RV', nombre: 'REMISIONES VARIAS' },
-  { codigo: 'SO', nombre: 'SERVICIO AMBULATORIO' },
-  { codigo: 'UP', nombre: 'MANTENIMIENTO' },
-];
+const express = require('express');
+const router = express.Router();
+const ExcelJS = require('exceljs');
+const { pool } = require('../models/db');
+const { authMiddleware, adminOnly, editorOrAdmin } = require('../middleware/auth');
 
-// ── Parseo de números en formato colombiano (punto = miles, coma = decimal) ──
-function parseNumCO(v) {
-  if (v === null || v === undefined || v === '') return 0;
-  const s = String(v).trim();
-  if (s.includes(',')) return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0;
-  const partes = s.split('.');
-  if (partes.length > 1 && partes[partes.length - 1].length === 3) {
-    return parseFloat(s.replace(/\./g, '')) || 0;
-  }
-  return parseFloat(s) || 0;
+// ── Trunca strings de forma segura para respetar los límites varchar de la BD ─
+function truncar(valor, max) {
+  const s = String(valor || '').trim();
+  return s.length > max ? s.substring(0, max) : s;
 }
 
-function fmtFechaCorta(f) {
-  if (!f) return '—';
-  return String(f).substring(0, 10);
-}
-
-// Limita a máximo 2 decimales y quita ceros sobrantes (Postgres NUMERIC(14,3)
-// devuelve valores como "46.000"; esto los deja en "46" o "11.5")
-function fmtNum2(v) {
-  if (v === null || v === undefined || v === '') return '';
-  const n = Number(v);
-  if (isNaN(n)) return '';
-  return String(Number(n.toFixed(2)));
-}
-
-// Fecha + hora en horario de Colombia (America/Bogota), sin importar en qué
-// zona horaria esté el navegador de quien esté viendo la pantalla
-function fmtFechaHoraCO(f) {
-  if (!f) return '—';
-  const d = new Date(f);
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleString('es-CO', {
-    timeZone: 'America/Bogota',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
-}
-
-// Detecta si el sistema actualizó la existencia DESPUÉS de que el ítem ya
-// había sido contado (por una carga de Excel posterior al conteo)
-function fueActualizadoDespuesDeContar(it) {
-  return !!(it.contado && it.actualizado_en && it.contado_en && new Date(it.actualizado_en) > new Date(it.contado_en));
-}
-
-// Clasificación de la diferencia: 'real' o 'actualizacion'. Prioriza SIEMPRE
-// la elección manual guardada en tipo_diferencia (persiste entre cargas de
-// Excel); si aún no se ha clasificado, usa la detección automática por fecha
-// solo como sugerencia inicial hasta que el usuario la confirme o la cambie.
-function getTipoDiferencia(it) {
-  const tieneDiferencia = it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema);
-  if (!tieneDiferencia) return null;
-  if (it.tipo_diferencia === 'real' || it.tipo_diferencia === 'actualizacion') return it.tipo_diferencia;
-  return fueActualizadoDespuesDeContar(it) ? 'actualizacion' : 'real';
-}
-
-export default function ValidadorInventario() {
-  const { puede, isEditor, isAdmin } = useContext(AuthContext);
-  const puedeEditarContado = isEditor || isAdmin; // solo editor/admin modifican cantidades ya guardadas
-  const [bodega, setBodega] = useState('BV');
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [importando, setImportando] = useState(false);
-  const [busqueda, setBusqueda] = useState('');
-  const [filtro, setFiltro] = useState('todos');
-  const [sortCol, setSortCol] = useState(null);   // 'costo_unitario' | 'costo_total' | null
-  const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
-  const [editValues, setEditValues] = useState({});
-  const [guardandoId, setGuardandoId] = useState(null);
-  const [editSobrante, setEditSobrante] = useState({});
-  const [guardandoSobranteId, setGuardandoSobranteId] = useState(null);
-  const [editNotas, setEditNotas] = useState({});
-  const [guardandoNotasId, setGuardandoNotasId] = useState(null);
-  const [error, setError] = useState('');
-  const fileInputRef = useRef(null);
-
-  const cargar = useCallback(async (bod) => {
-    setLoading(true);
-    try {
-      const res = await api.get('/validador-inventario', { params: { bodega: bod } });
-      setItems(res.data || []);
-    } catch (e) {
-      console.error('Error cargando validador de inventario:', e);
-      setError('No se pudo cargar el inventario guardado');
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { cargar(bodega); }, [bodega, cargar]);
-
-  // ── Cargar / actualizar Excel del sistema (SIIS) ────────────────────────────
-  function handleArchivo(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    setError('');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: 'array', raw: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
-
-        // Detectar bodega desde la cabecera del reporte (ej. "Bodega :  BV")
-        let bodDetectada = bodega;
-        const textoCabecera = String(data[0]?.[1] || '');
-        const match = textoCabecera.match(/Bodega\s*:\s*([A-Za-z0-9]{2})/i);
-        if (match) bodDetectada = match[1].toUpperCase();
-
-        // Encontrar fila de encabezados (CODIGO, NOMBRE, ...)
-        const idxHeader = data.findIndex(r => String(r[0]).trim().toUpperCase() === 'CODIGO');
-        if (idxHeader === -1) {
-          setError('No se encontró la columna CODIGO en el archivo. ¿Es el reporte correcto?');
-          return;
-        }
-
-        const filas = data.slice(idxHeader + 1);
-        const nuevosItems = [];
-        let filasCorregidas = 0;
-
-        // Detecta cuando la celda "nombre" trae pegado un fragmento de HTML roto
-        // del reporte SIIS (ej. "...12”\n🔩/td>2045-06-11"). Cuando esto pasa, la
-        // celda de fecha real "desaparece" de la fila y todas las columnas
-        // siguientes (lote, existencia, costos) se corren una posición.
-        const FRAGMENTO_ROTO_RE = /\/t[dr]>\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\s*$/i;
-
-        for (const r of filas) {
-          const codigo = String(r[0] || '').trim();
-          if (!codigo || codigo.toUpperCase().startsWith('TOTAL')) continue;
-
-          let nombreRaw = String(r[1] || '');
-          let fecha_vencimiento, lote, existencia_sistema, costo_unitario, costo_total;
-
-          const roto = nombreRaw.match(FRAGMENTO_ROTO_RE);
-          if (roto) {
-            // Se recupera la fecha real desde dentro del nombre y se corrige
-            // el corrimiento: lo que venía en r[2]/r[3]/r[4]/r[5] en realidad
-            // corresponde a lote/existencia/costo_unitario/costo_total.
-            fecha_vencimiento = roto[1];
-            nombreRaw = nombreRaw.slice(0, roto.index);
-            lote = String(r[2] || '').trim();
-            existencia_sistema = parseNumCO(r[3]);
-            costo_unitario = parseNumCO(r[4]);
-            costo_total = parseNumCO(r[5]);
-            filasCorregidas++;
-          } else {
-            fecha_vencimiento = String(r[2] || '').trim();
-            lote = String(r[3] || '').trim();
-            existencia_sistema = parseNumCO(r[4]);
-            costo_unitario = parseNumCO(r[5]);
-            costo_total = parseNumCO(r[6]);
-          }
-
-          // Limpieza general: quita tags HTML sueltos y saltos de línea que a
-          // veces vienen pegados en la celda de nombre, sin importar si hubo
-          // corrimiento de columnas o no
-          const nombre = nombreRaw
-            .replace(/<[^>]*>/g, ' ')
-            .replace(/\/t[dr]>/gi, ' ')
-            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, ' ')
-            .replace(/[\r\n]+/g, ' ')
-            .replace(/\s{2,}/g, ' ')
-            .trim();
-
-          nuevosItems.push({ codigo, nombre, fecha_vencimiento, lote, existencia_sistema, costo_unitario, costo_total });
-        }
-
-        if (nuevosItems.length === 0) {
-          setError('El archivo no tiene filas de inventario válidas');
-          return;
-        }
-
-        if (filasCorregidas > 0) {
-          console.warn(`Validador Inventario: se corrigieron ${filasCorregidas} fila(s) con corrimiento de columnas por HTML roto en el reporte SIIS.`);
-        }
-
-        setImportando(true);
-        const res = await api.post('/validador-inventario/importar', { bodega: bodDetectada, items: nuevosItems });
-        setBodega(bodDetectada);
-        setItems(res.data || []);
-        if (filasCorregidas > 0) {
-          setError(`⚠️ Se corrigieron automáticamente ${filasCorregidas} fila(s) del Excel que tenían la fecha de vencimiento pegada al nombre (fragmento HTML roto del reporte SIIS). Revisa esos ítems para confirmar que quedaron bien.`);
-        }
-      } catch (err) {
-        console.error(err);
-        setError('Error procesando el archivo: ' + err.message);
-      } finally {
-        setImportando(false);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-
-  // ── Guardar conteo físico individual ────────────────────────────────────────
-  async function guardarConteo(item) {
-    const valor = editValues[item.id];
-    if (valor === undefined || valor === '') return;
-    setGuardandoId(item.id);
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}`, { cantidad_fisica: parseNumCO(valor) });
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-      setEditValues(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando el conteo: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoId(null);
-  }
-
-  // ── Guardar sobrante en libro (registro MANUAL, no calculado) ──────────────
-  // Sobrantes antiguos que vienen de antes de que existiera el control de
-  // inventario físico — no se calculan automáticamente porque las diferencias
-  // reales suelen deberse a errores en salidas de consumo, no a un sobrante real.
-  async function guardarSobrante(item) {
-    const valor = editSobrante[item.id];
-    if (valor === undefined || valor === '') return;
-    setGuardandoSobranteId(item.id);
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}/sobrante`, { sobrante_libro: parseNumCO(valor) });
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-      setEditSobrante(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando el sobrante en libro: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoSobranteId(null);
-  }
-
-  // ── Guardar notas (texto libre MANUAL de observaciones por ítem) ───────────
-  async function guardarNotas(item) {
-    const valor = editNotas[item.id];
-    if (valor === undefined) return;
-    setGuardandoNotasId(item.id);
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}/notas`, { notas: valor });
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-      setEditNotas(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando la nota: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoNotasId(null);
-  }
-
-  // ── Clasificar manualmente la diferencia (real vs. por actualización) ──────
-  // Persistente: se guarda en tipo_diferencia y el /importar nunca la toca,
-  // así que sobrevive a nuevas cargas de Excel hasta que se cambie a mano.
-  async function clasificarDiferencia(item, tipo) {
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}/tipo-diferencia`, { tipo_diferencia: tipo });
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-    } catch (e) {
-      alert('Error guardando la clasificación: ' + (e.response?.data?.error || e.message));
-    }
-  }
-
-  async function deshacerConteo(item) {
-    if (!window.confirm(`¿Deshacer el conteo de "${item.nombre}"?`)) return;
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}/reset`);
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-    } catch (e) {
-      alert('Error: ' + (e.response?.data?.error || e.message));
-    }
-  }
-
-  // ── Eliminar manualmente un item sin existencias ────────────────────────────
-  // Pide confirmar qué pasó con el producto antes de dejarlo borrar, así no se
-  // elimina por error algo que en realidad solo cambió de lote/fecha
-  async function eliminarItem(item) {
-    const motivo = window.prompt(
-      `"${item.nombre}" (código ${item.codigo}) no aparece en las últimas cargas del Excel.\n\n` +
-      `¿Qué sucedió con este producto? (ej. agotado, dado de baja, reemplazado por otro lote)\n` +
-      `Escribe el motivo para confirmar la eliminación, o cancela si no estás seguro:`
+// ── GET /api/validador-inventario?bodega=BV ──────────────────────────────────
+// Lista los items guardados de una bodega
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || 'BV').toUpperCase();
+    const { rows } = await pool.query(
+      `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       WHERE vi.bodega = $1
+       ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`,
+      [bodega]
     );
-    if (motivo === null || motivo.trim() === '') return; // canceló o no escribió nada
-    if (!window.confirm(`¿Confirmas eliminar definitivamente "${item.nombre}"? Esta acción no se puede deshacer.`)) return;
-    try {
-      await api.delete(`/validador-inventario/${item.id}`);
-      setItems(prev => prev.filter(it => it.id !== item.id));
-    } catch (e) {
-      alert('Error eliminando el item: ' + (e.response?.data?.error || e.message));
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar validador de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/importar ───────────────────────────────────
+// Sube o actualiza el Excel del sistema (SIIS). UPSERT por (bodega, codigo, lote,
+// fecha_vencimiento): solo actualiza nombre y existencia_sistema — NUNCA toca
+// cantidad_fisica/contado, así no se pierde el avance de lo ya contado.
+router.post('/importar', authMiddleware, async (req, res) => {
+  const { bodega, items } = req.body;
+  if (!bodega || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'bodega e items son requeridos' });
+  }
+  const bod = String(bodega).toUpperCase();
+
+  // Ítems válidos (con código) tal como quedarán guardados, para luego saber
+  // cuáles NO vinieron en esta carga y marcarlos como sin_existencias
+  const clavesCargadas = items
+    .filter(it => it.codigo)
+    .map(it => `${truncar(it.codigo, 50)}|${truncar(it.lote, 100)}|${truncar(it.fecha_vencimiento, 20)}`);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const it of items) {
+      if (!it.codigo) continue;
+      await client.query(
+        `INSERT INTO validador_inventario (bodega, codigo, nombre, lote, fecha_vencimiento, existencia_sistema, costo_unitario, costo_total, sin_existencias, sin_existencias_desde, ultima_carga)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, NULL, NOW())
+         ON CONFLICT (bodega, codigo, lote, fecha_vencimiento)
+         DO UPDATE SET
+           nombre                = EXCLUDED.nombre,
+           existencia_sistema    = EXCLUDED.existencia_sistema,
+           costo_unitario        = EXCLUDED.costo_unitario,
+           costo_total           = EXCLUDED.costo_total,
+           sin_existencias       = false,
+           sin_existencias_desde = NULL,
+           ultima_carga          = NOW(),
+           actualizado_en        = NOW()`,
+        [bod, truncar(it.codigo, 50), truncar(it.nombre, 300), truncar(it.lote, 100), truncar(it.fecha_vencimiento, 20), it.existencia_sistema || 0, it.costo_unitario || 0, it.costo_total || 0]
+      );
     }
-  }
 
-  // ── Ordenamiento por columna ─────────────────────────────────────────────────
-  function toggleSort(col) {
-    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortCol(col); setSortDir('desc'); }
-  }
-
-  // ── Formato moneda COP ────────────────────────────────────────────────────────
-  const fmtPesos = (n) => Number(n || 0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
-
-  // ── Filtros y ordenamiento ───────────────────────────────────────────────────
-  const itemsFiltrados = items.filter(it => {
-    if (busqueda) {
-      const q = busqueda.toUpperCase();
-      if (!it.codigo.toUpperCase().includes(q) && !it.nombre.toUpperCase().includes(q)) return false;
+    // Marca como sin_existencias los ítems de esta bodega que NO vinieron en
+    // el Excel recién cargado (no se borran, conservan su conteo/historial).
+    // sin_existencias_desde solo se fija si aún no tenía fecha, así conserva
+    // el momento exacto en que desapareció por primera vez.
+    if (clavesCargadas.length > 0) {
+      await client.query(
+        `UPDATE validador_inventario
+         SET sin_existencias = true,
+             sin_existencias_desde = COALESCE(sin_existencias_desde, NOW())
+         WHERE bodega = $1
+           AND (codigo || '|' || lote || '|' || fecha_vencimiento) <> ALL($2::text[])`,
+        [bod, clavesCargadas]
+      );
     }
-    if (filtro === 'contados' && !it.contado) return false;
-    if (filtro === 'pendientes' && it.contado) return false;
-    if (filtro === 'diferencias_reales' && getTipoDiferencia(it) !== 'real') return false;
-    if (filtro === 'diferencias_actualizacion' && getTipoDiferencia(it) !== 'actualizacion') return false;
-    if (filtro === 'sin_existencias' && !it.sin_existencias) return false;
-    return true;
-  });
 
-  if (sortCol) {
-    itemsFiltrados.sort((a, b) => {
-      const va = Number(a[sortCol] || 0);
-      const vb = Number(b[sortCol] || 0);
-      return sortDir === 'asc' ? va - vb : vb - va;
-    });
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al importar validador de inventario:', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
   }
 
-  const totales = {
-    total: items.length,
-    contados: items.filter(it => it.contado).length,
-    pendientes: items.filter(it => !it.contado).length,
-    diferenciasReales: items.filter(it => getTipoDiferencia(it) === 'real').length,
-    diferenciasPorActualizacion: items.filter(it => getTipoDiferencia(it) === 'actualizacion').length,
-    sinExistencias: items.filter(it => it.sin_existencias).length,
-  };
-  const avance = totales.total > 0 ? Math.round((totales.contados / totales.total) * 100) : 0;
+  try {
+    const { rows } = await pool.query(
+      `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       WHERE vi.bodega = $1
+       ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`,
+      [bod]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al recargar validador de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  // Fecha de la última vez que se subió un Excel para esta bodega (la más reciente entre todos los ítems)
-  const ultimaCarga = items.reduce((max, it) => {
-    if (!it.ultima_carga) return max;
-    const f = new Date(it.ultima_carga);
-    return (!max || f > max) ? f : max;
-  }, null);
-  const ultimaCargaTexto = ultimaCarga
-    ? ultimaCarga.toLocaleString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-    : '—';
+// ── PATCH /api/validador-inventario/:id ───────────────────────────────────────
+// Guarda el conteo físico individual de un item (botón "Guardar" por fila)
+router.patch('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { cantidad_fisica } = req.body;
+    if (cantidad_fisica === undefined || cantidad_fisica === null || cantidad_fisica === '') {
+      return res.status(400).json({ error: 'cantidad_fisica requerida' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET cantidad_fisica = $1, contado = true, contado_por = $2, contado_en = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [cantidad_fisica, req.user.id, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  const inputStyle = {
-    background: 'var(--t-bg-input)', border: '1px solid var(--t-border)', borderRadius: 6,
-    color: 'var(--t-text-primary)', padding: '6px 10px', fontSize: 13,
-  };
+// ── PATCH /api/validador-inventario/:id/reset ─────────────────────────────────
+// Deshace el conteo de un item (por si se marcó por error)
+router.patch('/:id/reset', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET cantidad_fisica = NULL, contado = false, contado_por = NULL, contado_en = NULL
+       WHERE id = $1
+       RETURNING *`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al reiniciar conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  const card = (label, value, color) => (
-    <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px', flex: 1, minWidth: 120 }}>
-      <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
-      <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>{label}</div>
-    </div>
-  );
+// ── PATCH /api/validador-inventario/:id/sobrante ──────────────────────────────
+// Registro MANUAL (no calculado) del sobrante en libro: sobrantes antiguos
+// de antes de que existiera el control de inventario físico. Independiente
+// del conteo físico — se puede editar en cualquier momento.
+router.patch('/:id/sobrante', authMiddleware, async (req, res) => {
+  try {
+    const { sobrante_libro } = req.body;
+    if (sobrante_libro === undefined || sobrante_libro === null || sobrante_libro === '') {
+      return res.status(400).json({ error: 'sobrante_libro requerido' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET sobrante_libro = $1
+       WHERE id = $2
+       RETURNING *`,
+      [sobrante_libro, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar sobrante en libro:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  return (
-    <div style={{ maxWidth: '100%', width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-      <div style={{ marginBottom: 18 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--t-text-primary)' }}>Validador de Inventarios</h1>
-        <p style={{ fontSize: 13, color: 'var(--t-text-muted)', marginTop: 2 }}>
-          Conteo físico de bodega contra el sistema — sube el Excel de SIIS cuando quieras actualizar existencias sin perder lo ya contado
-        </p>
-        <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4 }}>
-          Última carga de Excel para <strong>{bodega}</strong>: {ultimaCargaTexto}
-        </p>
-      </div>
+// ── PATCH /api/validador-inventario/:id/tipo-diferencia ───────────────────────
+// Clasificación MANUAL de la diferencia: 'real' o 'actualizacion'. Persistente
+// a propósito: el UPSERT de /importar nunca toca esta columna, así que la
+// elección sobrevive a nuevas cargas de Excel hasta que se cambie a mano.
+router.patch('/:id/tipo-diferencia', authMiddleware, async (req, res) => {
+  try {
+    const { tipo_diferencia } = req.body;
+    if (![null, 'real', 'actualizacion'].includes(tipo_diferencia)) {
+      return res.status(400).json({ error: "tipo_diferencia debe ser 'real', 'actualizacion' o null" });
+    }
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET tipo_diferencia = $1
+       WHERE id = $2
+       RETURNING *`,
+      [tipo_diferencia, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar tipo de diferencia:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-      {/* Toolbar */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={bodega} onChange={(e) => setBodega(e.target.value)} style={inputStyle}>
-          {BODEGAS.map(b => <option key={b.codigo} value={b.codigo}>{b.codigo} — {b.nombre}</option>)}
-        </select>
+// ── PATCH /api/validador-inventario/:id/notas ──────────────────────────────────
+// Texto libre MANUAL de observaciones por ítem. Persistente: el UPSERT de
+// /importar nunca la toca, así que sobrevive a nuevas cargas de Excel.
+router.patch('/:id/notas', authMiddleware, async (req, res) => {
+  try {
+    const { notas } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET notas = $1
+       WHERE id = $2
+       RETURNING *`,
+      [notas ?? null, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar notas:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-        <input ref={fileInputRef} type="file" accept=".xls,.xlsx" onChange={handleArchivo} style={{ display: 'none' }} id="input-excel-validador" />
-        <label htmlFor="input-excel-validador" style={{
-          background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6,
-          padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-        }}>
-          📤 {importando ? 'Procesando…' : 'Cargar / Actualizar Excel'}
-        </label>
+// ── DELETE /api/validador-inventario/:id ──────────────────────────────────────
+// Elimina manualmente un item, solo permitido si está marcado sin_existencias
+// (evita borrar por error ítems que sí siguen activos en el sistema)
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `DELETE FROM validador_inventario
+       WHERE id = $1 AND sin_existencias = true
+       RETURNING id`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(400).json({ error: 'Solo se pueden eliminar ítems marcados como sin existencias' });
+    }
+    res.json({ ok: true, id: rows[0].id });
+  } catch (err) {
+    console.error('Error al eliminar item del validador de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-        <input
-          type="text" placeholder="Buscar código o nombre…" value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          style={{ ...inputStyle, flex: 1, minWidth: 200 }}
-        />
+// ── POST /api/validador-inventario/presentaciones/importar ────────────────────
+// Carga masiva desde un Excel APARTE (no el de SIIS): { items: [{codigo, presentacion}] }.
+// Solo admin. Es un UPSERT por código, independiente de bodega/lote — no toca
+// nada de validador_inventario, así que se puede recargar en cualquier momento
+// sin afectar el conteo físico en curso.
+router.post('/presentaciones/importar', authMiddleware, adminOnly, async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items es requerido' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let actualizados = 0;
+    for (const it of items) {
+      const codigo = truncar(it.codigo, 50);
+      if (!codigo) continue;
+      await client.query(
+        `INSERT INTO presentaciones_inventario (codigo, presentacion, actualizado_por, actualizado_en)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (codigo) DO UPDATE SET
+           presentacion    = EXCLUDED.presentacion,
+           actualizado_por = EXCLUDED.actualizado_por,
+           actualizado_en  = NOW()`,
+        [codigo, truncar(it.presentacion, 200), req.user.id]
+      );
+      actualizados++;
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, actualizados });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al importar presentaciones:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
 
-        <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={inputStyle}>
-          <option value="todos">Todos</option>
-          <option value="contados">✅ Contados</option>
-          <option value="pendientes">⏳ Pendientes</option>
-          <option value="diferencias_reales">⚠️ Diferencias reales</option>
-          <option value="diferencias_actualizacion">🔄 Por actualización</option>
-          <option value="sin_existencias">🚫 Sin existencias</option>
-        </select>
-      </div>
+// ── PATCH /api/validador-inventario/presentaciones/:codigo ────────────────────
+// Edición manual de la presentación de un código puntual. Solo admin.
+router.patch('/presentaciones/:codigo', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { presentacion } = req.body;
+    if (presentacion === undefined) {
+      return res.status(400).json({ error: 'presentacion requerida' });
+    }
+    const codigo = truncar(req.params.codigo, 50);
+    const { rows } = await pool.query(
+      `INSERT INTO presentaciones_inventario (codigo, presentacion, actualizado_por, actualizado_en)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (codigo) DO UPDATE SET
+         presentacion    = EXCLUDED.presentacion,
+         actualizado_por = EXCLUDED.actualizado_por,
+         actualizado_en  = NOW()
+       RETURNING *`,
+      [codigo, truncar(presentacion, 200), req.user.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar presentación:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-      {error && (
-        <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
-          {error}
-        </div>
-      )}
+// ── POST /api/validador-inventario/tipos-inventario/importar ──────────────────
+// Carga masiva de la tabla de clasificación (CONCAT -> cuenta contable) desde
+// un Excel APARTE: { items: [{concat, contable, cuenta}] }. Editor o admin.
+router.post('/tipos-inventario/importar', authMiddleware, editorOrAdmin, async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items es requerido' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let actualizados = 0;
+    for (const it of items) {
+      const concat = truncar(it.concat, 6).toUpperCase();
+      if (!concat) continue;
+      await client.query(
+        `INSERT INTO tipos_inventario (concat, contable, cuenta)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (concat) DO UPDATE SET
+           contable = EXCLUDED.contable,
+           cuenta   = EXCLUDED.cuenta`,
+        [concat, truncar(it.contable, 30), truncar(it.cuenta, 100)]
+      );
+      actualizados++;
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, actualizados });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al importar tipos de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
 
-      {/* Resumen */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
-        {card('Total ítems', totales.total, 'var(--t-text-primary)')}
-        {card('Contados', totales.contados, '#4ade80')}
-        {card('Pendientes', totales.pendientes, '#fbbf24')}
-        {card('⚠️ Diferencias reales', totales.diferenciasReales, '#f87171')}
-        {card('🔄 Por actualización', totales.diferenciasPorActualizacion, '#38bdf8')}
-        {card('Sin existencias', totales.sinExistencias, '#94a3b8')}
-        {card('% Avance', `${avance}%`, 'var(--t-accent)')}
-      </div>
+// ── PATCH /api/validador-inventario/tipos-inventario/:concat ──────────────────
+// Edición manual puntual de una clasificación (crea si no existía). Editor o admin.
+router.patch('/tipos-inventario/:concat', authMiddleware, editorOrAdmin, async (req, res) => {
+  try {
+    const { contable, cuenta } = req.body;
+    if (!cuenta) return res.status(400).json({ error: 'cuenta requerida' });
+    const concat = truncar(req.params.concat, 6).toUpperCase();
+    const { rows } = await pool.query(
+      `INSERT INTO tipos_inventario (concat, contable, cuenta)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (concat) DO UPDATE SET
+         contable = EXCLUDED.contable,
+         cuenta   = EXCLUDED.cuenta
+       RETURNING *`,
+      [concat, truncar(contable, 30), truncar(cuenta, 100)]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar tipo de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 60, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
-      ) : items.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 60, color: 'var(--t-text-muted)', fontSize: 13 }}>
-          No hay inventario cargado para la bodega <strong>{bodega}</strong>. Usa "Cargar / Actualizar Excel" para empezar.
-        </div>
-      ) : (
-        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto', width: '100%', maxWidth: '100%' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {[
-                  { key: null,            label: 'Código' },
-                  { key: null,            label: 'Nombre' },
-                  { key: null,            label: 'Lote' },
-                  { key: null,            label: 'Fecha Venc.' },
-                  { key: null,            label: 'Existencia' },
-                  { key: 'costo_unitario', label: 'Costo Unit.' },
-                  { key: 'costo_total',    label: 'Costo Total' },
-                  { key: null,            label: 'Cant. Física' },
-                  { key: null,            label: 'Diferencia' },
-                  { key: null,            label: 'Notas' },
-                  { key: null,            label: 'Sobrante en libro' },
-                  { key: null,            label: 'Estado' },
-                  { key: null,            label: '' },
-                ].map(({ key, label }) => (
-                  <th
-                    key={label}
-                    onClick={key ? () => toggleSort(key) : undefined}
-                    style={{
-                      padding: '8px 8px', textAlign: 'left', color: key ? 'var(--t-accent)' : 'var(--t-text-muted)',
-                      fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)',
-                      cursor: key ? 'pointer' : 'default', userSelect: 'none',
-                    }}
-                  >
-                    {label}
-                    {key && sortCol === key && (
-                      <span style={{ marginLeft: 4 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
-                    )}
-                    {key && sortCol !== key && <span style={{ marginLeft: 4, opacity: 0.3 }}>⇅</span>}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {itemsFiltrados.map(item => {
-                const enEdicion = editValues[item.id] !== undefined;
-                const yaContado = item.contado;
-                // Si ya fue contado, solo editor/admin pueden modificar
-                const puedeEditar = !yaContado || puedeEditarContado;
-                const valorActual = enEdicion ? editValues[item.id] : fmtNum2(item.cantidad_fisica);
-                const diferencia = yaContado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
-                // Clasificación de la diferencia: prioriza SIEMPRE la elección
-                // manual guardada (persiste entre cargas de Excel); si aún no
-                // se ha clasificado, usa la detección automática por fecha
-                // solo como sugerencia inicial.
-                const tipoDif = getTipoDiferencia(item);
-                return (
-                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', opacity: item.sin_existencias ? 0.6 : 1 }}>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-primary)', maxWidth: 240 }}>{item.nombre}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtFechaCorta(item.fecha_vencimiento)}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{Number(item.existencia_sistema).toLocaleString('es-CO')}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_total)}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {puedeEditar ? (
-                        <input
-                          type="number" value={valorActual}
-                          onChange={(e) => setEditValues(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          style={{
-                            ...inputStyle,
-                            width: 90,
-                            fontFamily: 'monospace',
-                            ...(yaContado ? { background: '#132018', borderColor: '#2f6d3f', color: '#4ade80' } : {}),
-                          }}
-                        />
-                      ) : (
-                        <span title="Solo editor/admin pueden modificar cantidades ya contadas"
-                          style={{ color: yaContado ? '#4ade80' : 'var(--t-text-muted)', fontFamily: 'monospace' }}>
-                          {item.cantidad_fisica !== null && item.cantidad_fisica !== undefined ? fmtNum2(item.cantidad_fisica) : '—'} 🔒
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {diferencia === null ? (
-                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
-                      ) : diferencia === 0 ? (
-                        <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
-                      ) : (
-                        <div>
-                          <div style={{ marginBottom: 3, color: tipoDif === 'actualizacion' ? '#38bdf8' : '#f87171', fontWeight: 600 }}>
-                            {tipoDif === 'actualizacion' ? '🔄' : '⚠️'} {diferencia > 0 ? `+${fmtNum2(diferencia)}` : fmtNum2(diferencia)}
-                          </div>
-                          <div style={{ display: 'flex', gap: 3 }}>
-                            <button
-                              onClick={() => clasificarDiferencia(item, 'real')}
-                              title="Marcar como diferencia real (error de conteo/consumo)"
-                              style={{
-                                background: tipoDif === 'real' ? '#3a1d1d' : 'var(--t-bg-sidebar)',
-                                border: tipoDif === 'real' ? '1px solid #f87171' : '1px solid var(--t-border)',
-                                color: tipoDif === 'real' ? '#f87171' : 'var(--t-text-muted)',
-                                borderRadius: 4, padding: '2px 5px', fontSize: 10, cursor: 'pointer', fontWeight: tipoDif === 'real' ? 700 : 400,
-                              }}
-                            >
-                              ⚠️ Real
-                            </button>
-                            <button
-                              onClick={() => clasificarDiferencia(item, 'actualizacion')}
-                              title="Marcar como diferencia por actualización posterior del sistema"
-                              style={{
-                                background: tipoDif === 'actualizacion' ? '#132433' : 'var(--t-bg-sidebar)',
-                                border: tipoDif === 'actualizacion' ? '1px solid #38bdf8' : '1px solid var(--t-border)',
-                                color: tipoDif === 'actualizacion' ? '#38bdf8' : 'var(--t-text-muted)',
-                                borderRadius: 4, padding: '2px 5px', fontSize: 10, cursor: 'pointer', fontWeight: tipoDif === 'actualizacion' ? 700 : 400,
-                              }}
-                            >
-                              🔄 Actual.
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <input
-                          type="text"
-                          value={editNotas[item.id] !== undefined ? editNotas[item.id] : (item.notas || '')}
-                          onChange={(e) => setEditNotas(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          title="Observaciones (texto libre, no se borra al subir un Excel nuevo)"
-                          style={{ ...inputStyle, width: 130, fontSize: 12 }}
-                        />
-                        <button
-                          onClick={() => guardarNotas(item)}
-                          disabled={editNotas[item.id] === undefined || guardandoNotasId === item.id}
-                          title="Guardar nota"
-                          style={{
-                            background: editNotas[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: editNotas[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                            cursor: editNotas[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                          }}
-                        >
-                          {guardandoNotasId === item.id ? '…' : '💾'}
-                        </button>
-                      </div>
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <input
-                          type="number"
-                          value={editSobrante[item.id] !== undefined ? editSobrante[item.id] : fmtNum2(item.sobrante_libro)}
-                          onChange={(e) => setEditSobrante(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          title="Registro manual: sobrante antiguo de antes del control de inventario (no se calcula solo)"
-                          style={{ ...inputStyle, width: 80, fontFamily: 'monospace' }}
-                        />
-                        <button
-                          onClick={() => guardarSobrante(item)}
-                          disabled={editSobrante[item.id] === undefined || guardandoSobranteId === item.id}
-                          title="Guardar sobrante en libro"
-                          style={{
-                            background: editSobrante[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: editSobrante[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                            cursor: editSobrante[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                          }}
-                        >
-                          {guardandoSobranteId === item.id ? '…' : '💾'}
-                        </button>
-                      </div>
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {item.sin_existencias && (
-                        <div style={{ marginBottom: 2 }}>
-                          <span style={{ background: '#2a2a35', color: '#94a3b8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-block' }}>
-                            🚫 Sin existencias
-                          </span>
-                          {item.sin_existencias_desde && (
-                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2 }}>
-                              desde {fmtFechaCorta(item.sin_existencias_desde)}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {yaContado ? (
-                        <div>
-                          <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
-                          {item.contado_en && (
-                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2, whiteSpace: 'nowrap' }}>
-                              {fmtFechaHoraCO(item.contado_en)}
-                            </div>
-                          )}
-                          <div style={{ fontSize: 10, color: 'var(--t-text-secondary)', marginTop: 1 }}>
-                            Cant: <strong>{fmtNum2(item.cantidad_fisica)}</strong>
-                          </div>
-                        </div>
-                      ) : (
-                        <span style={{ background: 'var(--t-bg-sidebar)', color: '#fbbf24', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>⏳ Pendiente</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      {puedeEditar && (
-                        <button
-                          onClick={() => guardarConteo(item)}
-                          disabled={!enEdicion || guardandoId === item.id}
-                          title="Guardar conteo"
-                          style={{
-                            background: enEdicion ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: enEdicion ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12, fontWeight: 500,
-                            cursor: enEdicion ? 'pointer' : 'not-allowed', marginRight: 4, minWidth: 30,
-                          }}
-                        >
-                          {guardandoId === item.id ? '…' : '💾'}
-                        </button>
-                      )}
-                      {yaContado && puedeEditarContado && (
-                        <button
-                          onClick={() => deshacerConteo(item)}
-                          title="Deshacer conteo"
-                          style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer', marginRight: 4 }}
-                        >
-                          ↺
-                        </button>
-                      )}
-                      {item.sin_existencias && puedeEditarContado && (
-                        <button
-                          onClick={() => eliminarItem(item)}
-                          title="Eliminar definitivamente (solo disponible para ítems sin existencias)"
-                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}
-                        >
-                          🗑️
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
+// ════════════════════════════════════════════════════════════════════════════
+// LISTAS DE CONTEO — sesiones de conteo físico sobre un subconjunto de una
+// bodega (general, por cuenta contable, por grupo de inventario o por
+// presentación). Los ítems se "congelan" (snapshot) al crear la lista.
+// ════════════════════════════════════════════════════════════════════════════
+
+const TIPOS_LISTA = ['general', 'cuenta_contable', 'grupo_inventario', 'presentacion'];
+
+const LABEL_TIPO = {
+  general: 'Conteo general',
+  cuenta_contable: 'Conteo por cuenta contable',
+  grupo_inventario: 'Conteo por grupo de inventario',
+  presentacion: 'Conteo por presentación',
+};
+
+// Valor que cuenta como "definitivo" para el reporte de diferencias: Conteo 2
+// si existe (doble conteo = verificación), si no Conteo 1, si no hay ninguno
+// el ítem sigue pendiente.
+function conteoDefinitivo(item) {
+  if (item.conteo_2 !== null && item.conteo_2 !== undefined) return Number(item.conteo_2);
+  if (item.conteo_1 !== null && item.conteo_1 !== undefined) return Number(item.conteo_1);
+  return null;
 }
+
+// ── GET /api/validador-inventario/listas-conteo/opciones?bodega=BV&tipo=... ──
+// Valores disponibles para elegir criterio al crear una lista (con conteo de
+// ítems que caerían en cada uno), para poblar el selector en el frontend.
+router.get('/listas-conteo/opciones', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    const tipo = req.query.tipo;
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+
+    let sql;
+    if (tipo === 'cuenta_contable') {
+      sql = `SELECT COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS valor, COUNT(*)::int AS items
+             FROM validador_inventario vi
+             LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+             WHERE vi.bodega = $1
+             GROUP BY 1 ORDER BY 1`;
+    } else if (tipo === 'grupo_inventario') {
+      sql = `SELECT grupo_inventario(vi.codigo) AS valor, COUNT(*)::int AS items
+             FROM validador_inventario vi
+             WHERE vi.bodega = $1
+             GROUP BY 1 ORDER BY 1`;
+    } else if (tipo === 'presentacion') {
+      sql = `SELECT COALESCE(pi.presentacion, 'SIN PRESENTACIÓN') AS valor, COUNT(*)::int AS items
+             FROM validador_inventario vi
+             LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+             WHERE vi.bodega = $1
+             GROUP BY 1 ORDER BY 1`;
+    } else {
+      return res.status(400).json({ error: "tipo debe ser 'cuenta_contable', 'grupo_inventario' o 'presentacion'" });
+    }
+    const { rows } = await pool.query(sql, [bodega]);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar opciones de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/listas-conteo ──────────────────────────────
+// Crea una lista de conteo y toma la "foto" (snapshot) de los ítems que
+// cumplen el criterio elegido, tal como están en ese momento.
+router.post('/listas-conteo', authMiddleware, async (req, res) => {
+  const { bodega, tipo, criterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre } = req.body;
+  if (!bodega || !TIPOS_LISTA.includes(tipo)) {
+    return res.status(400).json({ error: 'bodega y tipo válido son requeridos' });
+  }
+  if (tipo !== 'general' && !criterio) {
+    return res.status(400).json({ error: 'criterio requerido para este tipo de conteo' });
+  }
+  const bod = String(bodega).toUpperCase();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: listaRows } = await client.query(
+      `INSERT INTO listas_conteo (bodega, tipo, criterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre, creado_por)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [bod, tipo, tipo === 'general' ? null : truncar(criterio, 150), !!subclasificar_presentacion, truncar(conteo1_nombre, 100), truncar(conteo2_nombre, 100), req.user.id]
+    );
+    const lista = listaRows[0];
+
+    let filtroSql = '';
+    const params = [bod];
+    if (tipo === 'cuenta_contable') {
+      filtroSql = `AND COALESCE(ti.cuenta, 'SIN CLASIFICAR') = $2`;
+      params.push(criterio);
+    } else if (tipo === 'grupo_inventario') {
+      filtroSql = `AND grupo_inventario(vi.codigo) = $2`;
+      params.push(criterio);
+    } else if (tipo === 'presentacion') {
+      filtroSql = `AND COALESCE(pi.presentacion, 'SIN PRESENTACIÓN') = $2`;
+      params.push(criterio);
+    }
+
+    const { rows: items } = await client.query(
+      `SELECT vi.codigo, vi.nombre, vi.lote, vi.fecha_vencimiento, vi.existencia_sistema, vi.costo_unitario,
+              COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       WHERE vi.bodega = $1 AND vi.sin_existencias = false ${filtroSql}
+       ORDER BY pi.presentacion NULLS LAST, vi.nombre ASC`,
+      params
+    );
+
+    if (items.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No hay ítems que cumplan ese criterio en esta bodega' });
+    }
+
+    for (const it of items) {
+      await client.query(
+        `INSERT INTO listas_conteo_items (lista_id, codigo, nombre, lote, fecha_vencimiento, presentacion, cuenta, concat, existencia_siis, costo_unitario)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [lista.id, it.codigo, it.nombre, it.lote, it.fecha_vencimiento, it.presentacion, it.cuenta, it.concat, it.existencia_sistema, it.costo_unitario]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ ...lista, total_items: items.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al crear lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo?bodega=BV ────────────────────
+// Resumen de todas las listas (abiertas y cerradas) de una bodega.
+router.get('/listas-conteo', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    const params = [];
+    let where = '';
+    if (bodega) { where = 'WHERE lc.bodega = $1'; params.push(bodega); }
+    const { rows } = await pool.query(
+      `SELECT lc.*,
+              COUNT(li.id)::int AS total_items,
+              COUNT(li.conteo_1)::int AS con_conteo_1,
+              COUNT(li.conteo_2)::int AS con_conteo_2
+       FROM listas_conteo lc
+       LEFT JOIN listas_conteo_items li ON li.lista_id = lc.id
+       ${where}
+       GROUP BY lc.id
+       ORDER BY lc.creado_en DESC`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar listas de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id ───────────────────────────
+// Detalle de una lista con todos sus ítems (ordenados por presentación si
+// aplica subclasificación).
+router.get('/listas-conteo/:id', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const { rows: items } = await pool.query(
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`,
+      [req.params.id]
+    );
+    res.json({ ...listaRows[0], items });
+  } catch (err) {
+    console.error('Error al obtener lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── PATCH /api/validador-inventario/listas-conteo/:id/items/:itemId ──────────
+// Guarda Conteo 1 o Conteo 2 de un ítem, directo desde la app. Cualquiera con
+// acceso puede diligenciar un campo vacío; una vez lleno, solo editor/admin
+// puede modificarlo (mismo criterio que el conteo general). Bloqueado si la
+// lista ya está cerrada.
+router.patch('/listas-conteo/:id/items/:itemId', authMiddleware, async (req, res) => {
+  try {
+    const { campo, valor } = req.body;
+    if (!['conteo_1', 'conteo_2'].includes(campo)) {
+      return res.status(400).json({ error: "campo debe ser 'conteo_1' o 'conteo_2'" });
+    }
+    if (valor === undefined || valor === null || valor === '') {
+      return res.status(400).json({ error: 'valor requerido' });
+    }
+    const { rows: listaRows } = await pool.query(`SELECT estado FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    if (listaRows[0].estado === 'cerrada') {
+      return res.status(400).json({ error: 'La lista está cerrada, no se puede modificar' });
+    }
+
+    const { rows: itemRows } = await pool.query(
+      `SELECT * FROM listas_conteo_items WHERE id = $1 AND lista_id = $2`,
+      [req.params.itemId, req.params.id]
+    );
+    if (!itemRows.length) return res.status(404).json({ error: 'Ítem no encontrado' });
+    const item = itemRows[0];
+
+    const yaTeniaValor = item[campo] !== null && item[campo] !== undefined;
+    if (yaTeniaValor && !['admin', 'editor'].includes(req.user.rol)) {
+      return res.status(403).json({ error: 'Este ítem ya fue contado; solo editor/admin puede modificarlo' });
+    }
+
+    const colValor = campo, colPor = `${campo}_por`, colEn = `${campo}_en`;
+    const { rows } = await pool.query(
+      `UPDATE listas_conteo_items SET ${colValor} = $1, ${colPor} = $2, ${colEn} = NOW() WHERE id = $3 RETURNING *`,
+      [valor, req.user.id, req.params.itemId]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar conteo de lista:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/reporte ──────────────────
+// Reporte de diferencias (cantidad y valor). Disponible en cualquier momento,
+// no solo al cerrar, para poder revisar antes de cerrar.
+router.get('/listas-conteo/:id/reporte', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const { rows: items } = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1`, [req.params.id]);
+
+    let diferenciaValorTotal = 0;
+    let conDiferencia = 0;
+    let contados = 0;
+    const detalle = items.map(it => {
+      const definitivo = conteoDefinitivo(it);
+      if (definitivo !== null) contados++;
+      const diferenciaCantidad = definitivo === null ? null : Number((definitivo - Number(it.existencia_siis)).toFixed(3));
+      const diferenciaValor = diferenciaCantidad === null ? null : Number((diferenciaCantidad * Number(it.costo_unitario)).toFixed(2));
+      if (diferenciaCantidad) { conDiferencia++; diferenciaValorTotal += diferenciaValor; }
+      return {
+        id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, presentacion: it.presentacion, cuenta: it.cuenta,
+        existencia_siis: Number(it.existencia_siis), conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
+        conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null, definitivo,
+        diferencia_cantidad: diferenciaCantidad, diferencia_valor: diferenciaValor,
+      };
+    });
+
+    res.json({
+      lista: listaRows[0],
+      resumen: {
+        total_items: items.length, contados, pendientes: items.length - contados,
+        con_diferencia: conDiferencia, diferencia_valor_total: Number(diferenciaValorTotal.toFixed(2)),
+      },
+      items: detalle,
+    });
+  } catch (err) {
+    console.error('Error al generar reporte de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/listas-conteo/:id/cerrar ──────────────────
+// Cierra la lista (editor/admin): ya no se pueden modificar los conteos.
+router.post('/listas-conteo/:id/cerrar', authMiddleware, editorOrAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE listas_conteo SET estado = 'cerrada', cerrado_por = $1, cerrado_en = NOW()
+       WHERE id = $2 AND estado = 'abierta' RETURNING *`,
+      [req.user.id, req.params.id]
+    );
+    if (!rows.length) return res.status(400).json({ error: 'Lista no encontrada o ya estaba cerrada' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al cerrar lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/plantilla ────────────────
+// Genera el Excel en blanco para salir a contar en bodega.
+router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const lista = listaRows[0];
+    const { rows: items } = await pool.query(
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`,
+      [req.params.id]
+    );
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Conteo');
+    ws.columns = [
+      { width: 16 }, { width: 40 }, { width: 14 }, { width: 14 }, { width: 20 }, { width: 12 }, { width: 12 }, { width: 12 },
+    ];
+
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}`;
+    ws.mergeCells('A1:H1');
+    ws.getCell('A1').value = `Lista de Conteo #${lista.id} — ${tituloCriterio}`;
+    ws.getCell('A1').font = { bold: true, size: 14 };
+
+    ws.getCell('A2').value = 'Bodega:';       ws.getCell('B2').value = lista.bodega;
+    ws.getCell('C2').value = 'Fecha:';        ws.getCell('D2').value = new Date().toLocaleDateString('es-CO');
+    ws.getCell('A3').value = 'Conteo 1 por:'; ws.getCell('B3').value = lista.conteo1_nombre || '_______________';
+    ws.getCell('C3').value = 'Conteo 2 por:'; ws.getCell('D3').value = lista.conteo2_nombre || '_______________';
+    ['A2', 'C2', 'A3', 'C3'].forEach(c => { ws.getCell(c).font = { bold: true }; });
+
+    const filaEncabezado = 5;
+    const encabezados = ['Código', 'Nombre', 'Lote', 'Fecha Venc.', 'Presentación', 'Conteo 1', 'Conteo 2', 'SIIS'];
+    ws.getRow(filaEncabezado).values = encabezados;
+    ws.getRow(filaEncabezado).font = { bold: true };
+    ws.getRow(filaEncabezado).eachCell(c => {
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+      c.border = { bottom: { style: 'thin' } };
+    });
+
+    let fila = filaEncabezado + 1;
+    let presentacionActual = Symbol('inicio'); // fuerza que la primera fila dispare el encabezado de grupo
+    for (const it of items) {
+      if (lista.subclasificar_presentacion && it.presentacion !== presentacionActual) {
+        presentacionActual = it.presentacion;
+        const r = ws.getRow(fila);
+        ws.mergeCells(`A${fila}:H${fila}`);
+        r.getCell(1).value = it.presentacion || 'SIN PRESENTACIÓN';
+        r.font = { bold: true, italic: true };
+        r.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+        fila++;
+      }
+      ws.getRow(fila).values = [
+        it.codigo, it.nombre, it.lote || '', it.fecha_vencimiento || '', it.presentacion || '',
+        null, null, Number(it.existencia_siis),
+      ];
+      fila++;
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="lista_conteo_${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al generar plantilla de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/reporte-excel ────────────
+// Exporta el reporte de diferencias (cantidad y valor) a Excel.
+router.get('/listas-conteo/:id/reporte-excel', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const lista = listaRows[0];
+    const { rows: items } = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`, [req.params.id]);
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Reporte de diferencias');
+    ws.columns = [
+      { width: 16 }, { width: 40 }, { width: 20 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 14 }, { width: 14 },
+    ];
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}`;
+    ws.mergeCells('A1:H1');
+    ws.getCell('A1').value = `Reporte de diferencias — Lista #${lista.id} — ${tituloCriterio} (${lista.estado === 'cerrada' ? 'CERRADA' : 'ABIERTA'})`;
+    ws.getCell('A1').font = { bold: true, size: 13 };
+
+    const filaEncabezado = 3;
+    ws.getRow(filaEncabezado).values = ['Código', 'Nombre', 'Presentación', 'SIIS', 'Conteo 1', 'Conteo 2', 'Dif. Cantidad', 'Dif. Valor'];
+    ws.getRow(filaEncabezado).font = { bold: true };
+
+    let fila = filaEncabezado + 1;
+    let diferenciaValorTotal = 0;
+    for (const it of items) {
+      const definitivo = conteoDefinitivo(it);
+      const diferenciaCantidad = definitivo === null ? null : Number((definitivo - Number(it.existencia_siis)).toFixed(3));
+      const diferenciaValor = diferenciaCantidad === null ? null : Number((diferenciaCantidad * Number(it.costo_unitario)).toFixed(2));
+      if (diferenciaValor) diferenciaValorTotal += diferenciaValor;
+      ws.getRow(fila).values = [
+        it.codigo, it.nombre, it.presentacion || '', Number(it.existencia_siis),
+        it.conteo_1 !== null ? Number(it.conteo_1) : '', it.conteo_2 !== null ? Number(it.conteo_2) : '',
+        diferenciaCantidad ?? '', diferenciaValor ?? '',
+      ];
+      if (diferenciaCantidad) ws.getRow(fila).eachCell(c => { c.font = { color: { argb: diferenciaCantidad > 0 ? 'FF166534' : 'FFB91C1C' } }; });
+      fila++;
+    }
+    ws.getRow(fila + 1).getCell(7).value = 'Diferencia total en valor:';
+    ws.getRow(fila + 1).getCell(7).font = { bold: true };
+    ws.getRow(fila + 1).getCell(8).value = Number(diferenciaValorTotal.toFixed(2));
+    ws.getRow(fila + 1).getCell(8).font = { bold: true };
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="reporte_diferencias_${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al generar reporte excel de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── PATCH /api/validador-inventario/listas-conteo/:id/items/:itemId/cuenta ───
+// Reclasifica un ítem "SIN CLASIFICAR" (o cambia su cuenta) directo desde una
+// lista de conteo. Editor o admin. No depende de si la lista está abierta o
+// cerrada (clasificar no altera el conteo). Actualiza el snapshot de la lista
+// Y la tabla maestra tipos_inventario, para que el Validador general y las
+// próximas listas de conteo ya vean el artículo clasificado.
+router.patch('/listas-conteo/:id/items/:itemId/cuenta', authMiddleware, editorOrAdmin, async (req, res) => {
+  try {
+    const { cuenta, contable } = req.body;
+    if (!cuenta) return res.status(400).json({ error: 'cuenta requerida' });
+
+    const { rows: itemRows } = await pool.query(
+      `SELECT * FROM listas_conteo_items WHERE id = $1 AND lista_id = $2`,
+      [req.params.itemId, req.params.id]
+    );
+    if (!itemRows.length) return res.status(404).json({ error: 'Ítem no encontrado' });
+    const item = itemRows[0];
+
+    const { rows } = await pool.query(
+      `UPDATE listas_conteo_items SET cuenta = $1 WHERE id = $2 RETURNING *`,
+      [truncar(cuenta, 100), req.params.itemId]
+    );
+
+    if (item.concat) {
+      await pool.query(
+        `INSERT INTO tipos_inventario (concat, contable, cuenta)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (concat) DO UPDATE SET contable = EXCLUDED.contable, cuenta = EXCLUDED.cuenta`,
+        [item.concat, truncar(contable, 30), truncar(cuenta, 100)]
+      );
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al clasificar ítem de la lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+module.exports = router;
+
+
+
+
+
+
+
+
 
 
 
