@@ -20,4 +20,12 @@ const adminOnly = (req, res, next) => {
   next();
 };
 
-module.exports = { authMiddleware, adminOnly };
+const editorOrAdmin = (req, res, next) => {
+  if (!['admin', 'editor'].includes(req.user?.rol)) {
+    return res.status(403).json({ error: 'Acceso restringido a editores y administradores' });
+  }
+  next();
+};
+
+module.exports = { authMiddleware, adminOnly, editorOrAdmin };
+
