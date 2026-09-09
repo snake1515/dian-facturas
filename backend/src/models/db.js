@@ -380,7 +380,236 @@ const initDB = async () => {
           ALTER TABLE validador_inventario ADD COLUMN notas TEXT;
         END IF;
       END $$;
+
+      -- 'tipos_inventario': tabla de mapeo CONCAT (grupo+clase+subclase, o
+      -- código alfabético de excepción) -> cuenta contable. Se usa para
+      -- agrupar el Validador de Inventarios por tipo de artículo.
+      CREATE TABLE IF NOT EXISTS tipos_inventario (
+        concat    VARCHAR(6) PRIMARY KEY,
+        contable  VARCHAR(30) NOT NULL,
+        cuenta    VARCHAR(100) NOT NULL
+      );
+
+      -- Extrae el CONCAT (6 caracteres) desde el código real del artículo.
+      -- Numérico de 10 dígitos -> los primeros 6 tal cual.
+      -- Numérico de 9 dígitos  -> le falta el 0 a la izquierda del grupo,
+      --                           se rellena a 10 y luego se toman los primeros 6.
+      -- Alfabético              -> se usa tal cual (códigos de excepción).
+      CREATE OR REPLACE FUNCTION concat_tipo_inventario(p_codigo TEXT)
+      RETURNS TEXT AS $FN$
+      DECLARE
+        c TEXT := trim(p_codigo);
+      BEGIN
+        IF c ~ '^[0-9]+$' THEN
+          IF length(c) = 9 THEN
+            c := lpad(c, 10, '0');
+          END IF;
+          RETURN left(c, 6);
+        ELSE
+          RETURN upper(c);
+        END IF;
+      END;
+      $FN$ LANGUAGE plpgsql IMMUTABLE;
     `);
+
+    // Semilla / actualización de tipos_inventario (idempotente vía ON CONFLICT)
+    await client.query(`
+      INSERT INTO tipos_inventario (concat, contable, cuenta) VALUES
+      ('010101','14150501','MEDICAMENTOS'),('010102','14150501','MEDICAMENTOS'),
+      ('010103','14150501','MEDICAMENTOS'),('010104','14150501','MEDICAMENTOS'),
+      ('010105','14150501','MEDICAMENTOS'),('010106','14150501','MEDICAMENTOS'),
+      ('010107','14150501','MEDICAMENTOS'),('010108','14150501','MEDICAMENTOS'),
+      ('010201','14150501','MEDICAMENTOS'),('010202','14150501','MEDICAMENTOS'),
+      ('010203','14150501','MEDICAMENTOS'),('010204','14150501','MEDICAMENTOS'),
+      ('010205','14150501','MEDICAMENTOS'),('010206','14150501','MEDICAMENTOS'),
+      ('010207','14150501','MEDICAMENTOS'),('010208','14150501','MEDICAMENTOS'),
+      ('010209','14150501','MEDICAMENTOS'),('010210','14150501','MEDICAMENTOS'),
+      ('010211','14150501','MEDICAMENTOS'),('010212','14150501','MEDICAMENTOS'),
+      ('010213','14150501','MEDICAMENTOS'),('010214','14150501','MEDICAMENTOS'),
+      ('010215','14150501','MEDICAMENTOS'),('010216','14150501','MEDICAMENTOS'),
+      ('010217','14150501','MEDICAMENTOS'),('010218','14150501','MEDICAMENTOS'),
+      ('010301','14150501','MEDICAMENTOS'),('010302','14150501','MEDICAMENTOS'),
+      ('010304','14150501','MEDICAMENTOS'),('010305','14150501','MEDICAMENTOS'),
+      ('010401','14150501','MEDICAMENTOS'),('140101','NO APLICA','NO APLICA'),
+      ('150101','14230501','GLOBULOS ROJOS'),('150202','14230502','PLASMA'),
+      ('150303','14230503','PLAQUETAS'),('150401','14230504','CRIOPRECIPITADOS'),
+      ('160101','14554001','MATERIALES DE CONSTRUCCION'),
+      ('160102','14554002','SISTEMAS COMPLEMENTARIOS'),
+      ('160103','14554005','MOBILIARIO COMPLEMENTARIO'),
+      ('160201','14552501','REPUESTOS Y ELEMENTOS DE MANTENIMIENTO'),
+      ('160202','NO APLICA','NO APLICA'),('160203','NO APLICA','NO APLICA'),
+      ('160204','14552501','REPUESTOS Y ELEMENTOS DE MANTENIMIENTO'),
+      ('170101','15882406','MUEBLES Y ENSERES'),
+      ('170201','15883205','EQUIPO MEDICO CIENTIFICO'),
+      ('170301','15882806','EQUIPO DE PROCESAMIENTO DE DATOS'),
+      ('170302','15882811','EQUIPO DE TELECOMUNICACIONES'),
+      ('170401','15882005','MAQUINARIA Y EQUIPO'),
+      ('170402','14554003','HERRAMIENTAS MANUALES'),
+      ('170403','14554004','EQUIPOS DE MENOR VALOR'),
+      ('170501','15884091','ASISTENCIAL'),('170502','15884092','ADMINISTRATIVO'),
+      ('170601','14556001','AMV EQUIPOS DE OFICINA'),
+      ('170602','14556002','AMV EQUIPO MEDICO CIENTIFICO'),
+      ('170603','14556003','PROCESAMIENTO DE DATOS'),
+      ('170604','14556004','AMV MAQUINARIA Y EQUIPO'),
+      ('020101','14200501','DISPOSITIVOS MEDICOS'),('020102','14200501','DISPOSITIVOS MEDICOS'),
+      ('020103','14200501','DISPOSITIVOS MEDICOS'),('020201','14200501','DISPOSITIVOS MEDICOS'),
+      ('020202','14200501','DISPOSITIVOS MEDICOS'),('020203','14200501','DISPOSITIVOS MEDICOS'),
+      ('020204','14200501','DISPOSITIVOS MEDICOS'),('020301','14200501','DISPOSITIVOS MEDICOS'),
+      ('020302','14200501','DISPOSITIVOS MEDICOS'),('020303','14200501','DISPOSITIVOS MEDICOS'),
+      ('020401','14200501','DISPOSITIVOS MEDICOS'),('020403','14200501','DISPOSITIVOS MEDICOS'),
+      ('020501','14200501','DISPOSITIVOS MEDICOS'),('020601','14200501','DISPOSITIVOS MEDICOS'),
+      ('020701','14200501','DISPOSITIVOS MEDICOS'),('020801','14200501','DISPOSITIVOS MEDICOS'),
+      ('020901','14200501','DISPOSITIVOS MEDICOS'),('021001','14200501','DISPOSITIVOS MEDICOS'),
+      ('021002','14200501','DISPOSITIVOS MEDICOS'),('021003','14200501','DISPOSITIVOS MEDICOS'),
+      ('021101','14200501','DISPOSITIVOS MEDICOS'),('021102','14200501','DISPOSITIVOS MEDICOS'),
+      ('021103','14200501','DISPOSITIVOS MEDICOS'),('021104','14200501','DISPOSITIVOS MEDICOS'),
+      ('021105','14200501','DISPOSITIVOS MEDICOS'),('021106','14200501','DISPOSITIVOS MEDICOS'),
+      ('021107','14200501','DISPOSITIVOS MEDICOS'),('021108','14200501','DISPOSITIVOS MEDICOS'),
+      ('021201','14200501','DISPOSITIVOS MEDICOS'),('021301','14200501','DISPOSITIVOS MEDICOS'),
+      ('021401','14200501','DISPOSITIVOS MEDICOS'),('021402','14200501','DISPOSITIVOS MEDICOS'),
+      ('021403','14200501','DISPOSITIVOS MEDICOS'),('021404','14200501','DISPOSITIVOS MEDICOS'),
+      ('021501','14200501','DISPOSITIVOS MEDICOS'),('021502','14200501','DISPOSITIVOS MEDICOS'),
+      ('021601','14200501','DISPOSITIVOS MEDICOS'),('021701','14200501','DISPOSITIVOS MEDICOS'),
+      ('021702','14200501','DISPOSITIVOS MEDICOS'),('021703','14200501','DISPOSITIVOS MEDICOS'),
+      ('021704','14200501','DISPOSITIVOS MEDICOS'),('021705','14200501','DISPOSITIVOS MEDICOS'),
+      ('021706','14200501','DISPOSITIVOS MEDICOS'),('021707','14200501','DISPOSITIVOS MEDICOS'),
+      ('021708','14200501','DISPOSITIVOS MEDICOS'),('021801','14200501','DISPOSITIVOS MEDICOS'),
+      ('021802','14200501','DISPOSITIVOS MEDICOS'),('021803','14200501','DISPOSITIVOS MEDICOS'),
+      ('021804','14200501','DISPOSITIVOS MEDICOS'),('021805','14200501','DISPOSITIVOS MEDICOS'),
+      ('021806','14200501','DISPOSITIVOS MEDICOS'),('021807','14200501','DISPOSITIVOS MEDICOS'),
+      ('021808','14200501','DISPOSITIVOS MEDICOS'),('021809','14200501','DISPOSITIVOS MEDICOS'),
+      ('021901','14200501','DISPOSITIVOS MEDICOS'),('022001','14200501','DISPOSITIVOS MEDICOS'),
+      ('022101','14200501','DISPOSITIVOS MEDICOS'),('022102','14200501','DISPOSITIVOS MEDICOS'),
+      ('022201','14200501','DISPOSITIVOS MEDICOS'),('022202','14200501','DISPOSITIVOS MEDICOS'),
+      ('022203','14200501','DISPOSITIVOS MEDICOS'),('022301','14200501','DISPOSITIVOS MEDICOS'),
+      ('022401','14200501','DISPOSITIVOS MEDICOS'),('022402','14200501','DISPOSITIVOS MEDICOS'),
+      ('022501','14200501','DISPOSITIVOS MEDICOS'),('022601','14200501','DISPOSITIVOS MEDICOS'),
+      ('022602','14200501','DISPOSITIVOS MEDICOS'),('022603','14200501','DISPOSITIVOS MEDICOS'),
+      ('022701','14200501','DISPOSITIVOS MEDICOS'),('022801','14200501','DISPOSITIVOS MEDICOS'),
+      ('022901','14200501','DISPOSITIVOS MEDICOS'),('023001','14200501','DISPOSITIVOS MEDICOS'),
+      ('023002','14200501','DISPOSITIVOS MEDICOS'),('023003','14200501','DISPOSITIVOS MEDICOS'),
+      ('023004','14200501','DISPOSITIVOS MEDICOS'),('023005','14200501','DISPOSITIVOS MEDICOS'),
+      ('023006','14200501','DISPOSITIVOS MEDICOS'),('023007','14200501','DISPOSITIVOS MEDICOS'),
+      ('023008','14200501','DISPOSITIVOS MEDICOS'),('023101','14200501','DISPOSITIVOS MEDICOS'),
+      ('023201','14200501','DISPOSITIVOS MEDICOS'),('023301','14200501','DISPOSITIVOS MEDICOS'),
+      ('023302','14200501','DISPOSITIVOS MEDICOS'),('023303','14200501','DISPOSITIVOS MEDICOS'),
+      ('023304','14200501','DISPOSITIVOS MEDICOS'),('023401','14200501','DISPOSITIVOS MEDICOS'),
+      ('023501','14200501','DISPOSITIVOS MEDICOS'),('023502','14200501','DISPOSITIVOS MEDICOS'),
+      ('023601','14200501','DISPOSITIVOS MEDICOS'),('023701','14200501','DISPOSITIVOS MEDICOS'),
+      ('210101','14150501','MEDICAMENTOS'),('030101','14151001','COMPLEMENTOS NUTRICIONALES'),
+      ('220102','14200501','DISPOSITIVOS MEDICOS'),('260104','14210301','LABORATORIO CLINICO'),
+      ('030201','14151001','COMPLEMENTOS NUTRICIONALES'),('030202','14151001','COMPLEMENTOS NUTRICIONALES'),
+      ('040101','14220501','MATERIALES ODONTOLOGICOS'),
+      ('040102','14552001','ELEMENTOS DE ASEO Y CAFETERIA'),
+      ('040103','14200501','DISPOSITIVOS MEDICOS'),
+      ('040104','14550501','ELEMENTOS DE PAPELERIA'),
+      ('040105','14554501','ELEMENTOS DE REHABILITACION Y TERAPIA'),
+      ('040106','14555501','REPUESTOS DATOS Y COMUNICACION'),
+      ('060101','APROVECHAMIENTOS INSUMOS','APROVECHAMIENTOS INSUMOS'),
+      ('070101','14210101','GASES MEDICINALES'),('070202','14210201','GASES ARTERIALES'),
+      ('070303','14210301','LABORATORIO CLINICO'),('070305','14210301','LABORATORIO CLINICO'),
+      ('070404','NO APLICA','NO APLICA'),('080101','14151001','COMPLEMENTOS NUTRICIONALES'),
+      ('080201','14151001','COMPLEMENTOS NUTRICIONALES'),('080202','14151001','COMPLEMENTOS NUTRICIONALES'),
+      ('290101','14150501','MEDICAMENTOS'),
+      ('ACASDS','14552001','ELEMENTOS DE ASEO Y CAFETERIA'),
+      ('ACASHD','14552001','ELEMENTOS DE ASEO Y CAFETERIA'),
+      ('ACCFCO','14552002','ELEMENTOS DE CAFETERIA'),
+      ('ACCFDE','14552002','ELEMENTOS DE CAFETERIA'),
+      ('ACVAVA','NO APLICA','NO APLICA'),
+      ('DOINBA','14551001','UNIFORMES'),('DOINCA','14551002','CALZADO'),
+      ('DOINUN','14551001','UNIFORMES'),
+      ('EFEE04','14552501','REPUESTOS Y ELEMENTOS DE MANTENIMIENTO'),
+      ('EFSF05','14552501','REPUESTOS Y ELEMENTOS DE MANTENIMIENTO'),
+      ('EMAMAM','14555002','ACCESORIOS MAQUINARIA Y EQ MEDICO'),
+      ('EMRMRM','14555001','REPUESTOS MAQUINARIA Y EQ MEDICO CIENTIF'),
+      ('FOFOFO','NO VALIDO','NO VALIDO'),
+      ('RPRPRP','14551501','ROPA HOSPITALARIA Y QUIRURGICA'),
+      ('SOESIN','14551003','ELEMENTOS DE PROTECCION PERSONAL'),
+      ('SOSEIN','14551003','ELEMENTOS DE PROTECCION PERSONAL'),
+      ('UPFIFM','NO APLICA','NO APLICA'),
+      ('UPPIIN','14550501','ELEMENTOS DE PAEPELERIA'),
+      ('UPUEIN','14550501','ELEMENTOS DE PAEPELERIA')
+      ON CONFLICT (concat) DO UPDATE SET
+        contable = EXCLUDED.contable,
+        cuenta   = EXCLUDED.cuenta;
+
+      -- 'presentaciones_inventario': presentación del artículo (ej. "Caja x100",
+      -- "Frasco 500ml"). Es una propiedad del CÓDIGO en sí, no de una fila
+      -- bodega+lote, así que va en tabla aparte (no se duplica por lote) y se
+      -- carga/edita de forma independiente al Excel de inventario (SIIS).
+      -- Solo admin puede subir el Excel de presentaciones o editarlas a mano.
+      CREATE TABLE IF NOT EXISTS presentaciones_inventario (
+        codigo          VARCHAR(50) PRIMARY KEY,
+        presentacion    VARCHAR(200) NOT NULL DEFAULT '',
+        actualizado_por INTEGER REFERENCES usuarios(id),
+        actualizado_en  TIMESTAMP DEFAULT NOW()
+      );
+
+      -- Grupo de inventario "físico": los primeros 2 dígitos del CONCAT para
+      -- códigos numéricos (nivel más amplio que la cuenta contable, que puede
+      -- agrupar varios grupos bajo un mismo nombre contable); para códigos
+      -- alfabéticos de excepción, el grupo es el código completo.
+      CREATE OR REPLACE FUNCTION grupo_inventario(p_codigo TEXT)
+      RETURNS TEXT AS $FN2$
+      DECLARE
+        c TEXT := concat_tipo_inventario(p_codigo);
+      BEGIN
+        IF c ~ '^[0-9]+$' THEN
+          RETURN left(c, 2);
+        ELSE
+          RETURN c;
+        END IF;
+      END;
+      $FN2$ LANGUAGE plpgsql IMMUTABLE;
+
+      -- ── Listas de conteo ──────────────────────────────────────────────────
+      -- Una lista = una sesión de conteo físico sobre un subconjunto de una
+      -- bodega (general, por cuenta contable, por grupo de inventario o por
+      -- presentación). Los ítems se "congelan" (snapshot) al crearla, para
+      -- que no se muevan bajo los pies de quien está contando si mientras
+      -- tanto se sube un Excel nuevo de SIIS.
+      CREATE TABLE IF NOT EXISTS listas_conteo (
+        id                          SERIAL PRIMARY KEY,
+        bodega                      VARCHAR(5) NOT NULL,
+        tipo                        VARCHAR(20) NOT NULL, -- general | cuenta_contable | grupo_inventario | presentacion
+        criterio                    VARCHAR(150),          -- valor elegido (nombre de cuenta, grupo o presentación); NULL si es general
+        subclasificar_presentacion  BOOLEAN NOT NULL DEFAULT false,
+        conteo1_nombre              VARCHAR(100),
+        conteo2_nombre              VARCHAR(100),
+        estado                      VARCHAR(10) NOT NULL DEFAULT 'abierta', -- abierta | cerrada
+        creado_por                  INTEGER REFERENCES usuarios(id),
+        creado_en                   TIMESTAMP DEFAULT NOW(),
+        cerrado_por                 INTEGER REFERENCES usuarios(id),
+        cerrado_en                  TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS listas_conteo_items (
+        id                 SERIAL PRIMARY KEY,
+        lista_id           INTEGER NOT NULL REFERENCES listas_conteo(id) ON DELETE CASCADE,
+        codigo             VARCHAR(50) NOT NULL,
+        nombre             VARCHAR(300),
+        lote               VARCHAR(100),
+        fecha_vencimiento  VARCHAR(20),
+        presentacion       VARCHAR(200),
+        cuenta             VARCHAR(100),
+        existencia_siis    NUMERIC(14,3) DEFAULT 0,  -- snapshot al crear la lista
+        costo_unitario     NUMERIC(14,3) DEFAULT 0,  -- snapshot
+        conteo_1           NUMERIC(14,3),
+        conteo_1_por       INTEGER REFERENCES usuarios(id),
+        conteo_1_en        TIMESTAMP,
+        conteo_2           NUMERIC(14,3),
+        conteo_2_por       INTEGER REFERENCES usuarios(id),
+        conteo_2_en        TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_listas_conteo_items_lista ON listas_conteo_items(lista_id);
+
+      -- 'concat' del ítem al momento del snapshot: permite reclasificar una
+      -- fila "SIN CLASIFICAR" directo desde una lista de conteo ya creada,
+      -- sin depender de recalcular el código cada vez.
+      ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS concat VARCHAR(10);
+      UPDATE listas_conteo_items SET concat = concat_tipo_inventario(codigo) WHERE concat IS NULL;
+    `);
+
     // Migraciones de roles — queries separadas para que los UPDATE surtan efecto antes del constraint
     // Migrar roles viejos si existen (sin tocar el constraint)
     await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos')");
@@ -392,3 +621,4 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
