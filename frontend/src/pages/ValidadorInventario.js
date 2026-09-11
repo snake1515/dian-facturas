@@ -980,6 +980,16 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
   const [guardandoCuentaItemId, setGuardandoCuentaItemId] = useState(null);
   const [cerrando, setCerrando] = useState(false);
   const [descargando, setDescargando] = useState('');
+  const [modoEscaneo, setModoEscaneo] = useState(false);
+  const [textoEscaneado, setTextoEscaneado] = useState('');
+  const [filaResaltada, setFilaResaltada] = useState(null);
+  const [historialConcatAbierto, setHistorialConcatAbierto] = useState(null);
+  const [historialTipoData, setHistorialTipoData] = useState([]);
+  const [cargandoHistorialTipo, setCargandoHistorialTipo] = useState(false);
+  const [editMotivo, setEditMotivo] = useState({});
+  const [guardandoMotivoId, setGuardandoMotivoId] = useState(null);
+  const inputEscaneoRef = useRef(null);
+  const conteoInputRefs = useRef({});
 
   const cargarListas = useCallback(async () => {
     setLoading(true);
@@ -1077,6 +1087,52 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
     setGuardandoCuentaItemId(null);
   }
 
+  // ── Historial de reclasificaciones de un grupo (auditoría) ──────────────────
+  async function verHistorialTipo(concat) {
+    setHistorialConcatAbierto(concat);
+    setCargandoHistorialTipo(true);
+    try {
+      const res = await api.get(`/validador-inventario/tipos-inventario/${encodeURIComponent(concat)}/historial`);
+      setHistorialTipoData(res.data || []);
+    } catch (e) {
+      setHistorialTipoData([]);
+    }
+    setCargandoHistorialTipo(false);
+  }
+
+  // ── Motivo/justificación de la diferencia (sustento para cierre/auditoría) ──
+  async function guardarMotivo(item) {
+    const valor = editMotivo[item.id];
+    if (valor === undefined) return;
+    setGuardandoMotivoId(item.id);
+    try {
+      const res = await api.patch(`/validador-inventario/listas-conteo/${listaActual.id}/items/${item.id}/motivo`, { motivo: valor });
+      setListaActual(prev => ({ ...prev, items: prev.items.map(it => (it.id === item.id ? res.data : it)) }));
+      setEditMotivo(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
+    } catch (e) {
+      alert('Error guardando el motivo: ' + (e.response?.data?.error || e.message));
+    }
+    setGuardandoMotivoId(null);
+  }
+
+  // ── Modo escaneo (lector de código de barras tipo teclado/USB/Bluetooth) ───
+  // La mayoría de lectores de bodega escriben el código y terminan con Enter,
+  // como si fuera un teclado — no hace falta cámara ni librería nueva. Al
+  // escanear, ubica la fila de ese código y enfoca su campo de Conteo 1 (o
+  // Conteo 2 si el 1 ya está lleno) para digitar la cantidad al instante.
+  function manejarEscaneo(e) {
+    if (e.key !== 'Enter') return;
+    const codigo = textoEscaneado.trim();
+    setTextoEscaneado('');
+    if (!codigo || !listaActual) return;
+    const item = listaActual.items.find(it => it.codigo === codigo);
+    if (!item) { setFilaResaltada('no-encontrado'); setTimeout(() => setFilaResaltada(null), 1500); return; }
+    setFilaResaltada(item.id);
+    const campo = (item.conteo_1 === null || item.conteo_1 === undefined) ? 'conteo_1' : 'conteo_2';
+    const ref = conteoInputRefs.current[`${item.id}_${campo}`];
+    if (ref) { ref.focus(); ref.select(); }
+  }
+
   async function cerrarLista() {
     if (!window.confirm('¿Cerrar esta lista de conteo? Ya no se podrán modificar los conteos.')) return;
     setCerrando(true);
@@ -1119,17 +1175,20 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
     return (
       <div>
         {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
+
+        <PanelesGerenciales bodega={bodega} fmtPesos={fmtPesos} inputStyle={inputStyle} />
+
         <button
           onClick={() => setVistaInterna('crear')}
           style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', marginBottom: 16 }}
         >
-          + Nueva lista de conteo
+          + Nuevo conteo
         </button>
         {loading ? (
           <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
         ) : listas.length === 0 ? (
           <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>
-            No hay listas de conteo para la bodega <strong>{bodega}</strong> todavía.
+            No hay conteos registrados para la bodega <strong>{bodega}</strong> todavía.
           </div>
         ) : (
           <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto' }}>
@@ -1180,7 +1239,7 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
     return (
       <div style={{ maxWidth: 520 }}>
         <button onClick={() => setVistaInterna('listado')} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13, marginBottom: 14 }}>← Volver</button>
-        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Nueva lista de conteo — bodega {bodega}</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Nuevo conteo — bodega {bodega}</h3>
         {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1225,7 +1284,7 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
             disabled={creando}
             style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '10px 14px', fontSize: 13, fontWeight: 600, cursor: creando ? 'not-allowed' : 'pointer', marginTop: 6 }}
           >
-            {creando ? 'Creando…' : 'Crear lista y ver ítems'}
+            {creando ? 'Creando…' : 'Crear conteo y ver ítems'}
           </button>
         </div>
       </div>
@@ -1243,7 +1302,7 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
           <div>
             <h3 style={{ fontSize: 16, fontWeight: 700 }}>
-              Lista #{l.id} — {LABEL_TIPO_LISTA[l.tipo]}{l.criterio ? `: ${l.criterio}` : ''}
+              Conteo #{l.id} — {LABEL_TIPO_LISTA[l.tipo]}{l.criterio ? `: ${l.criterio}` : ''}
               {l.subclasificar_presentacion ? ' (+ presentación)' : ''}
             </h3>
             <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4 }}>
@@ -1265,20 +1324,47 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
             )}
             {abierta && isEditor && (
               <button onClick={cerrarLista} disabled={cerrando} style={{ background: '#3a1d1d', border: '1px solid #5c2626', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}>
-                🔒 {cerrando ? 'Cerrando…' : 'Cerrar lista'}
+                🔒 {cerrando ? 'Cerrando…' : 'Cerrar conteo'}
+              </button>
+            )}
+            {abierta && (
+              <button
+                onClick={() => { setModoEscaneo(m => !m); setTimeout(() => inputEscaneoRef.current?.focus(), 50); }}
+                style={{ background: modoEscaneo ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: modoEscaneo ? '#fff' : 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, cursor: 'pointer' }}
+              >
+                📷 {modoEscaneo ? 'Modo escaneo: ON' : 'Modo escaneo'}
               </button>
             )}
           </div>
         </div>
 
+        {modoEscaneo && (
+          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: '10px 14px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 13 }}>📷 Escanea o escribe el código y presiona Enter:</span>
+            <input
+              ref={inputEscaneoRef}
+              type="text"
+              autoFocus
+              value={textoEscaneado}
+              onChange={(e) => setTextoEscaneado(e.target.value)}
+              onKeyDown={manejarEscaneo}
+              placeholder="Código del artículo…"
+              style={{ ...inputStyle, flex: 1, maxWidth: 260, fontFamily: 'monospace' }}
+            />
+            {filaResaltada === 'no-encontrado' && <span style={{ fontSize: 12, color: '#f87171' }}>⚠️ Código no encontrado en este conteo</span>}
+          </div>
+        )}
+
         {reporte && (
-          <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
+          <>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
             {[
               ['Total ítems', reporte.resumen.total_items, 'var(--t-text-primary)'],
               ['Contados', reporte.resumen.contados, '#4ade80'],
               ['Pendientes', reporte.resumen.pendientes, '#fbbf24'],
-              ['Con diferencia', reporte.resumen.con_diferencia, '#f87171'],
-              ['Diferencia en valor', fmtPesos(reporte.resumen.diferencia_valor_total), reporte.resumen.diferencia_valor_total < 0 ? '#f87171' : '#4ade80'],
+              ['Con diferencia (vs. actual)', reporte.resumen.con_diferencia, '#f87171'],
+              ['Dif. valor vs. inicial', fmtPesos(reporte.resumen.diferencia_valor_total_inicial), reporte.resumen.diferencia_valor_total_inicial < 0 ? '#f87171' : '#4ade80'],
+              ['Dif. valor vs. actual', fmtPesos(reporte.resumen.diferencia_valor_total_actual), reporte.resumen.diferencia_valor_total_actual < 0 ? '#f87171' : '#4ade80'],
             ].map(([label, value, color]) => (
               <div key={label} style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px', flex: 1, minWidth: 120 }}>
                 <div style={{ fontSize: 20, fontWeight: 700, color }}>{value}</div>
@@ -1286,13 +1372,17 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
               </div>
             ))}
           </div>
+          <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 18 }}>
+            "Inicial" = existencia SIIS de cuando se creó el conteo. "Actual" = {abierta ? 'existencia SIIS en vivo ahora mismo (la bodega sigue operando)' : 'existencia SIIS congelada al cerrar el conteo'}. La diferencia oficial es la de "actual".
+          </p>
+          </>
         )}
 
         <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {['Código', 'Nombre', 'Cuenta', 'Presentación', 'Lote', 'F. Venc.', 'SIIS', 'Conteo 1', 'Conteo 2', 'Diferencia'].map(h => (
+                {['Código', 'Nombre', 'Cuenta', 'Presentación', 'Lote', 'F. Venc.', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2', 'Diferencia (inicial)', 'Diferencia (actual)', 'Motivo'].map(h => (
                   <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -1308,8 +1398,10 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                       <input
                         type="number"
+                        ref={(el) => { conteoInputRefs.current[key] = el; }}
                         value={editConteo[key] !== undefined ? editConteo[key] : (yaTieneValor ? fmtNum2(valorGuardado) : '')}
                         onChange={(e) => setEditConteo(prev => ({ ...prev, [key]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === 'Enter') guardarConteoItem(item, campo); }}
                         placeholder="—"
                         style={{ ...inputStyle, width: 75, fontFamily: 'monospace' }}
                       />
@@ -1333,7 +1425,7 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
                   );
                 };
                 return (
-                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234' }}>
+                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : undefined, transition: 'background 0.3s' }}>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
                     <td style={{ padding: '6px 8px', maxWidth: 220 }}>{item.nombre}</td>
                     <td style={{ padding: '6px 8px' }}>
@@ -1358,6 +1450,7 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
                           >
                             {guardandoCuentaItemId === item.id ? '…' : '💾'}
                           </button>
+                          <button onClick={() => verHistorialTipo(item.concat)} title="Ver historial de clasificación" style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13 }}>🕘</button>
                         </div>
                       ) : (
                         <span style={{ color: item.cuenta === 'SIN CLASIFICAR' ? '#fbbf24' : 'var(--t-text-secondary)' }}>
@@ -1367,20 +1460,62 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
                     </td>
                     <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.presentacion || '—'}</td>
                     <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtFechaCorta(item.fecha_vencimiento)}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>
+                      {fmtFechaCorta(item.fecha_vencimiento)}<BadgeVencimiento fecha={item.fecha_vencimiento} />
+                    </td>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{fmtNum2(item.existencia_siis)}</td>
-                    <td style={{ padding: '6px 8px' }}>{campoInput('conteo_1', item.conteo_1)}</td>
-                    <td style={{ padding: '6px 8px' }}>{campoInput('conteo_2', item.conteo_2)}</td>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {!rep || rep.diferencia_cantidad === null ? (
+                      {rep && rep.existencia_siis_actual !== null ? fmtNum2(rep.existencia_siis_actual) : <span style={{ color: 'var(--t-text-muted)' }}>—</span>}
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>{campoInput('conteo_1', item.conteo_1)}</td>
+                    <td style={{ padding: '6px 8px' }}>
+                      {campoInput('conteo_2', item.conteo_2)}
+                      {rep?.requiere_reconteo && <div style={{ fontSize: 10, color: '#fbbf24', fontWeight: 600, marginTop: 2 }}>⚠️ Reconteo sugerido</div>}
+                    </td>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
+                      {!rep || rep.diferencia_cantidad_inicial === null ? (
                         <span style={{ color: 'var(--t-text-muted)' }}>—</span>
-                      ) : rep.diferencia_cantidad === 0 ? (
+                      ) : rep.diferencia_cantidad_inicial === 0 ? (
+                        <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
+                      ) : (
+                        <span style={{ color: '#9ca3af', fontWeight: 500 }}>
+                          {rep.diferencia_cantidad_inicial > 0 ? '+' : ''}{fmtNum2(rep.diferencia_cantidad_inicial)} ({fmtPesos(rep.diferencia_valor_inicial)})
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
+                      {!rep || rep.diferencia_cantidad_actual === null ? (
+                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
+                      ) : rep.diferencia_cantidad_actual === 0 ? (
                         <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
                       ) : (
                         <span style={{ color: '#f87171', fontWeight: 600 }}>
-                          {rep.diferencia_cantidad > 0 ? '+' : ''}{fmtNum2(rep.diferencia_cantidad)} ({fmtPesos(rep.diferencia_valor)})
+                          {rep.diferencia_cantidad_actual > 0 ? '+' : ''}{fmtNum2(rep.diferencia_cantidad_actual)} ({fmtPesos(rep.diferencia_valor_actual)})
                         </span>
                       )}
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <input
+                          type="text"
+                          value={editMotivo[item.id] !== undefined ? editMotivo[item.id] : (item.motivo_diferencia || rep?.motivo_diferencia || '')}
+                          onChange={(e) => setEditMotivo(prev => ({ ...prev, [item.id]: e.target.value }))}
+                          placeholder={rep && rep.diferencia_cantidad_actual ? 'Ej: producto vencido dado de baja' : '—'}
+                          style={{ ...inputStyle, width: 140, fontSize: 12, ...(rep && rep.diferencia_cantidad_actual && !(item.motivo_diferencia || rep.motivo_diferencia) ? { borderColor: '#fbbf24' } : {}) }}
+                        />
+                        <button
+                          onClick={() => guardarMotivo(item)}
+                          disabled={editMotivo[item.id] === undefined || guardandoMotivoId === item.id}
+                          style={{
+                            background: editMotivo[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
+                            color: editMotivo[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
+                            border: 'none', borderRadius: 6, padding: '5px 7px', fontSize: 12,
+                            cursor: editMotivo[item.id] !== undefined ? 'pointer' : 'not-allowed',
+                          }}
+                        >
+                          {guardandoMotivoId === item.id ? '…' : '💾'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -1388,12 +1523,332 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
             </tbody>
           </table>
         </div>
+
+        {historialConcatAbierto && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setHistorialConcatAbierto(null)}>
+            <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 20, maxWidth: 560, width: '90%', maxHeight: '70vh', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+                <h4 style={{ fontSize: 14, fontWeight: 700 }}>Historial de clasificación — grupo {historialConcatAbierto}</h4>
+                <button onClick={() => setHistorialConcatAbierto(null)} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 16 }}>✕</button>
+              </div>
+              {cargandoHistorialTipo ? (
+                <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Cargando…</p>
+              ) : historialTipoData.length === 0 ? (
+                <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Sin cambios registrados para este grupo.</p>
+              ) : (
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>{['Fecha', 'Usuario', 'Cuenta anterior', 'Cuenta nueva', 'Origen'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)' }}>{h}</th>
+                    ))}</tr>
+                  </thead>
+                  <tbody>
+                    {historialTipoData.map(h => (
+                      <tr key={h.id} style={{ borderTop: '1px solid #1a2234' }}>
+                        <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{new Date(h.cambiado_en).toLocaleString('es-CO')}</td>
+                        <td style={{ padding: '4px 6px' }}>{h.cambiado_por_nombre || '—'}</td>
+                        <td style={{ padding: '4px 6px' }}>{h.cuenta_anterior || '—'}</td>
+                        <td style={{ padding: '4px 6px' }}>{h.cuenta_nuevo}</td>
+                        <td style={{ padding: '4px 6px' }}>{h.origen}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
   return null;
 }
+
+// ── Helpers de vencimiento (mismo criterio que el backend) ──────────────────
+function diasParaVencerJS(fechaStr) {
+  if (!fechaStr) return null;
+  let f = null;
+  const iso = String(fechaStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const dmy = String(fechaStr).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (iso) f = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  else if (dmy) f = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+  else { const d = new Date(fechaStr); if (!isNaN(d.getTime())) f = d; }
+  if (!f) return null;
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0); f.setHours(0, 0, 0, 0);
+  return Math.round((f - hoy) / 86400000);
+}
+function BadgeVencimiento({ fecha }) {
+  const dias = diasParaVencerJS(fecha);
+  if (dias === null || dias > 90) return null;
+  const color = dias < 0 ? '#f87171' : dias <= 30 ? '#f87171' : '#fbbf24';
+  const texto = dias < 0 ? `Vencido hace ${Math.abs(dias)}d` : `Vence en ${dias}d`;
+  return <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color, whiteSpace: 'nowrap' }}>⏰ {texto}</span>;
+}
+
+// ── Panel gerencial: dashboard de progreso, historial por código, y reporte
+// consolidado — todo dentro de la vista de listado de Listas de Conteo.
+function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
+  const primerDiaMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const hoy = new Date().toISOString().slice(0, 10);
+
+  const [abierto, setAbierto] = useState('dashboard'); // 'dashboard' | 'historial' | 'consolidado' | null
+  const [desde, setDesde] = useState(primerDiaMes);
+  const [hasta, setHasta] = useState(hoy);
+  const [dash, setDash] = useState(null);
+  const [cargandoDash, setCargandoDash] = useState(false);
+
+  const [codigoBuscar, setCodigoBuscar] = useState('');
+  const [historialCodigo, setHistorialCodigo] = useState(null);
+  const [buscando, setBuscando] = useState(false);
+
+  const [consolidado, setConsolidado] = useState(null);
+  const [cargandoConsolidado, setCargandoConsolidado] = useState(false);
+  const [descargandoConsolidado, setDescargandoConsolidado] = useState(false);
+
+  const cargarDashboard = useCallback(async () => {
+    setCargandoDash(true);
+    try {
+      const res = await api.get('/validador-inventario/dashboard', { params: { bodega, desde, hasta } });
+      setDash(res.data);
+    } catch (e) { /* silencioso: panel opcional */ }
+    setCargandoDash(false);
+  }, [bodega, desde, hasta]);
+
+  useEffect(() => { if (abierto === 'dashboard') cargarDashboard(); }, [abierto, cargarDashboard]);
+
+  async function buscarHistorialCodigo() {
+    if (!codigoBuscar.trim()) return;
+    setBuscando(true);
+    try {
+      const res = await api.get(`/validador-inventario/historial-codigo/${encodeURIComponent(codigoBuscar.trim())}`, { params: { bodega } });
+      setHistorialCodigo(res.data);
+    } catch (e) { setHistorialCodigo([]); }
+    setBuscando(false);
+  }
+
+  async function cargarConsolidado() {
+    setCargandoConsolidado(true);
+    try {
+      const res = await api.get('/validador-inventario/listas-conteo-consolidado', { params: { bodega, desde, hasta } });
+      setConsolidado(res.data);
+    } catch (e) { /* silencioso */ }
+    setCargandoConsolidado(false);
+  }
+
+  async function descargarConsolidadoExcel() {
+    setDescargandoConsolidado(true);
+    try {
+      const res = await api.get('/validador-inventario/listas-conteo-consolidado-excel', { params: { bodega, desde, hasta }, responseType: 'blob' });
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = blobUrl; a.download = `consolidado_${bodega}_${desde}_${hasta}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      alert('Error descargando el consolidado: ' + (e.response?.data?.error || e.message));
+    }
+    setDescargandoConsolidado(false);
+  }
+
+  const seccion = (key, titulo) => (
+    <button
+      onClick={() => setAbierto(abierto === key ? null : key)}
+      style={{
+        background: abierto === key ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: abierto === key ? '#fff' : 'var(--t-text-primary)',
+        border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+      }}
+    >
+      {titulo}
+    </button>
+  );
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        {seccion('dashboard', '📊 Dashboard de progreso')}
+        {seccion('historial', '🔎 Historial por código')}
+        {seccion('consolidado', '📑 Reporte consolidado')}
+        {(abierto === 'dashboard' || abierto === 'consolidado') && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 8 }}>
+            <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={{ ...inputStyle, fontSize: 12 }} />
+            <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>a</span>
+            <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={{ ...inputStyle, fontSize: 12 }} />
+            {abierto === 'dashboard' && <button onClick={cargarDashboard} style={{ ...miniBtn }}>Actualizar</button>}
+            {abierto === 'consolidado' && <button onClick={cargarConsolidado} style={{ ...miniBtn }}>Generar</button>}
+          </div>
+        )}
+      </div>
+
+      {abierto === 'dashboard' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 8 }}>
+          {cargandoDash ? (
+            <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Cargando…</p>
+          ) : !dash ? (
+            <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Sin datos.</p>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+                {[
+                  ['Grupos totales', dash.total_grupos_inventario, 'var(--t-text-primary)'],
+                  ['Grupos contados (periodo)', `${dash.grupos_contados_periodo}/${dash.total_grupos_inventario}`, '#4ade80'],
+                  ['Conteos abiertos', dash.conteos_abiertos, '#fbbf24'],
+                  ['Conteos cerrados (periodo)', dash.conteos_cerrados_periodo, 'var(--t-text-primary)'],
+                  ['Ítems con diferencia', dash.items_con_diferencia_periodo, '#f87171'],
+                  ['Diferencia en valor (periodo)', fmtPesos(dash.diferencia_valor_total_periodo), dash.diferencia_valor_total_periodo < 0 ? '#f87171' : '#4ade80'],
+                ].map(([label, value, color]) => (
+                  <div key={label} style={{ minWidth: 130, flex: 1 }}>
+                    <div style={{ fontSize: 18, fontWeight: 700, color }}>{value}</div>
+                    <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+              {dash.conteos.length > 0 && (
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead><tr>{['#', 'Tipo', 'Criterio', 'Estado', 'Creado'].map(h => <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)' }}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {dash.conteos.map(c => (
+                      <tr key={c.id} style={{ borderTop: '1px solid #1a2234' }}>
+                        <td style={{ padding: '4px 6px' }}>{c.id}</td>
+                        <td style={{ padding: '4px 6px' }}>{LABEL_TIPO_LISTA[c.tipo]}</td>
+                        <td style={{ padding: '4px 6px' }}>{c.criterio || '—'}</td>
+                        <td style={{ padding: '4px 6px' }}>{c.estado === 'cerrada' ? '🔒' : '🟢'}</td>
+                        <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{new Date(c.creado_en).toLocaleDateString('es-CO')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {abierto === 'historial' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 8 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <input
+              type="text" value={codigoBuscar} onChange={(e) => setCodigoBuscar(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && buscarHistorialCodigo()}
+              placeholder="Código del artículo" style={{ ...inputStyle, flex: 1, maxWidth: 220 }}
+            />
+            <button onClick={buscarHistorialCodigo} disabled={buscando} style={miniBtnAccent}>{buscando ? 'Buscando…' : 'Buscar'}</button>
+          </div>
+          {historialCodigo && (
+            historialCodigo.length === 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Este código no ha entrado en ningún conteo todavía.</p>
+            ) : (
+              <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>{['Conteo #', 'Criterio', 'Estado', 'Conteo 1', 'Conteo 2', 'SIIS inicial', 'SIIS actual', 'Diferencia', 'Motivo'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                  ))}</tr>
+                </thead>
+                <tbody>
+                  {historialCodigo.map((h, i) => (
+                    <tr key={i} style={{ borderTop: '1px solid #1a2234' }}>
+                      <td style={{ padding: '4px 6px' }}>{h.lista_id}</td>
+                      <td style={{ padding: '4px 6px' }}>{h.criterio || '—'}</td>
+                      <td style={{ padding: '4px 6px' }}>{h.estado === 'cerrada' ? '🔒' : '🟢'}</td>
+                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.conteo_1 ?? '—'}</td>
+                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.conteo_2 ?? '—'}</td>
+                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.existencia_siis_inicial}</td>
+                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.existencia_siis_actual ?? '—'}</td>
+                      <td style={{ padding: '4px 6px', fontFamily: 'monospace', color: h.diferencia ? '#f87171' : '#4ade80' }}>{h.diferencia ?? '—'}</td>
+                      <td style={{ padding: '4px 6px' }}>{h.motivo_diferencia || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          )}
+        </div>
+      )}
+
+      {abierto === 'consolidado' && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 8 }}>
+          {cargandoConsolidado ? (
+            <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Generando…</p>
+          ) : !consolidado ? (
+            <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Elige el rango de fechas y presiona "Generar".</p>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                <p style={{ fontSize: 13 }}>
+                  <strong>{consolidado.total_conteos}</strong> conteos cerrados · <strong>{consolidado.items_con_diferencia}</strong> ítems con diferencia ·
+                  diferencia en valor: <strong style={{ color: consolidado.diferencia_valor_total_actual !== undefined ? undefined : undefined }}>{fmtPesos(consolidado.diferencia_valor_total)}</strong>
+                </p>
+                <button onClick={descargarConsolidadoExcel} disabled={descargandoConsolidado} style={miniBtn}>
+                  📥 {descargandoConsolidado ? 'Generando…' : 'Descargar Excel'}
+                </button>
+              </div>
+              {consolidado.items.length > 0 && (
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead><tr>{['Conteo #', 'Código', 'Nombre', 'Definitivo', 'SIIS actual', 'Dif.'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                  ))}</tr></thead>
+                  <tbody>
+                    {consolidado.items.map((it, i) => (
+                      <tr key={i} style={{ borderTop: '1px solid #1a2234' }}>
+                        <td style={{ padding: '4px 6px' }}>{it.conteo_id}</td>
+                        <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{it.codigo}</td>
+                        <td style={{ padding: '4px 6px' }}>{it.nombre}</td>
+                        <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{it.definitivo}</td>
+                        <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{it.existencia_siis_actual}</td>
+                        <td style={{ padding: '4px 6px', fontFamily: 'monospace', color: it.diferencia_cantidad_actual > 0 ? '#4ade80' : '#f87171' }}>
+                          {it.diferencia_cantidad_actual > 0 ? '+' : ''}{it.diferencia_cantidad_actual}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
+const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
