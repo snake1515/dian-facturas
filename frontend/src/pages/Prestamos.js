@@ -2153,14 +2153,27 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     }
 
     // Sobrante: por cada devolución, cuánto de cada producto quedó sin
-    // asignar a ningún préstamo — no bloquea el registro, solo se marca.
+    // asignar a NINGÚN préstamo en total — no solo en esta acción puntual.
+    // Una misma devolución se puede cruzar contra varios préstamos en
+    // acciones separadas (días distintos), así que hay que restar primero lo
+    // que YA se había asignado en cruces anteriores (histórico, vía la prop
+    // `cruces`) antes de comparar contra el total del documento; si no, cada
+    // cruce nuevo vuelve a compararse contra el total crudo sin descontar lo
+    // ya repartido antes, y todos terminan marcados con sobrante aunque en
+    // realidad la devolución ya se haya repartido correctamente entre varios
+    // préstamos sin sobrar nada de verdad.
     const sobranteDetalle = [];
     selDevoluciones.forEach(d => {
       (d.items || []).forEach(item => {
-        const asignado = filasAsignacion
+        const asignadoAntes = cruces
+          .filter(c => c.devolucion_id === d.id)
+          .flatMap(c => c.items_cruzados || [])
+          .filter(it => it.codigo === item.codigo)
+          .reduce((s, it) => s + (Number(it.cantidad) || 0), 0);
+        const asignadoAhora = filasAsignacion
           .filter(f => f.devolucion_id === d.id && f.codigo === item.codigo)
           .reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
-        const sobra = Number(item.cantidad) - asignado;
+        const sobra = Number(item.cantidad) - asignadoAntes - asignadoAhora;
         if (sobra > 0) {
           sobranteDetalle.push({ devolucion_id: d.id, devolucion_doc: d.documento_contable, codigo: item.codigo, nombre: item.nombre, cantidad_sobrante: sobra });
         }
@@ -2693,6 +2706,19 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
     }
     setRecalculandoEstados(false);
   }
+  const [recalculandoSobrantes, setRecalculandoSobrantes] = React.useState(false);
+  async function recalcularSobrantes() {
+    if (!window.confirm('¿Recalcular el sobrante de todos los cruces, considerando el histórico completo de cada devolución? Corrige los casos donde una misma devolución cruzada contra varios préstamos en acciones separadas quedó marcada con sobrante en todos, sin restar lo ya repartido antes.')) return;
+    setRecalculandoSobrantes(true);
+    try {
+      const r = await apiFetch('/prestamos/cruce-grupos/recalcular-sobrantes', { method: 'POST' });
+      alert(`Grupos revisados: ${r.grupos_revisados}.\nTenían sobrante antes: ${r.tenian_sobrante_antes}.\nTienen sobrante real ahora: ${r.tienen_sobrante_ahora}.\nCorregidos (se les quitó la marca incorrecta): ${r.corregidos}.`);
+      onRefresh();
+    } catch (e) {
+      alert('Error recalculando sobrantes: ' + e.message);
+    }
+    setRecalculandoSobrantes(false);
+  }
   const [filtroCruces, setFiltroCruces] = React.useState('');
   const [editandoCruce, setEditandoCruce] = React.useState(null);
   const [editObs,        setEditObs]       = React.useState('');
@@ -2830,6 +2856,13 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
                   title="Recalcula abierto/parcial/cerrado de todos los préstamos y devoluciones con la lógica actual (útil tras corregir un bug de cálculo de estado)"
                   style={{ padding: '5px 12px', fontSize: 11, border: '1px solid #16a34a', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#16a34a' }}>
                   {recalculandoEstados ? 'Recalculando…' : '🔁 Recalcular estados'}
+                </button>
+              )}
+              {isAdmin && (
+                <button onClick={recalcularSobrantes} disabled={recalculandoSobrantes}
+                  title="Recalcula el sobrante de todos los cruces considerando el histórico completo de cada devolución (corrige cruces marcados con sobrante por error cuando se repartieron en varias acciones separadas)"
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid #f59e0b', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#f59e0b' }}>
+                  {recalculandoSobrantes ? 'Recalculando…' : '🔁 Recalcular sobrantes'}
                 </button>
               )}
               {cruces.some(c => !c.grupo_numero) && (
@@ -5392,4 +5425,5 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
 
