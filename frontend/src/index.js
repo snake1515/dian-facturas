@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import VersionWatcher from './components/VersionWatcher';
 
 // Reset de estilos globales
 const style = document.createElement('style');
@@ -16,4 +17,10 @@ style.textContent = `
 document.head.appendChild(style);
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<React.StrictMode><App /></React.StrictMode>);
+root.render(
+  <React.StrictMode>
+    <VersionWatcher>
+      <App />
+    </VersionWatcher>
+  </React.StrictMode>
+);
