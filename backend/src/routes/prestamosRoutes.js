@@ -1214,6 +1214,98 @@ router.post('/recalcular-estados', authMiddleware, adminOnly, async (req, res) =
   finally { client.release(); }
 });
 
+// Recalcula el sobrante de TODOS los cruces, considerando el histórico
+// completo de cada devolución (no solo la acción de registro puntual en la
+// que se creó cada cruce). Antes, cada cruce comparaba lo asignado en ESE
+// momento contra el total crudo del documento, sin restar lo ya repartido en
+// cruces anteriores hechos por separado contra la misma devolución — así que
+// una devolución cruzada contra varios préstamos en acciones distintas
+// terminaba con TODOS sus cruces marcados como "con sobrante", aunque en
+// realidad ya estuviera bien repartida. Este endpoint corrige eso: agrupa
+// por devolución+código, suma lo asignado en TODOS los cruces (sin importar
+// en qué grupo/acción se hizo), y solo dejar el sobrante genuino (si lo hay)
+// en el último grupo cronológico que tocó esa combinación — quitando la
+// marca de los demás que habían quedado mal marcados.
+router.post('/cruce-grupos/recalcular-sobrantes', authMiddleware, adminOnly, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: filas } = await client.query(`
+      SELECT c.id, c.devolucion_id, c.grupo_id, c.items_cruzados, c.created_at,
+             d.items AS devolucion_items, d.documento_contable AS devolucion_doc
+      FROM prestamo_cruces c
+      JOIN prestamos d ON d.id = c.devolucion_id
+      WHERE c.grupo_id IS NOT NULL
+      ORDER BY c.created_at ASC
+    `);
+
+    // Total real de cada devolución+código (una sola vez por devolución, ya
+    // que d.items es el documento completo, igual en todas sus filas).
+    const totalPorDevCodigo = new Map(); // "devId|codigo" -> {cantidad, nombre}
+    // Asignado en TOTAL a lo largo de todos los cruces de esa devolución+código.
+    const asignadoPorDevCodigo = new Map(); // "devId|codigo" -> cantidad
+    // Último grupo (cronológicamente) que tocó cada devolución+código.
+    const ultimoGrupoPorDevCodigo = new Map(); // "devId|codigo" -> { grupoId, devolucion_doc }
+
+    filas.forEach(f => {
+      (f.devolucion_items || []).forEach(it => {
+        const key = `${f.devolucion_id}|${it.codigo}`;
+        if (!totalPorDevCodigo.has(key)) totalPorDevCodigo.set(key, { cantidad: Number(it.cantidad) || 0, nombre: it.nombre });
+      });
+      (f.items_cruzados || []).forEach(it => {
+        const key = `${f.devolucion_id}|${it.codigo}`;
+        asignadoPorDevCodigo.set(key, (asignadoPorDevCodigo.get(key) || 0) + (Number(it.cantidad) || 0));
+        ultimoGrupoPorDevCodigo.set(key, { grupoId: f.grupo_id, devolucion_doc: f.devolucion_doc });
+      });
+    });
+
+    // Sobrante real por devolución+código, agrupado por el grupo al que hay
+    // que anotárselo (el último cronológico).
+    const sobrantePorGrupo = new Map(); // grupoId -> [{ devolucion_id, devolucion_doc, codigo, nombre, cantidad_sobrante }]
+    totalPorDevCodigo.forEach((info, key) => {
+      const [devIdStr, codigo] = key.split('|');
+      const asignado = asignadoPorDevCodigo.get(key) || 0;
+      const sobra = info.cantidad - asignado;
+      if (sobra <= 0) return;
+      const ref = ultimoGrupoPorDevCodigo.get(key);
+      if (!ref) return;
+      if (!sobrantePorGrupo.has(ref.grupoId)) sobrantePorGrupo.set(ref.grupoId, []);
+      sobrantePorGrupo.get(ref.grupoId).push({
+        devolucion_id: Number(devIdStr), devolucion_doc: ref.devolucion_doc,
+        codigo, nombre: info.nombre, cantidad_sobrante: sobra,
+      });
+    });
+
+    // Se limpian todos primero y luego se marcan solo los que de verdad
+    // tienen sobrante — así los que estaban mal marcados quedan corregidos.
+    const { rows: gruposAntes } = await client.query('SELECT id, tiene_sobrante FROM cruce_grupos');
+    await client.query('UPDATE cruce_grupos SET tiene_sobrante = false, sobrante_detalle = NULL');
+
+    let gruposConSobrante = 0;
+    for (const [grupoId, detalle] of sobrantePorGrupo.entries()) {
+      await client.query(
+        'UPDATE cruce_grupos SET tiene_sobrante = true, sobrante_detalle = $1 WHERE id = $2',
+        [JSON.stringify(detalle), grupoId]
+      );
+      gruposConSobrante++;
+    }
+
+    const teniamSobranteAntes = gruposAntes.filter(g => g.tiene_sobrante).length;
+    await client.query('COMMIT');
+
+    res.json({
+      grupos_revisados: gruposAntes.length,
+      tenian_sobrante_antes: teniamSobranteAntes,
+      tienen_sobrante_ahora: gruposConSobrante,
+      corregidos: Math.max(teniamSobranteAntes - gruposConSobrante, 0),
+    });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
 // Reparar cruces antiguos: a los que no tienen grupo (creados antes del sistema de
 // consecutivo + PDF) les asigna número, recalcula su estado y genera su PDF.
 router.post('/cruces/backfill', async (req, res) => {
@@ -1485,6 +1577,7 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
 
 
 
