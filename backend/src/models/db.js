@@ -608,6 +608,32 @@ const initDB = async () => {
       -- sin depender de recalcular el código cada vez.
       ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS concat VARCHAR(10);
       UPDATE listas_conteo_items SET concat = concat_tipo_inventario(codigo) WHERE concat IS NULL;
+
+      -- Existencia SIIS congelada al CERRAR la lista (además de existencia_siis,
+      -- que es la del momento en que se CREÓ). La bodega sigue operando mientras
+      -- se cuenta, así que el reporte muestra ambas para que se vea el efecto
+      -- de los movimientos ocurridos durante la ventana de conteo.
+      ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS existencia_siis_cierre NUMERIC(14,3);
+
+      -- Motivo/justificación de la diferencia, diligenciable por ítem (para
+      -- el sustento que pide contabilidad/auditoría).
+      ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS motivo_diferencia VARCHAR(300);
+
+      -- Auditoría de reclasificaciones: cada cambio de cuenta/grupo en
+      -- tipos_inventario (por Excel, edición manual, o desde una lista de
+      -- conteo) queda con su valor anterior y nuevo, quién y cuándo.
+      CREATE TABLE IF NOT EXISTS tipos_inventario_historial (
+        id                 SERIAL PRIMARY KEY,
+        concat             VARCHAR(10) NOT NULL,
+        contable_anterior  VARCHAR(30),
+        cuenta_anterior    VARCHAR(100),
+        contable_nuevo     VARCHAR(30),
+        cuenta_nuevo       VARCHAR(100),
+        origen             VARCHAR(30), -- 'excel' | 'manual' | 'manual_desde_conteo'
+        cambiado_por       INTEGER REFERENCES usuarios(id),
+        cambiado_en        TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_tipos_inventario_historial_concat ON tipos_inventario_historial(concat);
     `);
 
     // Migraciones de roles — queries separadas para que los UPDATE surtan efecto antes del constraint
@@ -621,4 +647,6 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
 
