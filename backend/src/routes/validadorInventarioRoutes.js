@@ -13,6 +13,15 @@ function truncar(valor, max) {
   return s.length > max ? s.substring(0, max) : s;
 }
 
+// ── Registra un cambio de clasificación en el historial de auditoría ─────────
+async function registrarHistorialTipo(dbClient, concat, anterior, nuevoContable, nuevoCuenta, origen, userId) {
+  await dbClient.query(
+    `INSERT INTO tipos_inventario_historial (concat, contable_anterior, cuenta_anterior, contable_nuevo, cuenta_nuevo, origen, cambiado_por)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [concat, anterior?.contable || null, anterior?.cuenta || null, nuevoContable, nuevoCuenta, origen, userId]
+  );
+}
+
 // ── GET /api/validador-inventario?bodega=BV ──────────────────────────────────
 // Lista los items guardados de una bodega
 router.get('/', authMiddleware, async (req, res) => {
@@ -328,13 +337,20 @@ router.post('/tipos-inventario/importar', authMiddleware, editorOrAdmin, async (
     for (const it of items) {
       const concat = truncar(it.concat, 6).toUpperCase();
       if (!concat) continue;
+      const contableNuevo = truncar(it.contable, 30);
+      const cuentaNuevo = truncar(it.cuenta, 100);
+      const { rows: anteriorRows } = await client.query(`SELECT contable, cuenta FROM tipos_inventario WHERE concat = $1`, [concat]);
+      const anterior = anteriorRows[0] || null;
+      if (!anterior || anterior.contable !== contableNuevo || anterior.cuenta !== cuentaNuevo) {
+        await registrarHistorialTipo(client, concat, anterior, contableNuevo, cuentaNuevo, 'excel', req.user.id);
+      }
       await client.query(
         `INSERT INTO tipos_inventario (concat, contable, cuenta)
          VALUES ($1, $2, $3)
          ON CONFLICT (concat) DO UPDATE SET
            contable = EXCLUDED.contable,
            cuenta   = EXCLUDED.cuenta`,
-        [concat, truncar(it.contable, 30), truncar(it.cuenta, 100)]
+        [concat, contableNuevo, cuentaNuevo]
       );
       actualizados++;
     }
@@ -352,22 +368,56 @@ router.post('/tipos-inventario/importar', authMiddleware, editorOrAdmin, async (
 // ── PATCH /api/validador-inventario/tipos-inventario/:concat ──────────────────
 // Edición manual puntual de una clasificación (crea si no existía). Editor o admin.
 router.patch('/tipos-inventario/:concat', authMiddleware, editorOrAdmin, async (req, res) => {
+  const client = await pool.connect();
   try {
     const { contable, cuenta } = req.body;
-    if (!cuenta) return res.status(400).json({ error: 'cuenta requerida' });
+    if (!cuenta) { client.release(); return res.status(400).json({ error: 'cuenta requerida' }); }
     const concat = truncar(req.params.concat, 6).toUpperCase();
-    const { rows } = await pool.query(
+    const contableNuevo = truncar(contable, 30);
+    const cuentaNuevo = truncar(cuenta, 100);
+
+    await client.query('BEGIN');
+    const { rows: anteriorRows } = await client.query(`SELECT contable, cuenta FROM tipos_inventario WHERE concat = $1`, [concat]);
+    const anterior = anteriorRows[0] || null;
+    if (!anterior || anterior.contable !== contableNuevo || anterior.cuenta !== cuentaNuevo) {
+      await registrarHistorialTipo(client, concat, anterior, contableNuevo, cuentaNuevo, 'manual', req.user.id);
+    }
+    const { rows } = await client.query(
       `INSERT INTO tipos_inventario (concat, contable, cuenta)
        VALUES ($1, $2, $3)
        ON CONFLICT (concat) DO UPDATE SET
          contable = EXCLUDED.contable,
          cuenta   = EXCLUDED.cuenta
        RETURNING *`,
-      [concat, truncar(contable, 30), truncar(cuenta, 100)]
+      [concat, contableNuevo, cuentaNuevo]
     );
+    await client.query('COMMIT');
     res.json(rows[0]);
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error al guardar tipo de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── GET /api/validador-inventario/tipos-inventario/:concat/historial ─────────
+// Historial de reclasificaciones de un grupo (quién cambió qué y cuándo).
+router.get('/tipos-inventario/:concat/historial', authMiddleware, async (req, res) => {
+  try {
+    const concat = truncar(req.params.concat, 6).toUpperCase();
+    const { rows } = await pool.query(
+      `SELECT h.*, u.nombre AS cambiado_por_nombre
+       FROM tipos_inventario_historial h
+       LEFT JOIN usuarios u ON u.id = h.cambiado_por
+       WHERE h.concat = $1
+       ORDER BY h.cambiado_en DESC`,
+      [concat]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al obtener historial de tipo de inventario:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -394,6 +444,34 @@ function conteoDefinitivo(item) {
   if (item.conteo_2 !== null && item.conteo_2 !== undefined) return Number(item.conteo_2);
   if (item.conteo_1 !== null && item.conteo_1 !== undefined) return Number(item.conteo_1);
   return null;
+}
+
+// Umbral para marcar "requiere reconteo": Conteo 1 y Conteo 2 existen, no
+// coinciden, y su diferencia relativa supera el 5%. Es solo una alerta visual,
+// no bloquea el cierre — la regla de tomar Conteo 2 como definitivo se
+// mantiene igual.
+const UMBRAL_RECONTEO_PORC = 0.05;
+function requiereReconteo(item) {
+  if (item.conteo_1 === null || item.conteo_1 === undefined || item.conteo_2 === null || item.conteo_2 === undefined) return false;
+  const c1 = Number(item.conteo_1), c2 = Number(item.conteo_2);
+  if (c1 === c2) return false;
+  const base = Math.max(Math.abs(c1), Math.abs(c2), 1);
+  return Math.abs(c1 - c2) / base > UMBRAL_RECONTEO_PORC;
+}
+
+// Días calendario hasta el vencimiento (negativo si ya venció). Acepta
+// fecha_vencimiento en formatos comunes de Excel (YYYY-MM-DD, DD/MM/YYYY).
+function diasParaVencer(fechaStr) {
+  if (!fechaStr) return null;
+  let f = null;
+  const iso = String(fechaStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const dmy = String(fechaStr).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (iso) f = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  else if (dmy) f = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+  else { const d = new Date(fechaStr); if (!isNaN(d.getTime())) f = d; }
+  if (!f) return null;
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0); f.setHours(0, 0, 0, 0);
+  return Math.round((f - hoy) / 86400000);
 }
 
 // ── GET /api/validador-inventario/listas-conteo/opciones?bodega=BV&tipo=... ──
@@ -595,40 +673,87 @@ router.patch('/listas-conteo/:id/items/:itemId', authMiddleware, async (req, res
   }
 });
 
+// Calcula el detalle de diferencias para una lista ya con sus items cargados
+// (cerrada: usa existencia_siis_cierre; abierta: usa existencia_actual_live).
+// Compartido entre el reporte JSON y el export a Excel.
+function calcularDetalleReporte(lista, items) {
+  let valorTotalInicial = 0, valorTotalActual = 0;
+  let conDiferencia = 0, contados = 0, requierenReconteo = 0;
+  const detalle = items.map(it => {
+    const definitivo = conteoDefinitivo(it);
+    if (definitivo !== null) contados++;
+
+    const existenciaActual = lista.estado === 'cerrada'
+      ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
+      : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null);
+
+    const diferenciaInicial = definitivo === null ? null : Number((definitivo - Number(it.existencia_siis)).toFixed(3));
+    const diferenciaActual = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
+    const valorInicial = diferenciaInicial === null ? null : Number((diferenciaInicial * Number(it.costo_unitario)).toFixed(2));
+    const valorActual = diferenciaActual === null ? null : Number((diferenciaActual * Number(it.costo_unitario)).toFixed(2));
+    const reconteo = requiereReconteo(it);
+    const diasVence = diasParaVencer(it.fecha_vencimiento);
+
+    if (diferenciaActual) { conDiferencia++; valorTotalActual += valorActual; }
+    if (diferenciaInicial) valorTotalInicial += valorInicial;
+    if (reconteo) requierenReconteo++;
+
+    return {
+      id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, presentacion: it.presentacion, cuenta: it.cuenta,
+      existencia_siis_inicial: Number(it.existencia_siis),
+      existencia_siis_actual: existenciaActual,
+      conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
+      conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null,
+      definitivo,
+      diferencia_cantidad_inicial: diferenciaInicial, diferencia_valor_inicial: valorInicial,
+      diferencia_cantidad_actual: diferenciaActual, diferencia_valor_actual: valorActual,
+      requiere_reconteo: reconteo,
+      motivo_diferencia: it.motivo_diferencia || '',
+      dias_para_vencer: diasVence,
+    };
+  });
+  return {
+    resumen: {
+      total_items: items.length, contados, pendientes: items.length - contados,
+      con_diferencia: conDiferencia, requieren_reconteo: requierenReconteo,
+      diferencia_valor_total_inicial: Number(valorTotalInicial.toFixed(2)),
+      diferencia_valor_total_actual: Number(valorTotalActual.toFixed(2)),
+    },
+    items: detalle,
+  };
+}
+
+async function obtenerItemsConActual(lista, listaId) {
+  if (lista.estado === 'cerrada') {
+    const r = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1`, [listaId]);
+    return r.rows;
+  }
+  const r = await pool.query(
+    `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
+     FROM listas_conteo_items li
+     LEFT JOIN validador_inventario vi
+       ON vi.bodega = $2 AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
+     WHERE li.lista_id = $1`,
+    [listaId, lista.bodega]
+  );
+  return r.rows;
+}
+
 // ── GET /api/validador-inventario/listas-conteo/:id/reporte ──────────────────
-// Reporte de diferencias (cantidad y valor). Disponible en cualquier momento,
-// no solo al cerrar, para poder revisar antes de cerrar.
+// Reporte de diferencias, mostrando SIEMPRE dos referencias lado a lado:
+//   - existencia_siis_inicial: la del momento en que se creó la lista.
+//   - existencia_siis_actual: si la lista ya está cerrada, la que quedó
+//     congelada al cerrar; si sigue abierta, se consulta en vivo contra
+//     validador_inventario (puede haber cambiado por movimientos de bodega).
+// Disponible en cualquier momento, no solo al cerrar.
 router.get('/listas-conteo/:id/reporte', authMiddleware, async (req, res) => {
   try {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
-    const { rows: items } = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1`, [req.params.id]);
-
-    let diferenciaValorTotal = 0;
-    let conDiferencia = 0;
-    let contados = 0;
-    const detalle = items.map(it => {
-      const definitivo = conteoDefinitivo(it);
-      if (definitivo !== null) contados++;
-      const diferenciaCantidad = definitivo === null ? null : Number((definitivo - Number(it.existencia_siis)).toFixed(3));
-      const diferenciaValor = diferenciaCantidad === null ? null : Number((diferenciaCantidad * Number(it.costo_unitario)).toFixed(2));
-      if (diferenciaCantidad) { conDiferencia++; diferenciaValorTotal += diferenciaValor; }
-      return {
-        id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, presentacion: it.presentacion, cuenta: it.cuenta,
-        existencia_siis: Number(it.existencia_siis), conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
-        conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null, definitivo,
-        diferencia_cantidad: diferenciaCantidad, diferencia_valor: diferenciaValor,
-      };
-    });
-
-    res.json({
-      lista: listaRows[0],
-      resumen: {
-        total_items: items.length, contados, pendientes: items.length - contados,
-        con_diferencia: conDiferencia, diferencia_valor_total: Number(diferenciaValorTotal.toFixed(2)),
-      },
-      items: detalle,
-    });
+    const lista = listaRows[0];
+    const items = await obtenerItemsConActual(lista, req.params.id);
+    const { resumen, items: detalle } = calcularDetalleReporte(lista, items);
+    res.json({ lista, resumen, items: detalle });
   } catch (err) {
     console.error('Error al generar reporte de lista de conteo:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -636,19 +761,44 @@ router.get('/listas-conteo/:id/reporte', authMiddleware, async (req, res) => {
 });
 
 // ── POST /api/validador-inventario/listas-conteo/:id/cerrar ──────────────────
-// Cierra la lista (editor/admin): ya no se pueden modificar los conteos.
+// Cierra la lista (editor/admin): congela la existencia SIIS "actual" de cada
+// ítem (la bodega puede haber seguido operando desde que se creó la lista) y
+// ya no se pueden modificar los conteos.
 router.post('/listas-conteo/:id/cerrar', authMiddleware, editorOrAdmin, async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query(
-      `UPDATE listas_conteo SET estado = 'cerrada', cerrado_por = $1, cerrado_en = NOW()
-       WHERE id = $2 AND estado = 'abierta' RETURNING *`,
+    await client.query('BEGIN');
+    const { rows: listaRows } = await client.query(
+      `SELECT * FROM listas_conteo WHERE id = $1 AND estado = 'abierta' FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!listaRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Lista no encontrada o ya estaba cerrada' });
+    }
+    const lista = listaRows[0];
+
+    await client.query(
+      `UPDATE listas_conteo_items li
+       SET existencia_siis_cierre = vi.existencia_sistema
+       FROM validador_inventario vi
+       WHERE li.lista_id = $1
+         AND vi.bodega = $2 AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento`,
+      [req.params.id, lista.bodega]
+    );
+
+    const { rows } = await client.query(
+      `UPDATE listas_conteo SET estado = 'cerrada', cerrado_por = $1, cerrado_en = NOW() WHERE id = $2 RETURNING *`,
       [req.user.id, req.params.id]
     );
-    if (!rows.length) return res.status(400).json({ error: 'Lista no encontrada o ya estaba cerrada' });
+    await client.query('COMMIT');
     res.json(rows[0]);
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error al cerrar lista de conteo:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
   }
 });
 
@@ -720,47 +870,56 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
 });
 
 // ── GET /api/validador-inventario/listas-conteo/:id/reporte-excel ────────────
-// Exporta el reporte de diferencias (cantidad y valor) a Excel.
+// Exporta el reporte de diferencias a Excel, con SIIS inicial y SIIS actual
+// (al cierre, o en vivo si sigue abierta) lado a lado.
 router.get('/listas-conteo/:id/reporte-excel', authMiddleware, async (req, res) => {
   try {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const lista = listaRows[0];
-    const { rows: items } = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`, [req.params.id]);
+    const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
+    itemsRaw.sort((a, b) => (a.presentacion || '').localeCompare(b.presentacion || '') || a.nombre.localeCompare(b.nombre));
+    const { resumen, items } = calcularDetalleReporte(lista, itemsRaw);
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Reporte de diferencias');
     ws.columns = [
-      { width: 16 }, { width: 40 }, { width: 20 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 14 }, { width: 14 },
+      { width: 16 }, { width: 40 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 12 },
+      { width: 13 }, { width: 13 }, { width: 13 }, { width: 13 },
     ];
     const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}`;
-    ws.mergeCells('A1:H1');
-    ws.getCell('A1').value = `Reporte de diferencias — Lista #${lista.id} — ${tituloCriterio} (${lista.estado === 'cerrada' ? 'CERRADA' : 'ABIERTA'})`;
+    ws.mergeCells('A1:K1');
+    ws.getCell('A1').value = `Reporte de diferencias — Conteo #${lista.id} — ${tituloCriterio} (${lista.estado === 'cerrada' ? 'CERRADA' : 'ABIERTA'})`;
     ws.getCell('A1').font = { bold: true, size: 13 };
+    ws.getCell('A2').value = `Total: ${resumen.total_items} · Contados: ${resumen.contados} · Con diferencia: ${resumen.con_diferencia} · Diferencia en valor (vs. actual): ${resumen.diferencia_valor_total_actual}`;
 
-    const filaEncabezado = 3;
-    ws.getRow(filaEncabezado).values = ['Código', 'Nombre', 'Presentación', 'SIIS', 'Conteo 1', 'Conteo 2', 'Dif. Cantidad', 'Dif. Valor'];
+    const filaEncabezado = 4;
+    ws.getRow(filaEncabezado).values = [
+      'Código', 'Nombre', 'Presentación', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2',
+      'Dif. Cant. (inicial)', 'Dif. Valor (inicial)', 'Dif. Cant. (actual)', 'Dif. Valor (actual)',
+    ];
     ws.getRow(filaEncabezado).font = { bold: true };
 
     let fila = filaEncabezado + 1;
-    let diferenciaValorTotal = 0;
     for (const it of items) {
-      const definitivo = conteoDefinitivo(it);
-      const diferenciaCantidad = definitivo === null ? null : Number((definitivo - Number(it.existencia_siis)).toFixed(3));
-      const diferenciaValor = diferenciaCantidad === null ? null : Number((diferenciaCantidad * Number(it.costo_unitario)).toFixed(2));
-      if (diferenciaValor) diferenciaValorTotal += diferenciaValor;
       ws.getRow(fila).values = [
-        it.codigo, it.nombre, it.presentacion || '', Number(it.existencia_siis),
-        it.conteo_1 !== null ? Number(it.conteo_1) : '', it.conteo_2 !== null ? Number(it.conteo_2) : '',
-        diferenciaCantidad ?? '', diferenciaValor ?? '',
+        it.codigo, it.nombre, it.presentacion || '',
+        it.existencia_siis_inicial, it.existencia_siis_actual ?? 'N/D',
+        it.conteo_1 ?? '', it.conteo_2 ?? '',
+        it.diferencia_cantidad_inicial ?? '', it.diferencia_valor_inicial ?? '',
+        it.diferencia_cantidad_actual ?? '', it.diferencia_valor_actual ?? '',
       ];
-      if (diferenciaCantidad) ws.getRow(fila).eachCell(c => { c.font = { color: { argb: diferenciaCantidad > 0 ? 'FF166534' : 'FFB91C1C' } }; });
+      if (it.diferencia_cantidad_actual) {
+        ws.getRow(fila).eachCell(c => { c.font = { color: { argb: it.diferencia_cantidad_actual > 0 ? 'FF166534' : 'FFB91C1C' } }; });
+      }
       fila++;
     }
-    ws.getRow(fila + 1).getCell(7).value = 'Diferencia total en valor:';
-    ws.getRow(fila + 1).getCell(7).font = { bold: true };
-    ws.getRow(fila + 1).getCell(8).value = Number(diferenciaValorTotal.toFixed(2));
-    ws.getRow(fila + 1).getCell(8).font = { bold: true };
+    ws.getRow(fila + 1).getCell(8).value = 'Dif. valor total (inicial):';
+    ws.getRow(fila + 1).getCell(9).value = resumen.diferencia_valor_total_inicial;
+    ws.getRow(fila + 2).getCell(10).value = 'Dif. valor total (actual):';
+    ws.getRow(fila + 2).getCell(11).value = resumen.diferencia_valor_total_actual;
+    ws.getRow(fila + 1).eachCell(c => { c.font = { bold: true }; });
+    ws.getRow(fila + 2).eachCell(c => { c.font = { bold: true }; });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="reporte_diferencias_${lista.id}.xlsx"`);
@@ -779,39 +938,274 @@ router.get('/listas-conteo/:id/reporte-excel', authMiddleware, async (req, res) 
 // Y la tabla maestra tipos_inventario, para que el Validador general y las
 // próximas listas de conteo ya vean el artículo clasificado.
 router.patch('/listas-conteo/:id/items/:itemId/cuenta', authMiddleware, editorOrAdmin, async (req, res) => {
+  const client = await pool.connect();
   try {
     const { cuenta, contable } = req.body;
-    if (!cuenta) return res.status(400).json({ error: 'cuenta requerida' });
+    if (!cuenta) { client.release(); return res.status(400).json({ error: 'cuenta requerida' }); }
 
-    const { rows: itemRows } = await pool.query(
+    const { rows: itemRows } = await client.query(
       `SELECT * FROM listas_conteo_items WHERE id = $1 AND lista_id = $2`,
       [req.params.itemId, req.params.id]
     );
-    if (!itemRows.length) return res.status(404).json({ error: 'Ítem no encontrado' });
+    if (!itemRows.length) { client.release(); return res.status(404).json({ error: 'Ítem no encontrado' }); }
     const item = itemRows[0];
+    const contableNuevo = truncar(contable, 30);
+    const cuentaNuevo = truncar(cuenta, 100);
 
-    const { rows } = await pool.query(
+    await client.query('BEGIN');
+    const { rows } = await client.query(
       `UPDATE listas_conteo_items SET cuenta = $1 WHERE id = $2 RETURNING *`,
-      [truncar(cuenta, 100), req.params.itemId]
+      [cuentaNuevo, req.params.itemId]
     );
 
     if (item.concat) {
-      await pool.query(
+      const { rows: anteriorRows } = await client.query(`SELECT contable, cuenta FROM tipos_inventario WHERE concat = $1`, [item.concat]);
+      const anterior = anteriorRows[0] || null;
+      if (!anterior || anterior.contable !== contableNuevo || anterior.cuenta !== cuentaNuevo) {
+        await registrarHistorialTipo(client, item.concat, anterior, contableNuevo, cuentaNuevo, 'manual_desde_conteo', req.user.id);
+      }
+      await client.query(
         `INSERT INTO tipos_inventario (concat, contable, cuenta)
          VALUES ($1, $2, $3)
          ON CONFLICT (concat) DO UPDATE SET contable = EXCLUDED.contable, cuenta = EXCLUDED.cuenta`,
-        [item.concat, truncar(contable, 30), truncar(cuenta, 100)]
+        [item.concat, contableNuevo, cuentaNuevo]
       );
     }
-
+    await client.query('COMMIT');
     res.json(rows[0]);
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error al clasificar ítem de la lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── PATCH /api/validador-inventario/listas-conteo/:id/items/:itemId/motivo ───
+// Justificación de la diferencia (para sustento contable/auditoría). Sin
+// restricción de rol — lo diligencia quien esté haciendo el conteo o el cierre.
+router.patch('/listas-conteo/:id/items/:itemId/motivo', authMiddleware, async (req, res) => {
+  try {
+    const { motivo } = req.body;
+    if (motivo === undefined) return res.status(400).json({ error: 'motivo requerido' });
+    const { rows } = await pool.query(
+      `UPDATE listas_conteo_items SET motivo_diferencia = $1 WHERE id = $2 AND lista_id = $3 RETURNING *`,
+      [truncar(motivo, 300), req.params.itemId, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Ítem no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar motivo de diferencia:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/dashboard?bodega=BV&desde=&hasta= ──────────
+// Vista gerencial de progreso: cuántos grupos existen vs cuántos se han
+// contado en el periodo, y la diferencia en valor acumulada de los conteos
+// cerrados en ese rango.
+router.get('/dashboard', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const desde = req.query.desde || '1900-01-01';
+    const hasta = req.query.hasta || '2999-12-31';
+
+    const { rows: gruposRows } = await pool.query(
+      `SELECT COUNT(DISTINCT grupo_inventario(codigo))::int AS total FROM validador_inventario WHERE bodega = $1`,
+      [bodega]
+    );
+    const totalGrupos = gruposRows[0].total;
+
+    const { rows: conteosPeriodo } = await pool.query(
+      `SELECT id, tipo, criterio, estado, subclasificar_presentacion, creado_en, cerrado_en
+       FROM listas_conteo
+       WHERE bodega = $1 AND creado_en::date BETWEEN $2 AND $3
+       ORDER BY creado_en DESC`,
+      [bodega, desde, hasta]
+    );
+
+    const gruposContados = new Set(
+      conteosPeriodo.filter(c => c.tipo === 'grupo_inventario' && c.estado === 'cerrada').map(c => c.criterio)
+    ).size;
+
+    const cerradosEnPeriodo = conteosPeriodo.filter(c => c.estado === 'cerrada');
+    let diferenciaValorPeriodo = 0, itemsConDiferenciaPeriodo = 0;
+    for (const c of cerradosEnPeriodo) {
+      const items = await obtenerItemsConActual(c, c.id);
+      const { resumen } = calcularDetalleReporte(c, items);
+      diferenciaValorPeriodo += resumen.diferencia_valor_total_actual;
+      itemsConDiferenciaPeriodo += resumen.con_diferencia;
+    }
+
+    res.json({
+      bodega,
+      total_grupos_inventario: totalGrupos,
+      grupos_contados_periodo: gruposContados,
+      conteos_abiertos: conteosPeriodo.filter(c => c.estado === 'abierta').length,
+      conteos_cerrados_periodo: cerradosEnPeriodo.length,
+      items_con_diferencia_periodo: itemsConDiferenciaPeriodo,
+      diferencia_valor_total_periodo: Number(diferenciaValorPeriodo.toFixed(2)),
+      conteos: conteosPeriodo,
+    });
+  } catch (err) {
+    console.error('Error al generar dashboard:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/historial-codigo/:codigo?bodega=BV ─────────
+// Todas las veces que un código ha entrado en un conteo, con su resultado —
+// útil para detectar diferencias recurrentes (posible fuga o error sistemático).
+router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    const { rows } = await pool.query(
+      `SELECT li.*, lc.tipo, lc.criterio, lc.estado, lc.creado_en AS conteo_creado_en, lc.cerrado_en AS conteo_cerrado_en
+       FROM listas_conteo_items li
+       JOIN listas_conteo lc ON lc.id = li.lista_id
+       WHERE li.codigo = $1 AND ($2 = '' OR lc.bodega = $2)
+       ORDER BY lc.creado_en DESC`,
+      [req.params.codigo, bodega]
+    );
+    const historial = rows.map(it => {
+      const definitivo = conteoDefinitivo(it);
+      const existenciaActual = it.estado === 'cerrada'
+        ? (it.existencia_siis_cierre !== null ? Number(it.existencia_siis_cierre) : null)
+        : null;
+      const diferencia = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
+      return {
+        lista_id: it.lista_id, tipo: it.tipo, criterio: it.criterio, estado: it.estado,
+        creado_en: it.conteo_creado_en, cerrado_en: it.conteo_cerrado_en,
+        conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
+        conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null,
+        existencia_siis_inicial: Number(it.existencia_siis), existencia_siis_actual: existenciaActual,
+        diferencia, motivo_diferencia: it.motivo_diferencia || '',
+      };
+    });
+    res.json(historial);
+  } catch (err) {
+    console.error('Error al obtener historial de código:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/consolidado?bodega=&desde=&hasta= ──
+// Agrega todos los conteos CERRADOS de un rango de fechas (por cerrado_en):
+// totales, y el detalle solo de los ítems con diferencia real, con trazabilidad
+// de a qué conteo pertenece cada uno.
+router.get('/listas-conteo-consolidado', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const desde = req.query.desde || '1900-01-01';
+    const hasta = req.query.hasta || '2999-12-31';
+
+    const { rows: conteos } = await pool.query(
+      `SELECT * FROM listas_conteo WHERE bodega = $1 AND estado = 'cerrada' AND cerrado_en::date BETWEEN $2 AND $3 ORDER BY cerrado_en ASC`,
+      [bodega, desde, hasta]
+    );
+
+    let diferenciaValorTotal = 0, itemsConDiferencia = 0;
+    const itemsDiferencia = [];
+    for (const c of conteos) {
+      const items = await obtenerItemsConActual(c, c.id);
+      const { items: detalle, resumen } = calcularDetalleReporte(c, items);
+      diferenciaValorTotal += resumen.diferencia_valor_total_actual;
+      itemsConDiferencia += resumen.con_diferencia;
+      for (const it of detalle) {
+        if (it.diferencia_cantidad_actual) {
+          itemsDiferencia.push({ ...it, conteo_id: c.id, conteo_tipo: c.tipo, conteo_criterio: c.criterio, conteo_cerrado_en: c.cerrado_en });
+        }
+      }
+    }
+
+    res.json({
+      bodega, desde, hasta,
+      total_conteos: conteos.length,
+      items_con_diferencia: itemsConDiferencia,
+      diferencia_valor_total: Number(diferenciaValorTotal.toFixed(2)),
+      conteos: conteos.map(c => ({ id: c.id, tipo: c.tipo, criterio: c.criterio, cerrado_en: c.cerrado_en })),
+      items: itemsDiferencia,
+    });
+  } catch (err) {
+    console.error('Error al generar reporte consolidado:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo-consolidado-excel ────────────
+router.get('/listas-conteo-consolidado-excel', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const desde = req.query.desde || '1900-01-01';
+    const hasta = req.query.hasta || '2999-12-31';
+
+    const { rows: conteos } = await pool.query(
+      `SELECT * FROM listas_conteo WHERE bodega = $1 AND estado = 'cerrada' AND cerrado_en::date BETWEEN $2 AND $3 ORDER BY cerrado_en ASC`,
+      [bodega, desde, hasta]
+    );
+    let diferenciaValorTotal = 0;
+    const itemsDiferencia = [];
+    for (const c of conteos) {
+      const items = await obtenerItemsConActual(c, c.id);
+      const { items: detalle, resumen } = calcularDetalleReporte(c, items);
+      diferenciaValorTotal += resumen.diferencia_valor_total_actual;
+      for (const it of detalle) {
+        if (it.diferencia_cantidad_actual) itemsDiferencia.push({ ...it, conteo_id: c.id, conteo_criterio: c.criterio, conteo_cerrado_en: c.cerrado_en });
+      }
+    }
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Consolidado');
+    ws.columns = [{ width: 10 }, { width: 12 }, { width: 16 }, { width: 40 }, { width: 12 }, { width: 12 }, { width: 13 }, { width: 30 }];
+    ws.mergeCells('A1:H1');
+    ws.getCell('A1').value = `Reporte consolidado de diferencias — Bodega ${bodega} — ${desde} a ${hasta}`;
+    ws.getCell('A1').font = { bold: true, size: 13 };
+    ws.getCell('A2').value = `Conteos cerrados: ${conteos.length} · Diferencia en valor total: ${diferenciaValorTotal.toFixed(2)}`;
+    const filaEnc = 4;
+    ws.getRow(filaEnc).values = ['Conteo #', 'Cerrado', 'Código', 'Nombre', 'Conteo def.', 'SIIS actual', 'Dif. Cantidad', 'Motivo'];
+    ws.getRow(filaEnc).font = { bold: true };
+    let fila = filaEnc + 1;
+    for (const it of itemsDiferencia) {
+      ws.getRow(fila).values = [
+        it.conteo_id, it.conteo_cerrado_en ? new Date(it.conteo_cerrado_en).toLocaleDateString('es-CO') : '',
+        it.codigo, it.nombre, it.definitivo, it.existencia_siis_actual, it.diferencia_cantidad_actual, it.motivo_diferencia || '',
+      ];
+      fila++;
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="consolidado_${bodega}_${desde}_${hasta}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al exportar consolidado:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
