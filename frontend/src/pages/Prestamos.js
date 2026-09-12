@@ -371,6 +371,7 @@ export default function Prestamos() {
     { id: 'productos',   label: 'Productos' },
     { id: 'reportes',    label: 'Reportes' },
     { id: 'dashboard',   label: 'Dashboard' },
+    { id: 'pendientes_cierre', label: 'Pendientes de cierre' },
   ];
 
   return (
@@ -414,6 +415,7 @@ export default function Prestamos() {
               <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />
             </div>
           )}
+          {activeTab === 'pendientes_cierre' && <TabPendientesCierre prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
         </>
       )}
     </div>
@@ -5438,8 +5440,53 @@ function itemsPendientesDe(p, devoluciones, cruces = []) {
   }).filter(i => i.pendiente > 0);
 }
 
+// ─── Pendientes/sobrantes del lado de las DEVOLUCIONES (IDP/ED) ────────────────
+// Espejo de itemsPendientesDe, pero visto desde la devolución: cuánto de cada
+// producto de esa devolución todavía NO ha sido asignado (cruzado) contra
+// ningún préstamo. Usa items_cruzados (la asignación real por producto de
+// cada cruce), no devolucion_items (que es solo el detalle informativo del
+// documento completo).
+function itemsPendientesDeDevolucion(d, cruces = []) {
+  const asignadoPorCodigo = {};
+  (cruces || []).filter(c => c.devolucion_id === d.id).forEach(c => {
+    (c.items_cruzados || []).forEach(it => {
+      asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
+    });
+  });
+  return (d.items || []).map(i => {
+    const asignado = asignadoPorCodigo[i.codigo] || 0;
+    const pendiente = Math.max(0, Number(i.cantidad) - asignado);
+    return { ...i, asignado, pendiente };
+  }).filter(i => i.pendiente > 0);
+}
+
+// Productos de una devolución que quedaron marcados como sobrante (unidades
+// que no se pudieron asignar a ningún préstamo al momento de cruzar). Se
+// deduplica por grupo de cruce, igual que en TabHistorialCruces, para no
+// sumar el mismo sobrante varias veces si el grupo tiene varios pares.
+function itemsSobranteDeDevolucion(d, cruces = []) {
+  const gruposVistos = new Set();
+  const sobrantePorCodigo = {};
+  (cruces || [])
+    .filter(c => c.devolucion_id === d.id && c.grupo_tiene_sobrante && c.grupo_numero)
+    .forEach(c => {
+      if (gruposVistos.has(c.grupo_numero)) return;
+      gruposVistos.add(c.grupo_numero);
+      (c.grupo_sobrante_detalle || [])
+        .filter(s => s.devolucion_id === d.id)
+        .forEach(s => {
+          if (!sobrantePorCodigo[s.codigo]) {
+            sobrantePorCodigo[s.codigo] = { codigo: s.codigo, nombre: s.nombre, cantidad: 0 };
+          }
+          sobrantePorCodigo[s.codigo].cantidad += Number(s.cantidad_sobrante || 0);
+        });
+    });
+  return Object.values(sobrantePorCodigo).filter(s => s.cantidad > 0);
+}
+
 function construirReportePendientes(prestamos, devoluciones, cruces, tipo, desde, hasta) {
   const filtrados = prestamos.filter(p => {
+
     if (p.tipo !== tipo) return false;
     if (p.estado === 'cerrado') return false;
     const f = String(p.fecha || '').substring(0, 10);
@@ -5478,11 +5525,211 @@ function construirReportePendientes(prestamos, devoluciones, cruces, tipo, desde
   return { porClinica, granTotal };
 }
 
+// Espejo de construirReportePendientes pero para devoluciones (IDP/ED): agrupa
+// por clínica y documento SOLO los productos que aún están pendientes de
+// cruzar contra un préstamo, o que quedaron marcados como sobrante. No
+// depende del estado del documento completo, sino de si cada producto en
+// particular todavía tiene algo pendiente/sobrante — así una devolución
+// "parcial" solo muestra los productos que realmente faltan, no todos.
+function construirReporteDevolucionesPendientes(devoluciones, cruces, tipoDevolucion, desde, hasta) {
+  const filtradas = (devoluciones || []).filter(d => {
+    if (d.tipo !== tipoDevolucion) return false;
+    const f = String(d.fecha || '').substring(0, 10);
+    if (desde && f && f < desde) return false;
+    if (hasta && f && f > hasta) return false;
+    return true;
+  });
+
+  const porClinica = {};
+  let granTotal = 0;
+
+  filtradas.forEach(d => {
+    const pendientes = itemsPendientesDeDevolucion(d, cruces)
+      .map(i => ({ codigo: i.codigo, nombre: i.nombre, cantidad: i.pendiente, precio_unitario: i.precio_unitario, motivo: 'Pendiente por cruzar' }));
+    const sobrantes = itemsSobranteDeDevolucion(d, cruces)
+      .map(i => ({ codigo: i.codigo, nombre: i.nombre, cantidad: i.cantidad, precio_unitario: 0, motivo: 'Sobrante sin asignar' }));
+    const items = [...pendientes, ...sobrantes];
+    if (items.length === 0) return;
+
+    const clinica = d.clinica_nombre || 'Sin clínica';
+    if (!porClinica[clinica]) porClinica[clinica] = { documentos: {}, valorTotal: 0 };
+
+    const docKey = d.documento_contable || d.id;
+    if (!porClinica[clinica].documentos[docKey]) {
+      porClinica[clinica].documentos[docKey] = {
+        documento: d.documento_contable, fecha: d.fecha, productos: [], valorTotal: 0,
+      };
+    }
+
+    items.forEach(i => {
+      const valor = i.cantidad * Number(i.precio_unitario || 0);
+      porClinica[clinica].documentos[docKey].productos.push({
+        codigo: i.codigo, nombre: i.nombre, cantidad: i.cantidad, valor, motivo: i.motivo,
+      });
+      porClinica[clinica].documentos[docKey].valorTotal += valor;
+      porClinica[clinica].valorTotal += valor;
+      granTotal += valor;
+    });
+  });
+
+  return { porClinica, granTotal };
+}
+
+// ─── TAB PENDIENTES DE CIERRE ───────────────────────────────────────────────────
+// Agrupa, solo con los productos que realmente faltan (no el documento
+// completo), todo lo que sigue sin cerrarse: préstamos abiertos/parciales
+// (EPO/IPE) y devoluciones (IDP/ED) pendientes de cruzar o con sobrante sin
+// asignar.
+function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
+  const [desde, setDesde] = useState('2020-01-01');
+  const [hasta, setHasta] = useState(new Date().toISOString().substring(0, 10));
+
+  const reporteEPO = useMemo(() => construirReportePendientes(prestamos, devoluciones, cruces, 'egreso', desde, hasta), [prestamos, devoluciones, cruces, desde, hasta]);
+  const reporteIPE = useMemo(() => construirReportePendientes(prestamos, devoluciones, cruces, 'ingreso', desde, hasta), [prestamos, devoluciones, cruces, desde, hasta]);
+  const reporteIDP = useMemo(() => construirReporteDevolucionesPendientes(devoluciones, cruces, 'devolucion_ingreso', desde, hasta), [devoluciones, cruces, desde, hasta]);
+  const reporteED  = useMemo(() => construirReporteDevolucionesPendientes(devoluciones, cruces, 'devolucion_egreso', desde, hasta), [devoluciones, cruces, desde, hasta]);
+
+  const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
+
+  function bloque(titulo, icono, subtitulo, reporte, mostrarMotivo) {
+    const clinicasKeys = Object.keys(reporte.porClinica).sort();
+    return (
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{icono} {titulo}</div>
+            <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{subtitulo}</div>
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: '#BA7517' }}>{fmt(reporte.granTotal)}</div>
+        </div>
+        {clinicasKeys.length === 0 && (
+          <div style={{ fontSize: 12, color: 'var(--t-text-muted)', padding: 10, textAlign: 'center', border: '1px dashed var(--t-border)', borderRadius: 8 }}>
+            Nada pendiente de cierre en el rango seleccionado
+          </div>
+        )}
+        {clinicasKeys.map(clinica => {
+          const data = reporte.porClinica[clinica];
+          const documentos = Object.values(data.documentos).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+          return (
+            <div key={clinica} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 8, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--t-bg-inner)' }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{clinica}</span>
+                <span style={{ fontWeight: 600, fontSize: 13, color: '#BA7517' }}>{fmt(data.valorTotal)}</span>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left' }}>
+                    <th style={{ padding: '5px 12px', fontWeight: 500 }}>Documento</th>
+                    <th style={{ padding: '5px 12px', fontWeight: 500 }}>Fecha</th>
+                    <th style={{ padding: '5px 12px', fontWeight: 500 }}>Producto</th>
+                    <th style={{ padding: '5px 12px', fontWeight: 500 }}>Código</th>
+                    {mostrarMotivo && <th style={{ padding: '5px 12px', fontWeight: 500 }}>Motivo</th>}
+                    <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Cantidad</th>
+                    <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Valor</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {documentos.map((doc, di) => doc.productos.map((prod, pi) => (
+                    <tr key={`${di}-${pi}`} style={{ borderTop: '1px solid var(--t-border)' }}>
+                      {pi === 0 && (
+                        <td rowSpan={doc.productos.length} style={{ padding: '5px 12px', fontWeight: 600, verticalAlign: 'top' }}>{doc.documento}</td>
+                      )}
+                      {pi === 0 && (
+                        <td rowSpan={doc.productos.length} style={{ padding: '5px 12px', color: 'var(--t-text-muted)', verticalAlign: 'top' }}>{fmtFecha(doc.fecha)}</td>
+                      )}
+                      <td style={{ padding: '5px 12px' }}>{prod.nombre}</td>
+                      <td style={{ padding: '5px 12px', color: 'var(--t-text-muted)' }}>{prod.codigo}</td>
+                      {mostrarMotivo && (
+                        <td style={{ padding: '5px 12px' }}>
+                          <span style={{
+                            padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                            background: prod.motivo === 'Sobrante sin asignar' ? '#ef444422' : '#f59e0b22',
+                            color: prod.motivo === 'Sobrante sin asignar' ? '#ef4444' : '#f59e0b',
+                          }}>{prod.motivo}</span>
+                        </td>
+                      )}
+                      <td style={{ padding: '5px 12px', textAlign: 'right' }}>{prod.cantidad.toLocaleString('es-CO')}</td>
+                      <td style={{ padding: '5px 12px', textAlign: 'right' }}>{fmt(prod.valor)}</td>
+                    </tr>
+                  )))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function exportarExcel() {
+    const filas = (reporte, tipoLabel, conMotivo) => {
+      const out = [];
+      Object.keys(reporte.porClinica).sort().forEach(clinica => {
+        Object.values(reporte.porClinica[clinica].documentos).forEach(doc => {
+          doc.productos.forEach(prod => {
+            out.push({
+              Tipo: tipoLabel,
+              Clínica: clinica,
+              Documento: doc.documento,
+              Fecha: fmtFecha(doc.fecha),
+              Producto: prod.nombre,
+              Código: prod.codigo,
+              ...(conMotivo ? { Motivo: prod.motivo } : {}),
+              Cantidad: prod.cantidad,
+              Valor: prod.valor,
+            });
+          });
+        });
+      });
+      return out;
+    };
+
+    const datosPrestamos = [
+      ...filas(reporteEPO, 'EPO (préstamos que hacemos)', false),
+      ...filas(reporteIPE, 'IPE (préstamos que nos hacen)', false),
+    ];
+    const datosDevoluciones = [
+      ...filas(reporteIDP, 'IDP (nos deben devolver)', true),
+      ...filas(reporteED, 'ED (debemos devolver)', true),
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(datosPrestamos), 'Préstamos pendientes');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(datosDevoluciones), 'Devoluciones pendientes');
+    XLSX.writeFile(wb, `pendientes_de_cierre_${desde}_a_${hasta}.xlsx`);
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 18 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Desde</div>
+          <input type="date" value={desde} onChange={e => setDesde(e.target.value)} style={inputS} />
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 3 }}>Hasta</div>
+          <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={inputS} />
+        </div>
+        <button onClick={exportarExcel}
+          style={{ marginTop: 16, padding: '8px 14px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+          ↓ Exportar a Excel
+        </button>
+      </div>
+
+      {bloque('Préstamos EPO pendientes', '🏥', 'Documentos abiertos o parciales — solo los productos aún pendientes', reporteEPO, false)}
+      {bloque('Préstamos IPE pendientes', '📦', 'Documentos abiertos o parciales — solo los productos aún pendientes', reporteIPE, false)}
+      {bloque('Devoluciones IDP pendientes/sobrante', '↩', 'Solo los productos pendientes de cruzar o con sobrante sin asignar', reporteIDP, true)}
+      {bloque('Devoluciones ED pendientes/sobrante', '↩', 'Solo los productos pendientes de cruzar o con sobrante sin asignar', reporteED, true)}
+    </div>
+  );
+}
+
 function ModalReportePendientes({ prestamos, devoluciones, cruces, onClose }) {
   const [desde, setDesde] = useState('2020-01-01');
   const [hasta, setHasta] = useState(new Date().toISOString().substring(0, 10));
 
   const reporteEgresos = construirReportePendientes(prestamos, devoluciones, cruces, 'egreso', desde, hasta);
+
   const reporteIngresos = construirReportePendientes(prestamos, devoluciones, cruces, 'ingreso', desde, hasta);
 
   const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
@@ -5616,6 +5863,18 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
