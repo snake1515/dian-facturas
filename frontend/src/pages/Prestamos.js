@@ -1912,6 +1912,59 @@ function badgeEstado(estado) {
   return mapa[estado] || { bg: '#94a3b822', color: '#64748b', label: estado || '—' };
 }
 
+// Dropdown de selección múltiple para el filtro de Estado (abierto/parcial/cerrado),
+// usado a lado y lado en Préstamos y Devoluciones dentro de la pestaña Cruces.
+function FiltroEstadoMultiple({ value, onChange, style }) {
+  const [abierto, setAbierto] = React.useState(false);
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    function onClickFuera(e) { if (ref.current && !ref.current.contains(e.target)) setAbierto(false); }
+    document.addEventListener('mousedown', onClickFuera);
+    return () => document.removeEventListener('mousedown', onClickFuera);
+  }, []);
+  const OPCIONES = [
+    { v: 'abierto', n: 'Abierto' },
+    { v: 'parcial', n: 'Parcial' },
+    { v: 'cerrado', n: 'Cerrado' },
+  ];
+  function toggle(v) {
+    onChange(value.includes(v) ? value.filter(x => x !== v) : [...value, v]);
+  }
+  const label = value.length === 0
+    ? 'Estado: todos'
+    : `Estado: ${value.map(v => OPCIONES.find(o => o.v === v)?.n).join(', ')}`;
+  return (
+    <div ref={ref} style={{ position: 'relative', ...style }}>
+      <button type="button" onClick={() => setAbierto(o => !o)} title="Filtrar por estado (selección múltiple)"
+        style={{ width: '100%', textAlign: 'left', padding: '6px 6px', fontSize: 12, borderRadius: 6,
+          border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)',
+          cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {label} ▾
+      </button>
+      {abierto && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 20, marginTop: 2,
+          background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 6,
+          minWidth: 140, boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
+          {OPCIONES.map(o => (
+            <label key={o.v} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
+              fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              <input type="checkbox" checked={value.includes(o.v)} onChange={() => toggle(o.v)} />
+              {o.n}
+            </label>
+          ))}
+          {value.length > 0 && (
+            <div onClick={() => onChange([])}
+              style={{ padding: '6px 10px', fontSize: 11, color: 'var(--t-text-muted)', cursor: 'pointer',
+                borderTop: '1px solid var(--t-border)' }}>
+              Limpiar
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [selPrestamos,  setSelPrestamos]  = React.useState([]);
   const [selDevoluciones,setSelDevoluciones]= React.useState([]);
@@ -2008,14 +2061,14 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const [mesPrest,     setMesPrest]     = React.useState(''); // '' | '01'..'12'
   const [fDesdePrest,  setFDesdePrest]  = React.useState('');
   const [fHastaPrest,  setFHastaPrest]  = React.useState('');
-  const [estadoPrest,  setEstadoPrest]  = React.useState(''); // '' | abierto | parcial | cerrado
+  const [estadoPrest,  setEstadoPrest]  = React.useState([]); // array de: abierto | parcial | cerrado (vacío = todos)
   const [ordenPrest,   setOrdenPrest]   = React.useState(''); // '' | 'asc' | 'desc' — por consecutivo del documento
   const [tipoDevol,    setTipoDevol]    = React.useState(''); // '' | 'devolucion_egreso' (ED) | 'devolucion_ingreso' (IDP)
   const [anioDevol,    setAnioDevol]    = React.useState('');
   const [mesDevol,     setMesDevol]     = React.useState(''); // '' | '01'..'12'
   const [fDesdeDevol,  setFDesdeDevol]  = React.useState('');
   const [fHastaDevol,  setFHastaDevol]  = React.useState('');
-  const [estadoDevol,  setEstadoDevol]  = React.useState(''); // '' | abierto | parcial | cerrado
+  const [estadoDevol,  setEstadoDevol]  = React.useState([]); // array de: abierto | parcial | cerrado (vacío = todos)
   const [ordenDevol,   setOrdenDevol]   = React.useState(''); // '' | 'asc' | 'desc' — por consecutivo del documento
   const [detalleCruce, setDetalleCruce] = React.useState(null);
   const [detalleCard,  setDetalleCard]  = React.useState(null);
@@ -2125,7 +2178,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
 
   const prestFiltrados = prestamosBase.filter(p =>
     matchDoc(p, filtroPrest.toLowerCase()) && matchFecha(p, anioPrest, mesPrest, fDesdePrest, fHastaPrest) &&
-    (!estadoPrest || p.estado === estadoPrest) &&
+    (estadoPrest.length === 0 || estadoPrest.includes(p.estado)) &&
     (!tipoPrest || p.tipo === tipoPrest)
   ).sort((a, b) => ordenPrest ? (ordenPrest === 'asc' ? numeroConsecutivo(a) - numeroConsecutivo(b) : numeroConsecutivo(b) - numeroConsecutivo(a)) : 0);
 
@@ -2143,7 +2196,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       if (!tiposRequeridos.has(p.tipo)) return false;
     }
     return matchDoc(p, filtroDevol.toLowerCase()) && matchFecha(p, anioDevol, mesDevol, fDesdeDevol, fHastaDevol) &&
-      (!estadoDevol || p.estado === estadoDevol) &&
+      (estadoDevol.length === 0 || estadoDevol.includes(p.estado)) &&
       (!tipoDevol || p.tipo === tipoDevol);
   }).sort((a, b) => ordenDevol ? (ordenDevol === 'asc' ? numeroConsecutivo(a) - numeroConsecutivo(b) : numeroConsecutivo(b) - numeroConsecutivo(a)) : 0);
 
@@ -2265,13 +2318,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               <option value="egreso">EPO</option>
               <option value="ingreso">IPE</option>
             </select>
-            <select value={estadoPrest} onChange={e => setEstadoPrest(e.target.value)}
-              title="Filtrar por estado" style={{ ...inputS, flex: '0 0 100px', padding: '6px 6px', fontSize: 12 }}>
-              <option value="">Estado: todos</option>
-              <option value="abierto">Abierto</option>
-              <option value="parcial">Parcial</option>
-              <option value="cerrado">Cerrado</option>
-            </select>
+            <FiltroEstadoMultiple value={estadoPrest} onChange={setEstadoPrest} style={{ flex: '0 0 130px' }} />
             <select value={ordenPrest} onChange={e => setOrdenPrest(e.target.value)}
               title="Ordenar por consecutivo del documento" style={{ ...inputS, flex: '0 0 130px', padding: '6px 6px', fontSize: 12 }}>
               <option value="">Sin ordenar</option>
@@ -2282,8 +2329,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               title="Desde" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
             <input type="date" value={fHastaPrest} onChange={e => setFHastaPrest(e.target.value)}
               title="Hasta" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
-            {(anioPrest || mesPrest || fDesdePrest || fHastaPrest || estadoPrest || ordenPrest || tipoPrest) && (
-              <span onClick={() => { setAnioPrest(''); setMesPrest(''); setFDesdePrest(''); setFHastaPrest(''); setEstadoPrest(''); setOrdenPrest(''); setTipoPrest(''); }}
+            {(anioPrest || mesPrest || fDesdePrest || fHastaPrest || estadoPrest.length > 0 || ordenPrest || tipoPrest) && (
+              <span onClick={() => { setAnioPrest(''); setMesPrest(''); setFDesdePrest(''); setFHastaPrest(''); setEstadoPrest([]); setOrdenPrest(''); setTipoPrest(''); }}
                 title="Limpiar filtros"
                 style={{ cursor: 'pointer', fontSize: 13, color: 'var(--t-text-muted)', padding: '0 4px', flex: '0 0 auto' }}>✕</span>
             )}
@@ -2372,13 +2419,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               <option value="devolucion_egreso">ED</option>
               <option value="devolucion_ingreso">IDP</option>
             </select>
-            <select value={estadoDevol} onChange={e => setEstadoDevol(e.target.value)}
-              title="Filtrar por estado" style={{ ...inputS, flex: '0 0 100px', padding: '6px 6px', fontSize: 12 }}>
-              <option value="">Estado: todos</option>
-              <option value="abierto">Abierto</option>
-              <option value="parcial">Parcial</option>
-              <option value="cerrado">Cerrado</option>
-            </select>
+            <FiltroEstadoMultiple value={estadoDevol} onChange={setEstadoDevol} style={{ flex: '0 0 130px' }} />
             <select value={ordenDevol} onChange={e => setOrdenDevol(e.target.value)}
               title="Ordenar por consecutivo del documento" style={{ ...inputS, flex: '0 0 130px', padding: '6px 6px', fontSize: 12 }}>
               <option value="">Sin ordenar</option>
@@ -2389,8 +2430,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               title="Desde" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
             <input type="date" value={fHastaDevol} onChange={e => setFHastaDevol(e.target.value)}
               title="Hasta" style={{ ...inputS, padding: '6px 6px', fontSize: 12 }} />
-            {(anioDevol || mesDevol || fDesdeDevol || fHastaDevol || estadoDevol || ordenDevol || tipoDevol) && (
-              <span onClick={() => { setAnioDevol(''); setMesDevol(''); setFDesdeDevol(''); setFHastaDevol(''); setEstadoDevol(''); setOrdenDevol(''); setTipoDevol(''); }}
+            {(anioDevol || mesDevol || fDesdeDevol || fHastaDevol || estadoDevol.length > 0 || ordenDevol || tipoDevol) && (
+              <span onClick={() => { setAnioDevol(''); setMesDevol(''); setFDesdeDevol(''); setFHastaDevol(''); setEstadoDevol([]); setOrdenDevol(''); setTipoDevol(''); }}
                 title="Limpiar filtros"
                 style={{ cursor: 'pointer', fontSize: 13, color: 'var(--t-text-muted)', padding: '0 4px', flex: '0 0 auto' }}>✕</span>
             )}
@@ -5456,6 +5497,9 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
 
 
 
