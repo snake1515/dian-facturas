@@ -2001,20 +2001,6 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     setFilasAsignacion(prev => prev.filter(f => f.id !== id));
   }
 
-  // Códigos que sí están pendientes en AL MENOS UNO de los préstamos
-  // seleccionados en este momento — se usa para marcar con advertencia
-  // cualquier producto de la devolución que no pertenezca a ninguno de
-  // ellos (evita cruzar por error un producto que en realidad es de otro
-  // préstamo distinto, como en el caso donde una devolución trae varios
-  // productos pero el préstamo elegido solo tiene pendiente uno de ellos).
-  const codigosPendientesSeleccionados = React.useMemo(() => {
-    const set = new Set();
-    selPrestamos.forEach(p => {
-      itemsPendientesDe(p, devoluciones, cruces).forEach(i => set.add(i.codigo));
-    });
-    return set;
-  }, [selPrestamos, devoluciones, cruces]);
-
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
   const [tipoPrest,    setTipoPrest]    = React.useState(''); // '' | 'egreso' (EPO) | 'ingreso' (IPE)
@@ -2050,6 +2036,20 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   // Separar por tipo
   const prestamosBase  = prestamos.filter(p => ['ingreso','egreso'].includes(p.tipo));
   const devoluciones   = prestamos.filter(p => ['devolucion_ingreso','devolucion_egreso'].includes(p.tipo));
+
+  // Códigos que sí están pendientes en AL MENOS UNO de los préstamos
+  // seleccionados en este momento — se usa para marcar con advertencia
+  // cualquier producto de la devolución que no pertenezca a ninguno de
+  // ellos (evita cruzar por error un producto que en realidad es de otro
+  // préstamo distinto, como en el caso donde una devolución trae varios
+  // productos pero el préstamo elegido solo tiene pendiente uno de ellos).
+  const codigosPendientesSeleccionados = React.useMemo(() => {
+    const set = new Set();
+    selPrestamos.forEach(p => {
+      itemsPendientesDe(p, devoluciones, cruces).forEach(i => set.add(i.codigo));
+    });
+    return set;
+  }, [selPrestamos, devoluciones, cruces]);
 
   // Años disponibles (para el selector rápido de año)
   const aniosDisponibles = React.useMemo(() => {
@@ -5456,6 +5456,10 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
 
 
 
