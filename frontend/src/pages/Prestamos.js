@@ -105,6 +105,125 @@ function fmtFecha(f) {
   return String(f).substring(0, 10);
 }
 
+// ─── Generador del reporte HTML descargable del Dashboard de Préstamos ────────
+// Recibe datos ya agregados/calculados desde TabDashboard (Prestamos.js) y
+// devuelve un documento HTML autocontenido (sin dependencias externas) listo
+// para descargar y abrir en cualquier navegador.
+function generarHTMLDashboardPrestamos(datos, devDatos, tipoLabel, tipoDevLabel, eficienciaPorClinica, tendenciaMensual, topProductosPendientes, modo) {
+  const esCantidad = modo === 'cantidad';
+  const fmtVal = (v) => esCantidad
+    ? `${Math.round(Number(v || 0)).toLocaleString('es-CO')} u.`
+    : `$${Math.round(Number(v || 0)).toLocaleString('es-CO')}`;
+
+  const totalPrestadoVal = datos.reduce((s, d) => s + Number(d.valor || 0), 0);
+  const totalPrestadoCant = datos.reduce((s, d) => s + Number(d.cantidad || 0), 0);
+  const totalDevueltoVal = devDatos.reduce((s, d) => s + Number(d.valor || 0), 0);
+  const totalDevueltoCant = devDatos.reduce((s, d) => s + Number(d.cantidad || 0), 0);
+  const totalPrestado = esCantidad ? totalPrestadoCant : totalPrestadoVal;
+  const totalDevuelto = esCantidad ? totalDevueltoCant : totalDevueltoVal;
+  const saldoPendiente = totalPrestado - totalDevuelto;
+
+  const escapeHtml = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const filaEficiencia = (e) => {
+    const pct = e.prestado > 0 ? Math.round((e.devuelto / e.prestado) * 100) : 0;
+    return `<tr>
+      <td>${escapeHtml(e.label)}</td>
+      <td class="num">${fmt(e.prestado)}</td>
+      <td class="num">${fmt(e.devuelto)}</td>
+      <td class="num">${pct}%</td>
+    </tr>`;
+  };
+
+  const filaTendencia = (t) => `<tr>
+    <td>${escapeHtml(t.label)}</td>
+    <td class="num">${fmt(t.prestamos)}</td>
+    <td class="num">${fmt(t.devoluciones)}</td>
+  </tr>`;
+
+  const filaProducto = (p) => `<tr>
+    <td>${escapeHtml(p.codigo)}</td>
+    <td>${escapeHtml(p.nombre)}</td>
+    <td class="num">${Number(p.cantidad || 0).toLocaleString('es-CO')}</td>
+    <td class="num">${fmt(p.valor)}</td>
+  </tr>`;
+
+  const filaDocumento = (d, esDev) => `<tr>
+    <td>${escapeHtml(d.documento)}</td>
+    <td>${escapeHtml(d.clinica)}</td>
+    ${esDev ? '' : `<td>${escapeHtml(d.bodega)}</td><td>${escapeHtml(d.estado)}</td>`}
+    <td>${fmtFecha(d.fecha)}</td>
+    <td class="num">${Number(d.cantidad || 0).toLocaleString('es-CO')}</td>
+    <td class="num">${fmt(d.valor)}</td>
+  </tr>`;
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard de Préstamos — ${escapeHtml(tipoLabel)}</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #1e293b; background: #f8fafc; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin: 28px 0 8px; border-bottom: 2px solid #2563eb; padding-bottom: 4px; }
+  .subt { color: #64748b; font-size: 12px; margin-bottom: 20px; }
+  .kpis { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .kpi { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 18px; min-width: 160px; }
+  .kpi .lbl { font-size: 11px; color: #64748b; text-transform: uppercase; }
+  .kpi .val { font-size: 18px; font-weight: 700; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 12px; margin-bottom: 8px; }
+  th, td { border-bottom: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; }
+  th { background: #f1f5f9; font-weight: 600; }
+  td.num, th.num { text-align: right; }
+  tr:hover td { background: #f8fafc; }
+</style>
+</head>
+<body>
+  <h1>Dashboard de Préstamos — ${escapeHtml(tipoLabel)}</h1>
+  <div class="subt">Generado el ${new Date().toLocaleString('es-CO')} · Documentos de devolución: ${escapeHtml(tipoDevLabel)}</div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Total prestado</div><div class="val">${fmtVal(totalPrestado)}</div></div>
+    <div class="kpi"><div class="lbl">Total devuelto</div><div class="val">${fmtVal(totalDevuelto)}</div></div>
+    <div class="kpi"><div class="lbl">Saldo pendiente</div><div class="val">${fmtVal(saldoPendiente)}</div></div>
+    <div class="kpi"><div class="lbl">Documentos préstamo</div><div class="val">${datos.length}</div></div>
+    <div class="kpi"><div class="lbl">Documentos devolución</div><div class="val">${devDatos.length}</div></div>
+  </div>
+
+  <h2>Eficiencia por clínica</h2>
+  <table>
+    <thead><tr><th>Clínica</th><th class="num">Prestado</th><th class="num">Devuelto</th><th class="num">% devuelto</th></tr></thead>
+    <tbody>${eficienciaPorClinica.map(filaEficiencia).join('') || '<tr><td colspan="4">Sin datos</td></tr>'}</tbody>
+  </table>
+
+  <h2>Tendencia mensual (préstamos vs. devoluciones)</h2>
+  <table>
+    <thead><tr><th>Mes</th><th class="num">Préstamos</th><th class="num">Devoluciones</th></tr></thead>
+    <tbody>${tendenciaMensual.map(filaTendencia).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody>
+  </table>
+
+  <h2>Top productos con saldo pendiente</h2>
+  <table>
+    <thead><tr><th>Código</th><th>Nombre</th><th class="num">Cantidad</th><th class="num">Valor</th></tr></thead>
+    <tbody>${topProductosPendientes.map(filaProducto).join('') || '<tr><td colspan="4">Sin datos</td></tr>'}</tbody>
+  </table>
+
+  <h2>Documentos de préstamo (${escapeHtml(tipoLabel)})</h2>
+  <table>
+    <thead><tr><th>Documento</th><th>Clínica</th><th>Bodega</th><th>Estado</th><th>Fecha</th><th class="num">Cantidad</th><th class="num">Valor</th></tr></thead>
+    <tbody>${datos.map(d => filaDocumento(d, false)).join('') || '<tr><td colspan="7">Sin datos</td></tr>'}</tbody>
+  </table>
+
+  <h2>Documentos de devolución (${escapeHtml(tipoDevLabel)})</h2>
+  <table>
+    <thead><tr><th>Documento</th><th>Clínica</th><th>Fecha</th><th class="num">Cantidad</th><th class="num">Valor</th></tr></thead>
+    <tbody>${devDatos.map(d => filaDocumento(d, true)).join('') || '<tr><td colspan="5">Sin datos</td></tr>'}</tbody>
+  </table>
+</body>
+</html>`;
+}
+
 async function apiUpload(path, formData) {
   const token = localStorage.getItem('token');
   const res = await fetch(`${API_BASE}${path}`, {
@@ -5497,6 +5616,18 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
