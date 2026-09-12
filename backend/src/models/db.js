@@ -634,6 +634,29 @@ const initDB = async () => {
         cambiado_en        TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_tipos_inventario_historial_concat ON tipos_inventario_historial(concat);
+
+      -- ── Grupos de conteo (NUEVO, adicional a la cuenta contable) ───────────
+      -- Clasificación operativa por código completo (no por prefijo de 6
+      -- dígitos): grupo y subgrupo, tal como los define el archivo de Excel
+      -- de clasificación. Coexiste con tipos_inventario (cuenta contable) —
+      -- un artículo tiene AMBAS clasificaciones en paralelo.
+      CREATE TABLE IF NOT EXISTS clasificacion_conteo (
+        codigo          VARCHAR(50) PRIMARY KEY,
+        grupo           VARCHAR(100),
+        subgrupo        VARCHAR(100),
+        actualizado_por INTEGER REFERENCES usuarios(id),
+        actualizado_en  TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_clasificacion_conteo_grupo ON clasificacion_conteo(grupo, subgrupo);
+
+      -- Subgrupo elegido al crear un conteo tipo 'grupo_conteo' (si se deja en
+      -- blanco, el conteo cubre TODO el grupo, todos los subgrupos).
+      ALTER TABLE listas_conteo ADD COLUMN IF NOT EXISTS subcriterio VARCHAR(150);
+
+      -- Snapshot de grupo/subgrupo de conteo por ítem (igual patrón que
+      -- 'cuenta' y 'presentacion': se congela al crear la lista).
+      ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS grupo_conteo VARCHAR(100);
+      ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS subgrupo_conteo VARCHAR(100);
     `);
 
     // Migraciones de roles — queries separadas para que los UPDATE surtan efecto antes del constraint
@@ -647,6 +670,10 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
 
 
 
