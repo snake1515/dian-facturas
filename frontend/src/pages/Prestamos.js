@@ -1945,9 +1945,18 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       if (!mismasDevoluciones) {
         // Cambió el conjunto de devoluciones elegidas -> se reconstruyen las
         // filas desde cero (una por cada producto de cada devolución).
+        // Solo se auto-asigna al préstamo único elegido cuando ese código
+        // realmente está pendiente en ese préstamo — si no, se deja sin
+        // asignar (en vez de precargar la cantidad completa a un préstamo
+        // que ni siquiera tiene ese producto), para no registrar por error
+        // un cruce de un producto que no le pertenece a ese préstamo.
+        const codigosPendientesUnico = selPrestamos.length === 1
+          ? new Set(itemsPendientesDe(selPrestamos[0], devoluciones, cruces).map(i => i.codigo))
+          : null;
         const nuevas = [];
         selDevoluciones.forEach(d => {
           (d.items || []).forEach(item => {
+            const perteneceUnico = codigosPendientesUnico && codigosPendientesUnico.has(item.codigo);
             nuevas.push({
               id: `${d.id}_${item.codigo}`,
               devolucion_id: d.id,
@@ -1956,8 +1965,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               nombre: item.nombre,
               precio_unitario: item.precio_unitario,
               cantidad_item: Number(item.cantidad),
-              prestamo_id: selPrestamos.length === 1 ? selPrestamos[0].id : '',
-              cantidad: selPrestamos.length === 1 ? Number(item.cantidad) : 0,
+              prestamo_id: perteneceUnico ? selPrestamos[0].id : '',
+              cantidad: perteneceUnico ? Number(item.cantidad) : 0,
             });
           });
         });
@@ -1967,12 +1976,14 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       // Las devoluciones no cambiaron (lo que cambió fue la selección de
       // préstamos, o no cambió nada). Si ahora queda exactamente un préstamo
       // elegido, se le asigna automáticamente a cualquier fila que todavía no
-      // tenga destino — sin importar si el préstamo se eligió antes o después
-      // de la devolución, y sin pisar cantidades que el usuario ya haya
-      // editado a mano.
+      // tenga destino Y cuyo código esté realmente pendiente en ese
+      // préstamo — sin importar si el préstamo se eligió antes o después de
+      // la devolución, y sin pisar cantidades que el usuario ya haya editado
+      // a mano.
       if (selPrestamos.length === 1) {
         const unico = selPrestamos[0].id;
-        return prev.map(f => f.prestamo_id
+        const codigosPendientes = new Set(itemsPendientesDe(selPrestamos[0], devoluciones, cruces).map(i => i.codigo));
+        return prev.map(f => (f.prestamo_id || !codigosPendientes.has(f.codigo))
           ? f
           : { ...f, prestamo_id: unico, cantidad: f.cantidad || f.cantidad_item });
       }
@@ -1989,6 +2000,20 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   function quitarFila(id) {
     setFilasAsignacion(prev => prev.filter(f => f.id !== id));
   }
+
+  // Códigos que sí están pendientes en AL MENOS UNO de los préstamos
+  // seleccionados en este momento — se usa para marcar con advertencia
+  // cualquier producto de la devolución que no pertenezca a ninguno de
+  // ellos (evita cruzar por error un producto que en realidad es de otro
+  // préstamo distinto, como en el caso donde una devolución trae varios
+  // productos pero el préstamo elegido solo tiene pendiente uno de ellos).
+  const codigosPendientesSeleccionados = React.useMemo(() => {
+    const set = new Set();
+    selPrestamos.forEach(p => {
+      itemsPendientesDe(p, devoluciones, cruces).forEach(i => set.add(i.codigo));
+    });
+    return set;
+  }, [selPrestamos, devoluciones, cruces]);
 
   const [filtroPrest,  setFiltroPrest]  = React.useState('');
   const [filtroDevol,  setFiltroDevol]  = React.useState('');
@@ -2518,13 +2543,19 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                   const filasItem = filasAsignacion.filter(f => f.devolucion_id === d.id && f.codigo === item.codigo);
                   const asignado = filasItem.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
                   const sobra = Number(item.cantidad) - asignado;
+                  const noPerteneceASeleccion = selPrestamos.length > 0 && !codigosPendientesSeleccionados.has(item.codigo);
                   return (
-                    <div key={item.codigo} style={{ marginBottom: 8, padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 6 }}>
+                    <div key={item.codigo} style={{ marginBottom: 8, padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 6, border: noPerteneceASeleccion ? '1px solid #ef4444' : 'none' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 6 }}>
                         <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)', minWidth: 90 }}>{item.codigo}</span>
                         <span style={{ flex: 1, color: 'var(--t-text-primary)' }}>{item.nombre}</span>
                         <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>total: {item.cantidad}</span>
                       </div>
+                      {noPerteneceASeleccion && (
+                        <div style={{ fontSize: 11, color: '#ef4444', marginBottom: 6 }}>
+                          ⚠ Ninguno de los préstamos seleccionados tiene este producto pendiente — probablemente pertenezca a otro préstamo. Verifica antes de asignarle cantidad.
+                        </div>
+                      )}
                       {filasItem.map((fila, idx) => (
                         <div key={fila.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, marginLeft: 14, flexWrap: 'wrap' }}>
                           {selPrestamos.length > 1 && (
@@ -5425,5 +5456,8 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
 
 
