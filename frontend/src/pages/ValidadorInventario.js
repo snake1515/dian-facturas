@@ -108,6 +108,10 @@ export default function ValidadorInventario() {
   const [guardandoCuentaId, setGuardandoCuentaId] = useState(null);
   const [importandoTipos, setImportandoTipos] = useState(false);
   const fileInputTiposRef = useRef(null);
+  const [editGrupoConteo, setEditGrupoConteo] = useState({}); // itemId -> {grupo, subgrupo}
+  const [guardandoGrupoConteoId, setGuardandoGrupoConteoId] = useState(null);
+  const [importandoGrupoConteo, setImportandoGrupoConteo] = useState(false);
+  const fileInputGrupoConteoRef = useRef(null);
   const [vista, setVista] = useState('inventario'); // 'inventario' | 'listas'
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
@@ -341,6 +345,67 @@ export default function ValidadorInventario() {
     };
     reader.readAsArrayBuffer(file);
   }
+
+  // ── Cargar Excel único de Grupos de Conteo (grupo + subgrupo, editor/admin) ─
+  // Un solo archivo/botón, con columnas CODIGO, GRUPO y SUBGRUPO (el nombre
+  // puede traer espacios o guion: "SUB-GRUPO", "sub grupo", etc.)
+  function handleArchivoGrupoConteo(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setError('');
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array', raw: true });
+        // Usa específicamente la hoja "Clasificacion" (sin importar mayúsculas/acentos);
+        // si el archivo no trae una hoja con ese nombre, usa la primera como respaldo.
+        const nombreHoja = wb.SheetNames.find(n => n.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === 'clasificacion');
+        const ws = wb.Sheets[nombreHoja || wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+
+        let idxHeader = -1, colCodigo = -1, colGrupo = -1, colSubgrupo = -1;
+        for (let i = 0; i < data.length; i++) {
+          const fila = data[i].map(c => String(c).trim().toUpperCase().replace(/[^A-Z]/g, ''));
+          const cCod = fila.findIndex(c => c.startsWith('CODIGO'));
+          const cGru = fila.findIndex(c => c === 'GRUPO');
+          const cSub = fila.findIndex(c => c === 'SUBGRUPO');
+          if (cCod !== -1 && cGru !== -1) {
+            idxHeader = i; colCodigo = cCod; colGrupo = cGru; colSubgrupo = cSub;
+            break;
+          }
+        }
+        if (idxHeader === -1) {
+          setError('No se encontraron las columnas CODIGO y GRUPO en el archivo (SUBGRUPO es opcional).');
+          return;
+        }
+
+        const items = data.slice(idxHeader + 1)
+          .map(r => ({
+            codigo: String(r[colCodigo] || '').trim(),
+            grupo: String(r[colGrupo] || '').trim(),
+            subgrupo: colSubgrupo !== -1 ? String(r[colSubgrupo] || '').trim() : '',
+          }))
+          .filter(it => it.codigo && it.grupo);
+
+        if (items.length === 0) {
+          setError('El archivo de grupos de conteo no tiene filas válidas');
+          return;
+        }
+
+        setImportandoGrupoConteo(true);
+        await api.post('/validador-inventario/clasificacion-conteo/importar', { items });
+        await cargar(bodega);
+      } catch (err) {
+        console.error(err);
+        setError('Error procesando el archivo de grupos de conteo: ' + (err.response?.data?.error || err.message));
+      } finally {
+        setImportandoGrupoConteo(false);
+        if (fileInputGrupoConteoRef.current) fileInputGrupoConteoRef.current.value = '';
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
   async function guardarConteo(item) {
     const valor = editValues[item.id];
     if (valor === undefined || valor === '') return;
@@ -421,6 +486,22 @@ export default function ValidadorInventario() {
       alert('Error guardando la cuenta/grupo: ' + (e.response?.data?.error || e.message));
     }
     setGuardandoCuentaId(null);
+  }
+
+  // ── Guardar grupo/subgrupo de conteo (editor o admin) ───────────────────────
+  // Es por CÓDIGO completo — se guarda solo para ese artículo puntual.
+  async function guardarGrupoConteo(item) {
+    const valor = editGrupoConteo[item.id];
+    if (valor === undefined) return;
+    setGuardandoGrupoConteoId(item.id);
+    try {
+      await api.patch(`/validador-inventario/clasificacion-conteo/${encodeURIComponent(item.codigo)}`, { grupo: valor.grupo, subgrupo: valor.subgrupo });
+      setItems(prev => prev.map(it => (it.codigo === item.codigo ? { ...it, grupo_conteo: valor.grupo, subgrupo_conteo: valor.subgrupo } : it)));
+      setEditGrupoConteo(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
+    } catch (e) {
+      alert('Error guardando el grupo de conteo: ' + (e.response?.data?.error || e.message));
+    }
+    setGuardandoGrupoConteoId(null);
   }
 
   // ── Clasificar manualmente la diferencia (real vs. por actualización) ──────
@@ -602,6 +683,18 @@ export default function ValidadorInventario() {
           </>
         )}
 
+        {isEditor && (
+          <>
+            <input ref={fileInputGrupoConteoRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoGrupoConteo} style={{ display: 'none' }} id="input-excel-grupo-conteo" />
+            <label htmlFor="input-excel-grupo-conteo" title="Un solo Excel con columnas CODIGO, GRUPO y SUBGRUPO (para las Listas de Conteo)" style={{
+              background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
+              padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+            }}>
+              📤 {importandoGrupoConteo ? 'Procesando…' : 'Cargar Grupos de Conteo (Excel)'}
+            </label>
+          </>
+        )}
+
         <input
           type="text" placeholder="Buscar código o nombre…" value={busqueda}
           onChange={(e) => setBusqueda(e.target.value)}
@@ -650,6 +743,8 @@ export default function ValidadorInventario() {
                   { key: null,            label: 'Código' },
                   { key: null,            label: 'Nombre' },
                   { key: null,            label: 'Cuenta' },
+                  { key: null,            label: 'Grupo Conteo' },
+                  { key: null,            label: 'Subgrupo' },
                   { key: null,            label: 'Presentación' },
                   { key: null,            label: 'Lote' },
                   { key: null,            label: 'Fecha Venc.' },
@@ -725,6 +820,47 @@ export default function ValidadorInventario() {
                         </div>
                       ) : (
                         <span style={{ color: item.cuenta ? 'var(--t-text-secondary)' : '#fbbf24' }}>{item.cuenta || '⚠️ Sin clasificar'}</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>
+                      {isEditor ? (
+                        <input
+                          type="text"
+                          value={editGrupoConteo[item.id]?.grupo !== undefined ? editGrupoConteo[item.id].grupo : (item.grupo_conteo || '')}
+                          onChange={(e) => setEditGrupoConteo(prev => ({ ...prev, [item.id]: { grupo: e.target.value, subgrupo: prev[item.id]?.subgrupo !== undefined ? prev[item.id].subgrupo : (item.subgrupo_conteo || '') } }))}
+                          placeholder={item.grupo_conteo ? '' : 'Sin grupo'}
+                          style={{ ...inputStyle, width: 110, fontSize: 12, ...(item.grupo_conteo ? {} : { borderColor: '#fbbf24' }) }}
+                        />
+                      ) : (
+                        <span style={{ color: item.grupo_conteo ? 'var(--t-text-secondary)' : '#fbbf24' }}>{item.grupo_conteo || '⚠️ Sin grupo'}</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>
+                      {isEditor ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <input
+                            type="text"
+                            value={editGrupoConteo[item.id]?.subgrupo !== undefined ? editGrupoConteo[item.id].subgrupo : (item.subgrupo_conteo || '')}
+                            onChange={(e) => setEditGrupoConteo(prev => ({ ...prev, [item.id]: { grupo: prev[item.id]?.grupo !== undefined ? prev[item.id].grupo : (item.grupo_conteo || ''), subgrupo: e.target.value } }))}
+                            placeholder="—"
+                            style={{ ...inputStyle, width: 110, fontSize: 12 }}
+                          />
+                          <button
+                            onClick={() => guardarGrupoConteo({ ...item, grupo: editGrupoConteo[item.id]?.grupo ?? item.grupo_conteo, subgrupo: editGrupoConteo[item.id]?.subgrupo ?? item.subgrupo_conteo })}
+                            disabled={editGrupoConteo[item.id] === undefined || guardandoGrupoConteoId === item.id}
+                            title="Guardar grupo y subgrupo de conteo"
+                            style={{
+                              background: editGrupoConteo[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
+                              color: editGrupoConteo[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
+                              border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
+                              cursor: editGrupoConteo[item.id] !== undefined ? 'pointer' : 'not-allowed',
+                            }}
+                          >
+                            {guardandoGrupoConteoId === item.id ? '…' : '💾'}
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ color: 'var(--t-text-secondary)' }}>{item.subgrupo_conteo || '—'}</span>
                       )}
                     </td>
                     <td style={{ padding: '6px 8px' }}>
@@ -956,6 +1092,7 @@ const LABEL_TIPO_LISTA = {
   cuenta_contable: 'Por cuenta contable',
   grupo_inventario: 'Por grupo de inventario',
   presentacion: 'Por presentación',
+  grupo_conteo: 'Por grupo de conteo',
 };
 
 function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
@@ -966,10 +1103,12 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
 
   const [formTipo, setFormTipo] = useState('general');
   const [formCriterio, setFormCriterio] = useState('');
+  const [formSubcriterio, setFormSubcriterio] = useState('');
   const [formSubclasificar, setFormSubclasificar] = useState(false);
   const [formConteo1Nombre, setFormConteo1Nombre] = useState('');
   const [formConteo2Nombre, setFormConteo2Nombre] = useState('');
   const [opciones, setOpciones] = useState([]);
+  const [opcionesSubgrupo, setOpcionesSubgrupo] = useState([]);
   const [creando, setCreando] = useState(false);
 
   const [listaActual, setListaActual] = useState(null); // { ...lista, items }
@@ -1006,11 +1145,27 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
 
   useEffect(() => {
     if (formTipo === 'general') { setOpciones([]); setFormCriterio(''); return; }
+    setFormCriterio(''); setFormSubcriterio(''); setOpcionesSubgrupo([]);
+    if (formTipo === 'grupo_conteo') {
+      api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega } })
+        .then(res => setOpciones(res.data || []))
+        .catch(() => setOpciones([]));
+      return;
+    }
     api.get('/validador-inventario/listas-conteo/opciones', { params: { bodega, tipo: formTipo } })
       .then(res => setOpciones(res.data || []))
       .catch(() => setOpciones([]));
-    setFormCriterio('');
   }, [formTipo, bodega]);
+
+  // Al elegir el grupo (solo para tipo 'grupo_conteo'), carga los subgrupos
+  // disponibles dentro de ese grupo específico.
+  useEffect(() => {
+    if (formTipo !== 'grupo_conteo' || !formCriterio) { setOpcionesSubgrupo([]); return; }
+    setFormSubcriterio('');
+    api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega, grupo: formCriterio } })
+      .then(res => setOpcionesSubgrupo(res.data || []))
+      .catch(() => setOpcionesSubgrupo([]));
+  }, [formTipo, formCriterio, bodega]);
 
   async function crearLista() {
     if (formTipo !== 'general' && !formCriterio) {
@@ -1022,11 +1177,12 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
     try {
       const res = await api.post('/validador-inventario/listas-conteo', {
         bodega, tipo: formTipo, criterio: formTipo === 'general' ? null : formCriterio,
+        subcriterio: formTipo === 'grupo_conteo' ? (formSubcriterio || null) : null,
         subclasificar_presentacion: formSubclasificar, conteo1_nombre: formConteo1Nombre, conteo2_nombre: formConteo2Nombre,
       });
       await cargarListas();
       await abrirLista(res.data.id);
-      setFormTipo('general'); setFormCriterio(''); setFormSubclasificar(false); setFormConteo1Nombre(''); setFormConteo2Nombre('');
+      setFormTipo('general'); setFormCriterio(''); setFormSubcriterio(''); setFormSubclasificar(false); setFormConteo1Nombre(''); setFormConteo2Nombre('');
     } catch (e) {
       setError('Error creando la lista: ' + (e.response?.data?.error || e.message));
     }
@@ -1250,15 +1406,26 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
               <option value="cuenta_contable">Por cuenta contable</option>
               <option value="grupo_inventario">Por grupo de inventario</option>
               <option value="presentacion">Por presentación</option>
+              <option value="grupo_conteo">Por grupo de conteo</option>
             </select>
           </label>
 
           {formTipo !== 'general' && (
             <label style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-              Criterio
+              {formTipo === 'grupo_conteo' ? 'Grupo' : 'Criterio'}
               <select value={formCriterio} onChange={(e) => setFormCriterio(e.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
                 <option value="">— Selecciona —</option>
                 {opciones.map(o => <option key={o.valor} value={o.valor}>{o.valor} ({o.items} ítems)</option>)}
+              </select>
+            </label>
+          )}
+
+          {formTipo === 'grupo_conteo' && formCriterio && (
+            <label style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+              Subgrupo (opcional — déjalo vacío para contar todo el grupo)
+              <select value={formSubcriterio} onChange={(e) => setFormSubcriterio(e.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
+                <option value="">— Todo el grupo —</option>
+                {opcionesSubgrupo.map(o => <option key={o.valor} value={o.valor}>{o.valor} ({o.items} ítems)</option>)}
               </select>
             </label>
           )}
@@ -1382,7 +1549,7 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {['Código', 'Nombre', 'Cuenta', 'Presentación', 'Lote', 'F. Venc.', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2', 'Diferencia (inicial)', 'Diferencia (actual)', 'Motivo'].map(h => (
+                {['Código', 'Nombre', 'Cuenta', 'Grupo', 'Subgrupo', 'Presentación', 'Lote', 'F. Venc.', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2', 'Diferencia (inicial)', 'Diferencia (actual)', 'Motivo'].map(h => (
                   <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -1458,6 +1625,8 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
                         </span>
                       )}
                     </td>
+                    <td style={{ padding: '6px 8px', color: item.grupo_conteo ? 'var(--t-text-secondary)' : '#fbbf24' }}>{item.grupo_conteo || '⚠️ Sin grupo'}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.subgrupo_conteo || '—'}</td>
                     <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.presentacion || '—'}</td>
                     <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
                     <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>
@@ -1813,6 +1982,77 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
