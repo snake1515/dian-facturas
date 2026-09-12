@@ -35,6 +35,19 @@ function parseNumCO(v) {
   return parseFloat(s) || 0;
 }
 
+// Normaliza un código de artículo leído desde Excel: cuando Excel guarda la
+// columna "codigo" como NÚMERO (en vez de texto), cualquier código que en el
+// sistema real empieza en 0 pierde ese cero al abrirse (ej. "0801010024" se
+// lee como 801010024, de 9 dígitos en vez de 10). Como el cruce con el
+// inventario es por código exacto, esto deja el ítem sin grupo/presentación/
+// clasificación asignada aunque el Excel esté "bien" a simple vista.
+// Solo se rellena si son puros dígitos y quedaron en 9 (nunca se toca un
+// código alfanumérico, como los de Papelería, ni uno que ya tiene 10).
+function normalizarCodigo(v) {
+  const s = String(v ?? '').trim();
+  return /^\d{9}$/.test(s) ? '0' + s : s;
+}
+
 function fmtFechaCorta(f) {
   if (!f) return '—';
   return String(f).substring(0, 10);
@@ -166,7 +179,7 @@ export default function ValidadorInventario() {
         const FRAGMENTO_ROTO_RE = /\/t[dr]>\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\s*$/i;
 
         for (const r of filas) {
-          const codigo = String(r[0] || '').trim();
+          const codigo = normalizarCodigo(r[0]);
           if (!codigo || codigo.toUpperCase().startsWith('TOTAL')) continue;
 
           let nombreRaw = String(r[1] || '');
@@ -266,7 +279,7 @@ export default function ValidadorInventario() {
 
         const items = data.slice(idxHeader + 1)
           .map(r => ({
-            codigo: String(r[colCodigo] || '').trim(),
+            codigo: normalizarCodigo(r[colCodigo]),
             presentacion: String(r[colPresentacion] || '').trim(),
           }))
           .filter(it => it.codigo);
@@ -381,7 +394,7 @@ export default function ValidadorInventario() {
 
         const items = data.slice(idxHeader + 1)
           .map(r => ({
-            codigo: String(r[colCodigo] || '').trim(),
+            codigo: normalizarCodigo(r[colCodigo]),
             grupo: String(r[colGrupo] || '').trim(),
             subgrupo: colSubgrupo !== -1 ? String(r[colSubgrupo] || '').trim() : '',
           }))
@@ -1982,143 +1995,6 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
