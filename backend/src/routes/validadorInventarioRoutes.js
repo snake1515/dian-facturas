@@ -28,10 +28,12 @@ router.get('/', authMiddleware, async (req, res) => {
   try {
     const bodega = (req.query.bodega || 'BV').toUpperCase();
     const { rows } = await pool.query(
-      `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion
+      `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo
        FROM validador_inventario vi
        LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
        LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
        WHERE vi.bodega = $1
        ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`,
       [bodega]
@@ -108,10 +110,12 @@ router.post('/importar', authMiddleware, async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion
+      `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo
        FROM validador_inventario vi
        LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
        LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
        WHERE vi.bodega = $1
        ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`,
       [bod]
@@ -423,18 +427,115 @@ router.get('/tipos-inventario/:concat/historial', authMiddleware, async (req, re
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// LISTAS DE CONTEO — sesiones de conteo físico sobre un subconjunto de una
-// bodega (general, por cuenta contable, por grupo de inventario o por
+// GRUPOS DE CONTEO — clasificación por código completo (grupo + subgrupo),
+// adicional a la cuenta contable. Un solo Excel, un solo botón de carga.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── POST /api/validador-inventario/clasificacion-conteo/importar ────────────
+// Body: { items: [{codigo, grupo, subgrupo}] }. Editor o admin.
+router.post('/clasificacion-conteo/importar', authMiddleware, editorOrAdmin, async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items es requerido' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let actualizados = 0;
+    for (const it of items) {
+      const codigo = truncar(it.codigo, 50);
+      if (!codigo) continue;
+      await client.query(
+        `INSERT INTO clasificacion_conteo (codigo, grupo, subgrupo, actualizado_por, actualizado_en)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (codigo) DO UPDATE SET
+           grupo = EXCLUDED.grupo, subgrupo = EXCLUDED.subgrupo,
+           actualizado_por = EXCLUDED.actualizado_por, actualizado_en = NOW()`,
+        [codigo, truncar(it.grupo, 100), truncar(it.subgrupo, 100), req.user.id]
+      );
+      actualizados++;
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, actualizados });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al importar clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── PATCH /api/validador-inventario/clasificacion-conteo/:codigo ────────────
+// Edición manual puntual (crea si no existía). Editor o admin.
+router.patch('/clasificacion-conteo/:codigo', authMiddleware, editorOrAdmin, async (req, res) => {
+  try {
+    const { grupo, subgrupo } = req.body;
+    if (!grupo) return res.status(400).json({ error: 'grupo requerido' });
+    const codigo = truncar(req.params.codigo, 50);
+    const { rows } = await pool.query(
+      `INSERT INTO clasificacion_conteo (codigo, grupo, subgrupo, actualizado_por, actualizado_en)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (codigo) DO UPDATE SET
+         grupo = EXCLUDED.grupo, subgrupo = EXCLUDED.subgrupo,
+         actualizado_por = EXCLUDED.actualizado_por, actualizado_en = NOW()
+       RETURNING *`,
+      [codigo, truncar(grupo, 100), truncar(subgrupo, 100), req.user.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/clasificacion-conteo/opciones?bodega=&grupo= ─
+// Sin 'grupo': lista de grupos disponibles en esa bodega (con conteo de ítems).
+// Con 'grupo': lista de subgrupos dentro de ese grupo (incluye "SIN SUBGRUPO").
+router.get('/clasificacion-conteo/opciones', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const grupo = req.query.grupo;
+
+    if (!grupo) {
+      const { rows } = await pool.query(
+        `SELECT cc.grupo AS valor, COUNT(*)::int AS items
+         FROM validador_inventario vi
+         JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+         WHERE vi.bodega = $1 AND cc.grupo IS NOT NULL AND cc.grupo <> ''
+         GROUP BY cc.grupo ORDER BY cc.grupo`,
+        [bodega]
+      );
+      return res.json(rows);
+    }
+
+    const { rows } = await pool.query(
+      `SELECT COALESCE(NULLIF(cc.subgrupo, ''), 'SIN SUBGRUPO') AS valor, COUNT(*)::int AS items
+       FROM validador_inventario vi
+       JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+       WHERE vi.bodega = $1 AND cc.grupo = $2
+       GROUP BY 1 ORDER BY 1`,
+      [bodega, grupo]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar opciones de grupo de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // presentación). Los ítems se "congelan" (snapshot) al crear la lista.
 // ════════════════════════════════════════════════════════════════════════════
 
-const TIPOS_LISTA = ['general', 'cuenta_contable', 'grupo_inventario', 'presentacion'];
+const TIPOS_LISTA = ['general', 'cuenta_contable', 'grupo_inventario', 'presentacion', 'grupo_conteo'];
 
 const LABEL_TIPO = {
   general: 'Conteo general',
   cuenta_contable: 'Conteo por cuenta contable',
   grupo_inventario: 'Conteo por grupo de inventario',
   presentacion: 'Conteo por presentación',
+  grupo_conteo: 'Conteo por grupo de conteo',
 };
 
 // Valor que cuenta como "definitivo" para el reporte de diferencias: Conteo 2
@@ -516,7 +617,7 @@ router.get('/listas-conteo/opciones', authMiddleware, async (req, res) => {
 // Crea una lista de conteo y toma la "foto" (snapshot) de los ítems que
 // cumplen el criterio elegido, tal como están en ese momento.
 router.post('/listas-conteo', authMiddleware, async (req, res) => {
-  const { bodega, tipo, criterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre } = req.body;
+  const { bodega, tipo, criterio, subcriterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre } = req.body;
   if (!bodega || !TIPOS_LISTA.includes(tipo)) {
     return res.status(400).json({ error: 'bodega y tipo válido son requeridos' });
   }
@@ -529,10 +630,11 @@ router.post('/listas-conteo', authMiddleware, async (req, res) => {
     await client.query('BEGIN');
 
     const { rows: listaRows } = await client.query(
-      `INSERT INTO listas_conteo (bodega, tipo, criterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre, creado_por)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO listas_conteo (bodega, tipo, criterio, subcriterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre, creado_por)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [bod, tipo, tipo === 'general' ? null : truncar(criterio, 150), !!subclasificar_presentacion, truncar(conteo1_nombre, 100), truncar(conteo2_nombre, 100), req.user.id]
+      [bod, tipo, tipo === 'general' ? null : truncar(criterio, 150), tipo === 'grupo_conteo' ? (truncar(subcriterio, 150) || null) : null,
+       !!subclasificar_presentacion, truncar(conteo1_nombre, 100), truncar(conteo2_nombre, 100), req.user.id]
     );
     const lista = listaRows[0];
 
@@ -547,16 +649,29 @@ router.post('/listas-conteo', authMiddleware, async (req, res) => {
     } else if (tipo === 'presentacion') {
       filtroSql = `AND COALESCE(pi.presentacion, 'SIN PRESENTACIÓN') = $2`;
       params.push(criterio);
+    } else if (tipo === 'grupo_conteo') {
+      filtroSql = `AND cc.grupo = $2`;
+      params.push(criterio);
+      if (subcriterio) {
+        filtroSql += ` AND COALESCE(NULLIF(cc.subgrupo, ''), 'SIN SUBGRUPO') = $3`;
+        params.push(subcriterio);
+      }
     }
+
+    // Orden: alfabético puro para "grupo_conteo" (así lo pidieron); para los
+    // demás tipos se mantiene el orden por presentación ya existente.
+    const ordenSql = tipo === 'grupo_conteo' ? 'ORDER BY vi.nombre ASC' : 'ORDER BY pi.presentacion NULLS LAST, vi.nombre ASC';
 
     const { rows: items } = await client.query(
       `SELECT vi.codigo, vi.nombre, vi.lote, vi.fecha_vencimiento, vi.existencia_sistema, vi.costo_unitario,
-              COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion
+              COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo
        FROM validador_inventario vi
        LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
        LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
        WHERE vi.bodega = $1 AND vi.sin_existencias = false ${filtroSql}
-       ORDER BY pi.presentacion NULLS LAST, vi.nombre ASC`,
+       ${ordenSql}`,
       params
     );
 
@@ -567,9 +682,9 @@ router.post('/listas-conteo', authMiddleware, async (req, res) => {
 
     for (const it of items) {
       await client.query(
-        `INSERT INTO listas_conteo_items (lista_id, codigo, nombre, lote, fecha_vencimiento, presentacion, cuenta, concat, existencia_siis, costo_unitario)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [lista.id, it.codigo, it.nombre, it.lote, it.fecha_vencimiento, it.presentacion, it.cuenta, it.concat, it.existencia_sistema, it.costo_unitario]
+        `INSERT INTO listas_conteo_items (lista_id, codigo, nombre, lote, fecha_vencimiento, presentacion, cuenta, concat, grupo_conteo, subgrupo_conteo, existencia_siis, costo_unitario)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [lista.id, it.codigo, it.nombre, it.lote, it.fecha_vencimiento, it.presentacion, it.cuenta, it.concat, it.grupo_conteo, it.subgrupo_conteo, it.existencia_sistema, it.costo_unitario]
       );
     }
 
@@ -700,6 +815,7 @@ function calcularDetalleReporte(lista, items) {
 
     return {
       id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, presentacion: it.presentacion, cuenta: it.cuenta,
+      grupo_conteo: it.grupo_conteo, subgrupo_conteo: it.subgrupo_conteo,
       existencia_siis_inicial: Number(it.existencia_siis),
       existencia_siis_actual: existenciaActual,
       conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
@@ -809,19 +925,20 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const lista = listaRows[0];
+    const ordenPlantilla = lista.tipo === 'grupo_conteo' ? 'ORDER BY nombre ASC' : 'ORDER BY presentacion NULLS LAST, nombre ASC';
     const { rows: items } = await pool.query(
-      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`,
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ${ordenPlantilla}`,
       [req.params.id]
     );
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Conteo');
     ws.columns = [
-      { width: 16 }, { width: 40 }, { width: 14 }, { width: 14 }, { width: 20 }, { width: 12 }, { width: 12 }, { width: 12 },
+      { width: 16 }, { width: 40 }, { width: 14 }, { width: 14 }, { width: 20 }, { width: 16 }, { width: 16 }, { width: 12 }, { width: 12 }, { width: 12 },
     ];
 
-    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}`;
-    ws.mergeCells('A1:H1');
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}${lista.subcriterio ? ' / ' + lista.subcriterio : ''}`;
+    ws.mergeCells('A1:J1');
     ws.getCell('A1').value = `Lista de Conteo #${lista.id} — ${tituloCriterio}`;
     ws.getCell('A1').font = { bold: true, size: 14 };
 
@@ -832,7 +949,7 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
     ['A2', 'C2', 'A3', 'C3'].forEach(c => { ws.getCell(c).font = { bold: true }; });
 
     const filaEncabezado = 5;
-    const encabezados = ['Código', 'Nombre', 'Lote', 'Fecha Venc.', 'Presentación', 'Conteo 1', 'Conteo 2', 'SIIS'];
+    const encabezados = ['Código', 'Nombre', 'Lote', 'Fecha Venc.', 'Presentación', 'Grupo', 'Subgrupo', 'Conteo 1', 'Conteo 2', 'SIIS'];
     ws.getRow(filaEncabezado).values = encabezados;
     ws.getRow(filaEncabezado).font = { bold: true };
     ws.getRow(filaEncabezado).eachCell(c => {
@@ -846,7 +963,7 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
       if (lista.subclasificar_presentacion && it.presentacion !== presentacionActual) {
         presentacionActual = it.presentacion;
         const r = ws.getRow(fila);
-        ws.mergeCells(`A${fila}:H${fila}`);
+        ws.mergeCells(`A${fila}:J${fila}`);
         r.getCell(1).value = it.presentacion || 'SIN PRESENTACIÓN';
         r.font = { bold: true, italic: true };
         r.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
@@ -854,6 +971,7 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
       }
       ws.getRow(fila).values = [
         it.codigo, it.nombre, it.lote || '', it.fecha_vencimiento || '', it.presentacion || '',
+        it.grupo_conteo || '', it.subgrupo_conteo || '',
         null, null, Number(it.existencia_siis),
       ];
       fila++;
@@ -1188,6 +1306,58 @@ router.get('/listas-conteo-consolidado-excel', authMiddleware, async (req, res) 
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
