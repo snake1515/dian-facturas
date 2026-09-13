@@ -155,7 +155,22 @@ export default function ValidadorInventario() {
     }).catch(() => {});
   }, []);
 
-  const subgruposDe = (grupo) => (grupo && mapaSubgrupos[grupo]) ? mapaSubgrupos[grupo] : [];
+  // Subgrupo siempre debe mostrar algo desplegable: si la fila ya tiene un
+  // grupo (comparando sin importar mayúsculas/minúsculas), sugiere solo los
+  // subgrupos de ESE grupo; si todavía no hay grupo elegido (item nuevo, sin
+  // clasificar), sugiere TODOS los subgrupos conocidos como punto de partida.
+  const todosLosSubgrupos = () => {
+    const set = new Set();
+    Object.values(mapaSubgrupos).forEach(arr => arr.forEach(s => set.add(s)));
+    return [...set].sort();
+  };
+  const subgruposDe = (grupo) => {
+    if (grupo) {
+      const key = Object.keys(mapaSubgrupos).find(k => k.toLowerCase() === grupo.trim().toLowerCase());
+      if (key) return mapaSubgrupos[key];
+    }
+    return todosLosSubgrupos();
+  };
 
   const cargar = useCallback(async (bod) => {
     setLoading(true);
@@ -2125,7 +2140,14 @@ function TablaGruposConteo({ isEditor, isAdmin, inputStyle }) {
     if (!mapaSubgruposLocal[r.grupo]) mapaSubgruposLocal[r.grupo] = new Set();
     mapaSubgruposLocal[r.grupo].add(r.subgrupo);
   }
-  const subgruposDeLocal = (grupo) => (grupo && mapaSubgruposLocal[grupo]) ? [...mapaSubgruposLocal[grupo]].sort() : [];
+  const subgruposDeLocal = (grupo) => {
+    const todos = [...new Set(rows.map(r => r.subgrupo).filter(Boolean))].sort();
+    if (grupo) {
+      const key = Object.keys(mapaSubgruposLocal).find(k => k.toLowerCase() === grupo.trim().toLowerCase());
+      if (key) return [...mapaSubgruposLocal[key]].sort();
+    }
+    return todos;
+  };
 
   return (
     <div>
@@ -2445,13 +2467,3 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
-
-
-
-
-
-
-
-
-
-
