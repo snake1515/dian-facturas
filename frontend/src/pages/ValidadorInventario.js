@@ -103,6 +103,7 @@ export default function ValidadorInventario() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [importando, setImportando] = useState(false);
+  const [alertaNuevosSinClasificar, setAlertaNuevosSinClasificar] = useState(null);
   const [busqueda, setBusqueda] = useState('');
   const [filtro, setFiltro] = useState('todos');
   const [sortCol, setSortCol] = useState(null);   // 'costo_unitario' | 'costo_total' | null
@@ -274,7 +275,13 @@ export default function ValidadorInventario() {
         setImportando(true);
         const res = await api.post('/validador-inventario/importar', { bodega: bodDetectada, items: nuevosItems });
         setBodega(bodDetectada);
-        setItems(res.data || []);
+        setItems(res.data?.items || []);
+        const alerta = res.data?.nuevos_sin_clasificar;
+        if (alerta && (alerta.sin_cuenta.length > 0 || alerta.sin_grupo_conteo.length > 0)) {
+          setAlertaNuevosSinClasificar(alerta);
+        } else {
+          setAlertaNuevosSinClasificar(null);
+        }
         if (filasCorregidas > 0) {
           setError(`⚠️ Se corrigieron automáticamente ${filasCorregidas} fila(s) del Excel que tenían la fecha de vencimiento pegada al nombre (fragmento HTML roto del reporte SIIS). Revisa esos ítems para confirmar que quedaron bien.`);
         }
@@ -621,8 +628,16 @@ export default function ValidadorInventario() {
     if (filtro === 'diferencias_reales' && getTipoDiferencia(it) !== 'real') return false;
     if (filtro === 'diferencias_actualizacion' && getTipoDiferencia(it) !== 'actualizacion') return false;
     if (filtro === 'sin_existencias' && !it.sin_existencias) return false;
+    if (filtro === 'sin_cuenta' && it.cuenta) return false;
+    if (filtro === 'sin_grupo_conteo' && it.grupo_conteo) return false;
     return true;
   });
+
+  // Totales de TODO lo sin clasificar en la bodega actual, sean nuevos o no —
+  // para el aviso rojo permanente (distinto del banner amarillo, que solo
+  // avisa de lo nuevo justo después de subir un Excel).
+  const totalSinCuenta = items.filter(it => !it.cuenta).length;
+  const totalSinGrupoConteo = items.filter(it => !it.grupo_conteo).length;
 
   if (sortCol) {
     itemsFiltrados.sort((a, b) => {
@@ -774,12 +789,58 @@ export default function ValidadorInventario() {
           <option value="diferencias_reales">⚠️ Diferencias reales</option>
           <option value="diferencias_actualizacion">🔄 Por actualización</option>
           <option value="sin_existencias">🚫 Sin existencias</option>
+          <option value="sin_cuenta">⚠️ Sin cuenta contable</option>
+          <option value="sin_grupo_conteo">⚠️ Sin grupo de conteo</option>
         </select>
       </div>
 
       {error && (
         <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
           {error}
+        </div>
+      )}
+
+      {(totalSinCuenta > 0 || totalSinGrupoConteo > 0) && (
+        <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+          <span>
+            🔴 En <strong>{bodega}</strong> hay <strong>{totalSinCuenta}</strong> ítem(s) sin cuenta contable y{' '}
+            <strong>{totalSinGrupoConteo}</strong> sin grupo de conteo (sean nuevos o no). Revísalos y clasifícalos.
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {totalSinCuenta > 0 && (
+              <button onClick={() => setFiltro('sin_cuenta')} style={{ background: '#5c2626', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Ver sin cuenta ({totalSinCuenta})
+              </button>
+            )}
+            {totalSinGrupoConteo > 0 && (
+              <button onClick={() => setFiltro('sin_grupo_conteo')} style={{ background: '#5c2626', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Ver sin grupo ({totalSinGrupoConteo})
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {alertaNuevosSinClasificar && (
+        <div style={{ background: '#3a2f0f', color: '#fbbf24', border: '1px solid #7a5c0f', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+          <span>
+            ⚠️ Entraron <strong>{alertaNuevosSinClasificar.total_nuevos}</strong> producto(s) nuevo(s) con esta carga —{' '}
+            <strong>{alertaNuevosSinClasificar.sin_cuenta.length}</strong> sin cuenta contable y{' '}
+            <strong>{alertaNuevosSinClasificar.sin_grupo_conteo.length}</strong> sin grupo de conteo. Clasifícalos para que queden agrupados correctamente.
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {alertaNuevosSinClasificar.sin_cuenta.length > 0 && (
+              <button onClick={() => setFiltro('sin_cuenta')} style={{ background: '#7a5c0f', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Ver sin cuenta
+              </button>
+            )}
+            {alertaNuevosSinClasificar.sin_grupo_conteo.length > 0 && (
+              <button onClick={() => setFiltro('sin_grupo_conteo')} style={{ background: '#7a5c0f', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Ver sin grupo
+              </button>
+            )}
+            <button onClick={() => setAlertaNuevosSinClasificar(null)} title="Cerrar aviso" style={{ background: 'none', border: 'none', color: '#fbbf24', cursor: 'pointer', fontSize: 14 }}>✕</button>
+          </div>
         </div>
       )}
 
@@ -2598,4 +2659,5 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
 
