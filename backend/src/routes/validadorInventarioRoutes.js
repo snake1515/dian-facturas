@@ -406,6 +406,52 @@ router.patch('/tipos-inventario/:concat', authMiddleware, editorOrAdmin, async (
   }
 });
 
+// ── GET /api/validador-inventario/opciones-cuentas ────────────────────────────
+// Lista de nombres de cuenta contable ya usados (para el desplegable de
+// "Cuenta" en cada artículo, sea nuevo o existente).
+router.get('/opciones-cuentas', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT cuenta FROM tipos_inventario WHERE cuenta <> '' ORDER BY cuenta ASC`
+    );
+    res.json(rows.map(r => r.cuenta));
+  } catch (err) {
+    console.error('Error al listar opciones de cuentas:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/opciones-grupos-conteo ──────────────────────
+// Todos los pares grupo/subgrupo ya usados (para el desplegable de "Grupo
+// Conteo" y "Subgrupo" en cada artículo, sea nuevo o existente).
+router.get('/opciones-grupos-conteo', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT grupo, subgrupo FROM clasificacion_conteo
+       WHERE grupo IS NOT NULL AND grupo <> ''
+       ORDER BY grupo ASC, subgrupo ASC NULLS FIRST`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar opciones de grupos de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/opciones-presentaciones ────────────────────
+// Lista de presentaciones ya usadas (para el desplegable de "Presentación").
+router.get('/opciones-presentaciones', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT presentacion FROM presentaciones_inventario WHERE presentacion <> '' ORDER BY presentacion ASC`
+    );
+    res.json(rows.map(r => r.presentacion));
+  } catch (err) {
+    console.error('Error al listar opciones de presentaciones:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // ── GET /api/validador-inventario/tipos-inventario?buscar= ───────────────────
 // Lista TODAS las clasificaciones de cuenta contable (concat -> contable/
 // cuenta), para la pestaña de datos maestros: ver, buscar, editar o agregar
@@ -1419,6 +1465,9 @@ router.get('/listas-conteo-consolidado-excel', authMiddleware, async (req, res) 
 });
 
 module.exports = router;
+
+
+
 
 
 
