@@ -638,6 +638,7 @@ export default function ValidadorInventario() {
         {[
           { key: 'inventario', label: 'Inventario' },
           { key: 'listas', label: 'Listas de Conteo' },
+          { key: 'datos', label: 'Datos' },
         ].map(t => (
           <button
             key={t.key}
@@ -655,7 +656,9 @@ export default function ValidadorInventario() {
       </div>
 
       {vista === 'listas' ? (
-        <ListasConteo bodega={bodega} BODEGAS={BODEGAS} isEditor={isEditor} inputStyle={inputStyle} fmtPesos={fmtPesos} />
+        <ListasConteo bodega={bodega} BODEGAS={BODEGAS} isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} fmtPesos={fmtPesos} />
+      ) : vista === 'datos' ? (
+        <DatosMaestros isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} />
       ) : (
       <>
       {/* Toolbar */}
@@ -1108,7 +1111,7 @@ const LABEL_TIPO_LISTA = {
   grupo_conteo: 'Por grupo de conteo',
 };
 
-function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
+function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   const [vistaInterna, setVistaInterna] = useState('listado'); // 'listado' | 'crear' | 'detalle'
   const [listas, setListas] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1200,6 +1203,17 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
       setError('Error creando la lista: ' + (e.response?.data?.error || e.message));
     }
     setCreando(false);
+  }
+
+  async function eliminarLista(l) {
+    const etiqueta = `#${l.id} — ${LABEL_TIPO_LISTA[l.tipo]}${l.criterio ? ': ' + l.criterio : ''}`;
+    if (!window.confirm(`¿Eliminar definitivamente la lista ${etiqueta}? Se perderán todos sus conteos e ítems. Esta acción no se puede deshacer.`)) return;
+    try {
+      await api.delete(`/validador-inventario/listas-conteo/${l.id}`);
+      await cargarListas();
+    } catch (e) {
+      setError('No se pudo eliminar la lista: ' + (e.response?.data?.error || e.message));
+    }
   }
 
   async function abrirLista(id) {
@@ -1388,10 +1402,19 @@ function ListasConteo({ bodega, isEditor, inputStyle, fmtPesos }) {
                     <td style={{ padding: '6px 8px' }}>{l.con_conteo_1}/{l.total_items}</td>
                     <td style={{ padding: '6px 8px' }}>{l.con_conteo_2}/{l.total_items}</td>
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>{new Date(l.creado_en).toLocaleDateString('es-CO')}</td>
-                    <td style={{ padding: '6px 8px' }}>
+                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
                       <button onClick={() => abrirLista(l.id)} style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 10px', fontSize: 12, color: 'var(--t-accent)', cursor: 'pointer' }}>
                         Abrir →
                       </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => eliminarLista(l)}
+                          title="Eliminar esta lista de conteo"
+                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer', marginLeft: 6 }}
+                        >
+                          🗑️
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1768,6 +1791,348 @@ function BadgeVencimiento({ fecha }) {
   return <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color, whiteSpace: 'nowrap' }}>⏰ {texto}</span>;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// PESTAÑA "DATOS" — catálogos maestros (cuenta contable, y grupo/subgrupo de
+// conteo) editables uno a uno desde la app, sin depender de subir un Excel
+// completo cada vez que se necesita agregar o corregir un solo artículo.
+// ════════════════════════════════════════════════════════════════════════════
+function DatosMaestros({ isEditor, isAdmin, inputStyle }) {
+  const [sub, setSub] = useState('cuentas'); // 'cuentas' | 'grupos'
+
+  const tabBtn = (key, label) => (
+    <button
+      key={key}
+      onClick={() => setSub(key)}
+      style={{
+        background: sub === key ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
+        color: sub === key ? '#fff' : 'var(--t-text-primary)',
+        border: '1px solid var(--t-border)', borderRadius: 6,
+        padding: '6px 12px', fontSize: 13, fontWeight: 500, cursor: 'pointer',
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        {tabBtn('cuentas', 'Cuentas Contables')}
+        {tabBtn('grupos', 'Grupos de Conteo y Subgrupos')}
+      </div>
+      {sub === 'cuentas'
+        ? <TablaCuentasContables isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} />
+        : <TablaGruposConteo isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} />}
+    </div>
+  );
+}
+
+// ── Sub-pestaña: Cuentas Contables (tabla tipos_inventario) ─────────────────
+function TablaCuentasContables({ isEditor, isAdmin, inputStyle }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busqueda, setBusqueda] = useState('');
+  const [editValues, setEditValues] = useState({}); // concat -> {contable, cuenta}
+  const [guardandoConcat, setGuardandoConcat] = useState(null);
+  const [nuevoConcat, setNuevoConcat] = useState('');
+  const [nuevoContable, setNuevoContable] = useState('');
+  const [nuevoCuenta, setNuevoCuenta] = useState('');
+  const [agregando, setAgregando] = useState(false);
+  const puedeEditar = isEditor || isAdmin;
+
+  const cargar = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/validador-inventario/tipos-inventario');
+      setRows(res.data || []);
+    } catch (e) {
+      setError('No se pudo cargar la lista de cuentas contables');
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function guardar(concat) {
+    const val = editValues[concat];
+    if (!val) return;
+    if (!val.cuenta?.trim()) { setError('La cuenta no puede quedar vacía'); return; }
+    setGuardandoConcat(concat);
+    setError('');
+    try {
+      await api.patch(`/validador-inventario/tipos-inventario/${concat}`, { contable: val.contable, cuenta: val.cuenta });
+      await cargar();
+      setEditValues(prev => { const n = { ...prev }; delete n[concat]; return n; });
+    } catch (e) {
+      setError('No se pudo guardar: ' + (e.response?.data?.error || e.message));
+    }
+    setGuardandoConcat(null);
+  }
+
+  async function eliminar(concat) {
+    if (!window.confirm(`¿Eliminar la clasificación contable de "${concat}"? Los artículos que la usan quedarán como "SIN CLASIFICAR".`)) return;
+    try {
+      await api.delete(`/validador-inventario/tipos-inventario/${concat}`);
+      await cargar();
+    } catch (e) {
+      setError('No se pudo eliminar: ' + (e.response?.data?.error || e.message));
+    }
+  }
+
+  async function agregar() {
+    const concat = nuevoConcat.trim().toUpperCase();
+    if (!concat || !nuevoCuenta.trim()) { setError('Concat y Cuenta son requeridos'); return; }
+    setAgregando(true);
+    setError('');
+    try {
+      await api.patch(`/validador-inventario/tipos-inventario/${concat}`, { contable: nuevoContable.trim(), cuenta: nuevoCuenta.trim() });
+      setNuevoConcat(''); setNuevoContable(''); setNuevoCuenta('');
+      await cargar();
+    } catch (e) {
+      setError('No se pudo agregar: ' + (e.response?.data?.error || e.message));
+    }
+    setAgregando(false);
+  }
+
+  const filtradas = rows.filter(r => {
+    if (!busqueda) return true;
+    const q = busqueda.toUpperCase();
+    return r.concat.toUpperCase().includes(q) || (r.contable || '').toUpperCase().includes(q) || (r.cuenta || '').toUpperCase().includes(q);
+  });
+
+  return (
+    <div>
+      {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
+
+      <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
+        Mapeo de CONCAT (prefijo del código de artículo) → cuenta contable. Alimenta la columna "Cuenta" del Inventario y el conteo "por cuenta contable".
+      </p>
+
+      {puedeEditar && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 12 }}>
+          <input placeholder="Concat (ej. 010101)" value={nuevoConcat} onChange={e => setNuevoConcat(e.target.value)} style={{ ...inputStyle, width: 140 }} maxLength={6} />
+          <input placeholder="Código contable" value={nuevoContable} onChange={e => setNuevoContable(e.target.value)} style={{ ...inputStyle, width: 160 }} />
+          <input placeholder="Nombre de cuenta" value={nuevoCuenta} onChange={e => setNuevoCuenta(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200 }} />
+          <button onClick={agregar} disabled={agregando} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
+            {agregando ? 'Agregando…' : '+ Agregar'}
+          </button>
+        </div>
+      )}
+
+      <input type="text" placeholder="Buscar concat, código contable o cuenta…" value={busqueda} onChange={e => setBusqueda(e.target.value)} style={{ ...inputStyle, width: 320, marginBottom: 12 }} />
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
+      ) : (
+        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflow: 'auto', maxHeight: 560 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: 'var(--t-bg-sidebar)' }}>
+                {['Concat', 'Código Contable', 'Cuenta', ''].map(h => (
+                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', position: 'sticky', top: 0, background: 'var(--t-bg-sidebar)' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtradas.map(r => {
+                const ev = editValues[r.concat] || { contable: r.contable || '', cuenta: r.cuenta || '' };
+                const cambio = ev.contable !== (r.contable || '') || ev.cuenta !== (r.cuenta || '');
+                return (
+                  <tr key={r.concat} style={{ borderBottom: '1px solid #1a2234' }}>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{r.concat}</td>
+                    <td style={{ padding: '6px 8px' }}>
+                      <input value={ev.contable} disabled={!puedeEditar}
+                        onChange={e => setEditValues(prev => ({ ...prev, [r.concat]: { ...ev, contable: e.target.value } }))}
+                        style={{ ...inputStyle, width: 130 }} />
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>
+                      <input value={ev.cuenta} disabled={!puedeEditar}
+                        onChange={e => setEditValues(prev => ({ ...prev, [r.concat]: { ...ev, cuenta: e.target.value } }))}
+                        style={{ ...inputStyle, width: 220 }} />
+                    </td>
+                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
+                      {puedeEditar && cambio && (
+                        <button onClick={() => guardar(r.concat)} disabled={guardandoConcat === r.concat}
+                          style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer', marginRight: 6 }}>
+                          {guardandoConcat === r.concat ? '…' : 'Guardar'}
+                        </button>
+                      )}
+                      {isAdmin && (
+                        <button onClick={() => eliminar(r.concat)} title="Eliminar"
+                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '4px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}>
+                          🗑️
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {filtradas.length === 0 && (
+                <tr><td colSpan={4} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin resultados</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sub-pestaña: Grupos de Conteo y Subgrupos (tabla clasificacion_conteo) ──
+function TablaGruposConteo({ isEditor, isAdmin, inputStyle }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busqueda, setBusqueda] = useState('');
+  const [editValues, setEditValues] = useState({}); // codigo -> {grupo, subgrupo}
+  const [guardandoCodigo, setGuardandoCodigo] = useState(null);
+  const [nuevoCodigo, setNuevoCodigo] = useState('');
+  const [nuevoGrupo, setNuevoGrupo] = useState('');
+  const [nuevoSubgrupo, setNuevoSubgrupo] = useState('');
+  const [agregando, setAgregando] = useState(false);
+  const puedeEditar = isEditor || isAdmin;
+
+  const cargar = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/validador-inventario/clasificacion-conteo');
+      setRows(res.data || []);
+    } catch (e) {
+      setError('No se pudo cargar la lista de grupos de conteo');
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function guardar(codigo) {
+    const val = editValues[codigo];
+    if (!val) return;
+    if (!val.grupo?.trim()) { setError('El grupo no puede quedar vacío'); return; }
+    setGuardandoCodigo(codigo);
+    setError('');
+    try {
+      await api.patch(`/validador-inventario/clasificacion-conteo/${codigo}`, { grupo: val.grupo, subgrupo: val.subgrupo });
+      await cargar();
+      setEditValues(prev => { const n = { ...prev }; delete n[codigo]; return n; });
+    } catch (e) {
+      setError('No se pudo guardar: ' + (e.response?.data?.error || e.message));
+    }
+    setGuardandoCodigo(null);
+  }
+
+  async function eliminar(codigo) {
+    if (!window.confirm(`¿Eliminar la clasificación de grupo del código "${codigo}"?`)) return;
+    try {
+      await api.delete(`/validador-inventario/clasificacion-conteo/${codigo}`);
+      await cargar();
+    } catch (e) {
+      setError('No se pudo eliminar: ' + (e.response?.data?.error || e.message));
+    }
+  }
+
+  async function agregar() {
+    const codigo = normalizarCodigo(nuevoCodigo);
+    if (!codigo || !nuevoGrupo.trim()) { setError('Código y grupo son requeridos'); return; }
+    setAgregando(true);
+    setError('');
+    try {
+      await api.patch(`/validador-inventario/clasificacion-conteo/${codigo}`, { grupo: nuevoGrupo.trim(), subgrupo: nuevoSubgrupo.trim() });
+      setNuevoCodigo(''); setNuevoGrupo(''); setNuevoSubgrupo('');
+      await cargar();
+    } catch (e) {
+      setError('No se pudo agregar: ' + (e.response?.data?.error || e.message));
+    }
+    setAgregando(false);
+  }
+
+  const filtradas = rows.filter(r => {
+    if (!busqueda) return true;
+    const q = busqueda.toUpperCase();
+    return r.codigo.toUpperCase().includes(q) || (r.nombre || '').toUpperCase().includes(q)
+      || (r.grupo || '').toUpperCase().includes(q) || (r.subgrupo || '').toUpperCase().includes(q);
+  });
+
+  return (
+    <div>
+      {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
+
+      <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
+        Grupo y subgrupo de conteo por artículo (usado para crear Listas de Conteo "por grupo"). El código se normaliza solo: si tiene 9 dígitos numéricos, se le agrega el cero inicial.
+      </p>
+
+      {puedeEditar && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 12 }}>
+          <input placeholder="Código de artículo" value={nuevoCodigo} onChange={e => setNuevoCodigo(e.target.value)} style={{ ...inputStyle, width: 160 }} />
+          <input placeholder="Grupo" value={nuevoGrupo} onChange={e => setNuevoGrupo(e.target.value)} style={{ ...inputStyle, width: 180 }} />
+          <input placeholder="Subgrupo (opcional)" value={nuevoSubgrupo} onChange={e => setNuevoSubgrupo(e.target.value)} style={{ ...inputStyle, width: 180 }} />
+          <button onClick={agregar} disabled={agregando} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
+            {agregando ? 'Agregando…' : '+ Agregar'}
+          </button>
+        </div>
+      )}
+
+      <input type="text" placeholder="Buscar código, nombre, grupo o subgrupo…" value={busqueda} onChange={e => setBusqueda(e.target.value)} style={{ ...inputStyle, width: 320, marginBottom: 12 }} />
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
+      ) : (
+        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflow: 'auto', maxHeight: 560 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: 'var(--t-bg-sidebar)' }}>
+                {['Código', 'Nombre', 'Grupo', 'Subgrupo', ''].map(h => (
+                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', position: 'sticky', top: 0, background: 'var(--t-bg-sidebar)' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtradas.map(r => {
+                const ev = editValues[r.codigo] || { grupo: r.grupo || '', subgrupo: r.subgrupo || '' };
+                const cambio = ev.grupo !== (r.grupo || '') || ev.subgrupo !== (r.subgrupo || '');
+                return (
+                  <tr key={r.codigo} style={{ borderBottom: '1px solid #1a2234' }}>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{r.codigo}</td>
+                    <td style={{ padding: '6px 8px', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.nombre || ''}>{r.nombre || '—'}</td>
+                    <td style={{ padding: '6px 8px' }}>
+                      <input value={ev.grupo} disabled={!puedeEditar}
+                        onChange={e => setEditValues(prev => ({ ...prev, [r.codigo]: { ...ev, grupo: e.target.value } }))}
+                        style={{ ...inputStyle, width: 160 }} />
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>
+                      <input value={ev.subgrupo} disabled={!puedeEditar}
+                        onChange={e => setEditValues(prev => ({ ...prev, [r.codigo]: { ...ev, subgrupo: e.target.value } }))}
+                        style={{ ...inputStyle, width: 160 }} />
+                    </td>
+                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
+                      {puedeEditar && cambio && (
+                        <button onClick={() => guardar(r.codigo)} disabled={guardandoCodigo === r.codigo}
+                          style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer', marginRight: 6 }}>
+                          {guardandoCodigo === r.codigo ? '…' : 'Guardar'}
+                        </button>
+                      )}
+                      {isAdmin && (
+                        <button onClick={() => eliminar(r.codigo)} title="Eliminar"
+                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '4px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}>
+                          🗑️
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {filtradas.length === 0 && (
+                <tr><td colSpan={5} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin resultados</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Panel gerencial: dashboard de progreso, historial por código, y reporte
 // consolidado — todo dentro de la vista de listado de Listas de Conteo.
 function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
@@ -1995,8 +2360,5 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
-
-
-
 
 
