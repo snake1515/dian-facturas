@@ -394,7 +394,10 @@ const initDB = async () => {
       -- Numérico de 10 dígitos -> los primeros 6 tal cual.
       -- Numérico de 9 dígitos  -> le falta el 0 a la izquierda del grupo,
       --                           se rellena a 10 y luego se toman los primeros 6.
-      -- Alfabético              -> se usa tal cual (códigos de excepción).
+      -- Alfabético              -> igual que el numérico: son 6 caracteres de
+      --                           prefijo (ej. "UPPIIN") + un consecutivo
+      --                           (ej. "0005"), así que también se truncan a
+      --                           los primeros 6, no se usa el código completo.
       CREATE OR REPLACE FUNCTION concat_tipo_inventario(p_codigo TEXT)
       RETURNS TEXT AS $FN$
       DECLARE
@@ -406,7 +409,7 @@ const initDB = async () => {
           END IF;
           RETURN left(c, 6);
         ELSE
-          RETURN upper(c);
+          RETURN left(upper(c), 6);
         END IF;
       END;
       $FN$ LANGUAGE plpgsql IMMUTABLE;
@@ -670,6 +673,13 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
+
+
+
 
 
 
