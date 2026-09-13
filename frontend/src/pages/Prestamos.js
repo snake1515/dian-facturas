@@ -5585,6 +5585,15 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
   const [hasta, setHasta] = useState(new Date().toISOString().substring(0, 10));
   const [busqueda, setBusqueda] = useState('');
   const [expandidos, setExpandidos] = useState(() => new Set());
+  const [tarjetasAbiertas, setTarjetasAbiertas] = useState(() => new Set());
+
+  function toggleTarjeta(tipoId) {
+    setTarjetasAbiertas(prev => {
+      const next = new Set(prev);
+      if (next.has(tipoId)) next.delete(tipoId); else next.add(tipoId);
+      return next;
+    });
+  }
 
   // Los documentos IDP/ED (devoluciones como DOCUMENTO) viven en la tabla
   // "prestamos" con tipo devolucion_ingreso/devolucion_egreso — igual que en
@@ -5633,78 +5642,97 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
 
   function bloque(tipoId, titulo, icono, subtitulo, reporte, mostrarMotivo) {
     const clinicasFiltradas = filtrarReporte(reporte);
+    const totalDocumentos = clinicasFiltradas.reduce((s, c) => s + c.documentos.length, 0);
+    // Si hay una búsqueda activa, la tarjeta se despliega sola para mostrar
+    // los resultados, sin necesidad de que el usuario la abra a mano.
+    const abierta = tarjetasAbiertas.has(tipoId) || busqueda.trim() !== '';
+
     return (
-      <div style={{ marginBottom: 22 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{icono} {titulo}</div>
-            <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{subtitulo}</div>
+      <div style={{ border: '1px solid var(--t-border)', borderRadius: 10, overflow: 'hidden', background: 'var(--t-bg-inner)' }}>
+        <div onClick={() => toggleTarjeta(tipoId)} style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '12px 14px', cursor: 'pointer', userSelect: 'none',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{abierta ? '▾' : '▸'}</span>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{icono} {titulo}</div>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{subtitulo}</div>
+            </div>
           </div>
-          <div style={{ fontWeight: 700, fontSize: 14, color: '#BA7517' }}>{fmt(reporte.granTotal)}</div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: '#BA7517' }}>{fmt(reporte.granTotal)}</div>
+            <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{totalDocumentos} documento{totalDocumentos === 1 ? '' : 's'}</div>
+          </div>
         </div>
-        {clinicasFiltradas.length === 0 && (
-          <div style={{ fontSize: 12, color: 'var(--t-text-muted)', padding: 10, textAlign: 'center', border: '1px dashed var(--t-border)', borderRadius: 8 }}>
-            {busqueda.trim() ? 'Sin resultados para tu búsqueda' : 'Nada pendiente de cierre en el rango seleccionado'}
+
+        {abierta && (
+          <div style={{ padding: '0 14px 14px' }}>
+            {clinicasFiltradas.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', padding: 10, textAlign: 'center', border: '1px dashed var(--t-border)', borderRadius: 8 }}>
+                {busqueda.trim() ? 'Sin resultados para tu búsqueda' : 'Nada pendiente de cierre en el rango seleccionado'}
+              </div>
+            )}
+            {clinicasFiltradas.map(({ clinica, documentos, valorTotal }) => (
+              <div key={clinica} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 8, overflow: 'hidden', background: 'var(--t-bg-primary)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--t-bg-inner)' }}>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{clinica}</span>
+                  <span style={{ fontWeight: 600, fontSize: 13, color: '#BA7517' }}>{fmt(valorTotal)}</span>
+                </div>
+                {documentos.map((doc, di) => {
+                  const key = `${tipoId}__${clinica}__${doc.documento || 'sin-doc'}__${di}`;
+                  const docAbierto = expandidos.has(key);
+                  return (
+                    <div key={key} style={{ borderTop: '1px solid var(--t-border)' }}>
+                      <div onClick={() => toggleDoc(key)} style={{
+                        display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                        cursor: 'pointer', userSelect: 'none',
+                      }}>
+                        <span style={{ fontSize: 10, color: 'var(--t-text-muted)', width: 10, display: 'inline-block' }}>{docAbierto ? '▾' : '▸'}</span>
+                        <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{doc.documento || '(sin documento)'}</span>
+                        <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{fmtFecha(doc.fecha)}</span>
+                        <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{doc.productos.length} producto{doc.productos.length === 1 ? '' : 's'}</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: '#BA7517', minWidth: 90, textAlign: 'right' }}>{fmt(doc.valorTotal)}</span>
+                      </div>
+                      {docAbierto && (
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left', borderTop: '1px solid var(--t-border)' }}>
+                              <th style={{ padding: '5px 12px 5px 32px', fontWeight: 500 }}>Producto</th>
+                              <th style={{ padding: '5px 12px', fontWeight: 500 }}>Código</th>
+                              {mostrarMotivo && <th style={{ padding: '5px 12px', fontWeight: 500 }}>Motivo</th>}
+                              <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Cantidad</th>
+                              <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Valor</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {doc.productos.map((prod, pi) => (
+                              <tr key={pi} style={{ borderTop: '1px solid var(--t-border)' }}>
+                                <td style={{ padding: '5px 12px 5px 32px' }}>{prod.nombre}</td>
+                                <td style={{ padding: '5px 12px', color: 'var(--t-text-muted)' }}>{prod.codigo}</td>
+                                {mostrarMotivo && (
+                                  <td style={{ padding: '5px 12px' }}>
+                                    <span style={{
+                                      padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                                      background: prod.motivo === 'Sobrante sin asignar' ? '#ef444422' : '#f59e0b22',
+                                      color: prod.motivo === 'Sobrante sin asignar' ? '#ef4444' : '#f59e0b',
+                                    }}>{prod.motivo}</span>
+                                  </td>
+                                )}
+                                <td style={{ padding: '5px 12px', textAlign: 'right' }}>{prod.cantidad.toLocaleString('es-CO')}</td>
+                                <td style={{ padding: '5px 12px', textAlign: 'right' }}>{fmt(prod.valor)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         )}
-        {clinicasFiltradas.map(({ clinica, documentos, valorTotal }) => (
-          <div key={clinica} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 8, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--t-bg-inner)' }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>{clinica}</span>
-              <span style={{ fontWeight: 600, fontSize: 13, color: '#BA7517' }}>{fmt(valorTotal)}</span>
-            </div>
-            {documentos.map((doc, di) => {
-              const key = `${tipoId}__${clinica}__${doc.documento || 'sin-doc'}__${di}`;
-              const abierto = expandidos.has(key);
-              return (
-                <div key={key} style={{ borderTop: '1px solid var(--t-border)' }}>
-                  <div onClick={() => toggleDoc(key)} style={{
-                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                    cursor: 'pointer', userSelect: 'none',
-                  }}>
-                    <span style={{ fontSize: 10, color: 'var(--t-text-muted)', width: 10, display: 'inline-block' }}>{abierto ? '▾' : '▸'}</span>
-                    <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{doc.documento || '(sin documento)'}</span>
-                    <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{fmtFecha(doc.fecha)}</span>
-                    <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{doc.productos.length} producto{doc.productos.length === 1 ? '' : 's'}</span>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: '#BA7517', minWidth: 90, textAlign: 'right' }}>{fmt(doc.valorTotal)}</span>
-                  </div>
-                  {abierto && (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                      <thead>
-                        <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left', borderTop: '1px solid var(--t-border)' }}>
-                          <th style={{ padding: '5px 12px 5px 32px', fontWeight: 500 }}>Producto</th>
-                          <th style={{ padding: '5px 12px', fontWeight: 500 }}>Código</th>
-                          {mostrarMotivo && <th style={{ padding: '5px 12px', fontWeight: 500 }}>Motivo</th>}
-                          <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Cantidad</th>
-                          <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Valor</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {doc.productos.map((prod, pi) => (
-                          <tr key={pi} style={{ borderTop: '1px solid var(--t-border)' }}>
-                            <td style={{ padding: '5px 12px 5px 32px' }}>{prod.nombre}</td>
-                            <td style={{ padding: '5px 12px', color: 'var(--t-text-muted)' }}>{prod.codigo}</td>
-                            {mostrarMotivo && (
-                              <td style={{ padding: '5px 12px' }}>
-                                <span style={{
-                                  padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
-                                  background: prod.motivo === 'Sobrante sin asignar' ? '#ef444422' : '#f59e0b22',
-                                  color: prod.motivo === 'Sobrante sin asignar' ? '#ef4444' : '#f59e0b',
-                                }}>{prod.motivo}</span>
-                              </td>
-                            )}
-                            <td style={{ padding: '5px 12px', textAlign: 'right' }}>{prod.cantidad.toLocaleString('es-CO')}</td>
-                            <td style={{ padding: '5px 12px', textAlign: 'right' }}>{fmt(prod.valor)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ))}
       </div>
     );
   }
@@ -5774,20 +5802,13 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
         />
       </div>
 
-      <div style={{ marginBottom: 30 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, paddingBottom: 8, borderBottom: '2px solid var(--t-border)' }}>
-          📋 Préstamos pendientes (EPO / IPE)
-        </div>
-        {bloque('epo', 'Préstamos EPO pendientes', '🏥', 'Documentos abiertos o parciales — solo los productos aún pendientes', reporteEPO, false)}
-        {bloque('ipe', 'Préstamos IPE pendientes', '📦', 'Documentos abiertos o parciales — solo los productos aún pendientes', reporteIPE, false)}
-      </div>
-
-      <div>
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, paddingBottom: 8, borderBottom: '2px solid var(--t-border)' }}>
-          ↩ Devoluciones pendientes (IDP / ED)
-        </div>
-        {bloque('idp', 'Devoluciones IDP pendientes/sobrante', '↩', 'Solo los productos pendientes de cruzar o con sobrante sin asignar', reporteIDP, true)}
-        {bloque('ed', 'Devoluciones ED pendientes/sobrante', '↩', 'Solo los productos pendientes de cruzar o con sobrante sin asignar', reporteED, true)}
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14,
+      }}>
+        {bloque('epo', 'EPO — Préstamos pendientes', '🏥', 'Documentos abiertos o parciales — solo los productos aún pendientes', reporteEPO, false)}
+        {bloque('ipe', 'IPE — Préstamos pendientes', '📦', 'Documentos abiertos o parciales — solo los productos aún pendientes', reporteIPE, false)}
+        {bloque('ed', 'ED — Devoluciones pendientes', '↩', 'Solo los productos pendientes de cruzar o con sobrante sin asignar', reporteED, true)}
+        {bloque('idp', 'IDP — Devoluciones pendientes', '↩', 'Solo los productos pendientes de cruzar o con sobrante sin asignar', reporteIDP, true)}
       </div>
     </div>
   );
@@ -5932,3 +5953,4 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
