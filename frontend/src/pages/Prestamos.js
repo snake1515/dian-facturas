@@ -5586,10 +5586,20 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
   const [busqueda, setBusqueda] = useState('');
   const [expandidos, setExpandidos] = useState(() => new Set());
 
+  // Los documentos IDP/ED (devoluciones como DOCUMENTO) viven en la tabla
+  // "prestamos" con tipo devolucion_ingreso/devolucion_egreso — igual que en
+  // TabCruces / TabHistorialCruces. El prop "devoluciones" que llega aquí es
+  // la tabla legada prestamo_devoluciones (registros simples ligados a un solo
+  // prestamo_id) y NO tiene campo "tipo", así que nunca hace match con IDP/ED.
+  const documentosDevolucion = useMemo(
+    () => (prestamos || []).filter(p => ['devolucion_ingreso', 'devolucion_egreso'].includes(p.tipo)),
+    [prestamos]
+  );
+
   const reporteEPO = useMemo(() => construirReportePendientes(prestamos, devoluciones, cruces, 'egreso', desde, hasta), [prestamos, devoluciones, cruces, desde, hasta]);
   const reporteIPE = useMemo(() => construirReportePendientes(prestamos, devoluciones, cruces, 'ingreso', desde, hasta), [prestamos, devoluciones, cruces, desde, hasta]);
-  const reporteIDP = useMemo(() => construirReporteDevolucionesPendientes(devoluciones, cruces, 'devolucion_ingreso', desde, hasta), [devoluciones, cruces, desde, hasta]);
-  const reporteED  = useMemo(() => construirReporteDevolucionesPendientes(devoluciones, cruces, 'devolucion_egreso', desde, hasta), [devoluciones, cruces, desde, hasta]);
+  const reporteIDP = useMemo(() => construirReporteDevolucionesPendientes(documentosDevolucion, cruces, 'devolucion_ingreso', desde, hasta), [documentosDevolucion, cruces, desde, hasta]);
+  const reporteED  = useMemo(() => construirReporteDevolucionesPendientes(documentosDevolucion, cruces, 'devolucion_egreso', desde, hasta), [documentosDevolucion, cruces, desde, hasta]);
 
   const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
 
