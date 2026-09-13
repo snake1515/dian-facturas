@@ -761,15 +761,35 @@ router.get('/listas-conteo/opciones', authMiddleware, async (req, res) => {
 // ── POST /api/validador-inventario/listas-conteo ──────────────────────────────
 // Crea una lista de conteo y toma la "foto" (snapshot) de los ítems que
 // cumplen el criterio elegido, tal como están en ese momento.
+//
+// Para tipo === 'grupo_conteo' además del criterio único de siempre
+// (criterio/subcriterio), se puede mandar `criteriosGrupo: [{grupo, subgrupo?}]`
+// para combinar VARIOS grupos/subgrupos en una sola lista (unión / OR entre
+// ellos) — esto es lo que usa el checklist multi-selección del formulario.
 router.post('/listas-conteo', authMiddleware, async (req, res) => {
-  const { bodega, tipo, criterio, subcriterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre } = req.body;
+  const { bodega, tipo, criterio, subcriterio, criteriosGrupo, subclasificar_presentacion, conteo1_nombre, conteo2_nombre } = req.body;
   if (!bodega || !TIPOS_LISTA.includes(tipo)) {
     return res.status(400).json({ error: 'bodega y tipo válido son requeridos' });
   }
-  if (tipo !== 'general' && !criterio) {
+
+  const multiGrupos = tipo === 'grupo_conteo' && Array.isArray(criteriosGrupo) && criteriosGrupo.length > 0
+    ? criteriosGrupo
+        .filter(c => c && c.grupo)
+        .map(c => ({ grupo: truncar(c.grupo, 150), subgrupo: c.subgrupo ? truncar(c.subgrupo, 150) : null }))
+    : null;
+
+  if (tipo !== 'general' && !(multiGrupos && multiGrupos.length > 0) && !criterio) {
     return res.status(400).json({ error: 'criterio requerido para este tipo de conteo' });
   }
+
   const bod = String(bodega).toUpperCase();
+  // El criterio "legacy" se conserva como texto para que el listado siga
+  // mostrando algo legible incluso cuando se combinan varios grupos/subgrupos.
+  const criterioGuardado = multiGrupos
+    ? multiGrupos.map(c => (c.subgrupo ? `${c.grupo} > ${c.subgrupo}` : c.grupo)).join(', ')
+    : (tipo === 'general' ? null : truncar(criterio, 150));
+  const subcriterioGuardado = multiGrupos ? null : (tipo === 'grupo_conteo' ? (truncar(subcriterio, 150) || null) : null);
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -778,14 +798,26 @@ router.post('/listas-conteo', authMiddleware, async (req, res) => {
       `INSERT INTO listas_conteo (bodega, tipo, criterio, subcriterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre, creado_por)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [bod, tipo, tipo === 'general' ? null : truncar(criterio, 150), tipo === 'grupo_conteo' ? (truncar(subcriterio, 150) || null) : null,
+      [bod, tipo, criterioGuardado, subcriterioGuardado,
        !!subclasificar_presentacion, truncar(conteo1_nombre, 100), truncar(conteo2_nombre, 100), req.user.id]
     );
     const lista = listaRows[0];
 
     let filtroSql = '';
     const params = [bod];
-    if (tipo === 'cuenta_contable') {
+    if (multiGrupos && multiGrupos.length > 0) {
+      const condiciones = [];
+      for (const c of multiGrupos) {
+        params.push(c.grupo);
+        let cond = `cc.grupo = $${params.length}`;
+        if (c.subgrupo) {
+          params.push(c.subgrupo);
+          cond += ` AND COALESCE(NULLIF(cc.subgrupo, ''), 'SIN SUBGRUPO') = $${params.length}`;
+        }
+        condiciones.push(`(${cond})`);
+      }
+      filtroSql = `AND (${condiciones.join(' OR ')})`;
+    } else if (tipo === 'cuenta_contable') {
       filtroSql = `AND COALESCE(ti.cuenta, 'SIN CLASIFICAR') = $2`;
       params.push(criterio);
     } else if (tipo === 'grupo_inventario') {
@@ -1465,6 +1497,9 @@ router.get('/listas-conteo-consolidado-excel', authMiddleware, async (req, res) 
 });
 
 module.exports = router;
+
+
+
 
 
 
