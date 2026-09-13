@@ -5682,12 +5682,18 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
                 {documentos.map((doc, di) => {
                   const key = `${tipoId}__${clinica}__${doc.documento || 'sin-doc'}__${di}`;
                   const docAbierto = expandidos.has(key);
+                  // Franja alterna muy sutil para seguir la fila con la vista en listas largas.
+                  const fondoBase = di % 2 === 1 ? 'var(--t-bg-inner)' : 'transparent';
                   return (
                     <div key={key} style={{ borderTop: '1px solid var(--t-border)' }}>
-                      <div onClick={() => toggleDoc(key)} style={{
-                        display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                        cursor: 'pointer', userSelect: 'none',
-                      }}>
+                      <div onClick={() => toggleDoc(key)}
+                        onMouseEnter={e => e.currentTarget.style.background = 'var(--t-hover-bg, rgba(186,117,23,0.10))'}
+                        onMouseLeave={e => e.currentTarget.style.background = fondoBase}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                          cursor: 'pointer', userSelect: 'none', background: fondoBase,
+                          transition: 'background 0.12s ease',
+                        }}>
                         <span style={{ fontSize: 10, color: 'var(--t-text-muted)', width: 10, display: 'inline-block' }}>{docAbierto ? '▾' : '▸'}</span>
                         <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{doc.documento || '(sin documento)'}</span>
                         <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{fmtFecha(doc.fecha)}</span>
@@ -5953,4 +5959,3 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
