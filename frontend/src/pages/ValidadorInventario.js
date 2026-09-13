@@ -1991,6 +1991,7 @@ function TablaGruposConteo({ isEditor, isAdmin, inputStyle }) {
   const [nuevoGrupo, setNuevoGrupo] = useState('');
   const [nuevoSubgrupo, setNuevoSubgrupo] = useState('');
   const [agregando, setAgregando] = useState(false);
+  const [limpiando, setLimpiando] = useState(false);
   const puedeEditar = isEditor || isAdmin;
 
   const cargar = useCallback(async () => {
@@ -2047,6 +2048,20 @@ function TablaGruposConteo({ isEditor, isAdmin, inputStyle }) {
     setAgregando(false);
   }
 
+  async function limpiarDuplicados() {
+    if (!window.confirm('¿Buscar y eliminar códigos de 9 dígitos que quedaron duplicados de una versión correcta de 10 dígitos? Esto no afecta códigos que no tengan una versión corregida.')) return;
+    setLimpiando(true);
+    setError('');
+    try {
+      const res = await api.post('/validador-inventario/clasificacion-conteo/limpiar-duplicados');
+      await cargar();
+      window.alert(`Se eliminaron ${res.data.eliminados} código(s) duplicado(s).`);
+    } catch (e) {
+      setError('No se pudo limpiar: ' + (e.response?.data?.error || e.message));
+    }
+    setLimpiando(false);
+  }
+
   const filtradas = rows.filter(r => {
     if (!busqueda) return true;
     const q = busqueda.toUpperCase();
@@ -2061,6 +2076,13 @@ function TablaGruposConteo({ isEditor, isAdmin, inputStyle }) {
       <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
         Grupo y subgrupo de conteo por artículo (usado para crear Listas de Conteo "por grupo"). El código se normaliza solo: si tiene 9 dígitos numéricos, se le agrega el cero inicial.
       </p>
+
+      {isAdmin && (
+        <button onClick={limpiarDuplicados} disabled={limpiando}
+          style={{ background: 'none', border: '1px solid #5c2626', color: '#f87171', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer', marginBottom: 12 }}>
+          {limpiando ? 'Limpiando…' : '🧹 Limpiar códigos duplicados de 9 dígitos'}
+        </button>
+      )}
 
       {puedeEditar && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 12 }}>
