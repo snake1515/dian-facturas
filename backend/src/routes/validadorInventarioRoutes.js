@@ -406,6 +406,41 @@ router.patch('/tipos-inventario/:concat', authMiddleware, editorOrAdmin, async (
   }
 });
 
+// ── GET /api/validador-inventario/tipos-inventario?buscar= ───────────────────
+// Lista TODAS las clasificaciones de cuenta contable (concat -> contable/
+// cuenta), para la pestaña de datos maestros: ver, buscar, editar o agregar
+// una a la vez sin depender de subir el Excel completo de nuevo.
+router.get('/tipos-inventario', authMiddleware, async (req, res) => {
+  try {
+    const buscar = (req.query.buscar || '').trim();
+    const params = [];
+    let where = '';
+    if (buscar) {
+      params.push(`%${buscar.toUpperCase()}%`);
+      where = `WHERE UPPER(concat) LIKE $1 OR UPPER(contable) LIKE $1 OR UPPER(cuenta) LIKE $1`;
+    }
+    const { rows } = await pool.query(`SELECT * FROM tipos_inventario ${where} ORDER BY concat ASC`, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar tipos de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── DELETE /api/validador-inventario/tipos-inventario/:concat ────────────────
+// Elimina una clasificación de cuenta contable. Solo admin.
+router.delete('/tipos-inventario/:concat', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const concat = truncar(req.params.concat, 6).toUpperCase();
+    const { rows } = await pool.query(`DELETE FROM tipos_inventario WHERE concat = $1 RETURNING concat`, [concat]);
+    if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error al eliminar tipo de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // ── GET /api/validador-inventario/tipos-inventario/:concat/historial ─────────
 // Historial de reclasificaciones de un grupo (quién cambió qué y cuándo).
 router.get('/tipos-inventario/:concat/historial', authMiddleware, async (req, res) => {
@@ -521,6 +556,51 @@ router.get('/clasificacion-conteo/opciones', authMiddleware, async (req, res) =>
     res.json(rows);
   } catch (err) {
     console.error('Error al listar opciones de grupo de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/clasificacion-conteo?buscar= ───────────────
+// Lista TODOS los códigos con su grupo/subgrupo de conteo asignado (con el
+// nombre del artículo si existe en algún inventario), para la pestaña de
+// datos maestros: ver, buscar, editar o agregar uno a la vez.
+router.get('/clasificacion-conteo', authMiddleware, async (req, res) => {
+  try {
+    const buscar = (req.query.buscar || '').trim();
+    const params = [];
+    let where = '';
+    if (buscar) {
+      params.push(`%${buscar.toUpperCase()}%`);
+      where = `WHERE UPPER(cc.codigo) LIKE $1 OR UPPER(COALESCE(cc.grupo,'')) LIKE $1
+                     OR UPPER(COALESCE(cc.subgrupo,'')) LIKE $1 OR UPPER(COALESCE(vi.nombre,'')) LIKE $1`;
+    }
+    const { rows } = await pool.query(
+      `SELECT cc.codigo, cc.grupo, cc.subgrupo, cc.actualizado_en, vi.nombre
+       FROM clasificacion_conteo cc
+       LEFT JOIN LATERAL (
+         SELECT nombre FROM validador_inventario v WHERE v.codigo = cc.codigo LIMIT 1
+       ) vi ON true
+       ${where}
+       ORDER BY cc.grupo NULLS LAST, cc.subgrupo NULLS LAST, cc.codigo ASC`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── DELETE /api/validador-inventario/clasificacion-conteo/:codigo ────────────
+// Elimina la asignación de grupo/subgrupo de un código. Solo admin.
+router.delete('/clasificacion-conteo/:codigo', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const codigo = truncar(req.params.codigo, 50);
+    const { rows } = await pool.query(`DELETE FROM clasificacion_conteo WHERE codigo = $1 RETURNING codigo`, [codigo]);
+    if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error al eliminar clasificación de conteo:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -918,6 +998,20 @@ router.post('/listas-conteo/:id/cerrar', authMiddleware, editorOrAdmin, async (r
   }
 });
 
+// ── DELETE /api/validador-inventario/listas-conteo/:id ────────────────────────
+// Elimina una lista de conteo completa (sus ítems se borran en cascada). Solo
+// admin, porque puede tratarse de un conteo ya cerrado y con historial.
+router.delete('/listas-conteo/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`DELETE FROM listas_conteo WHERE id = $1 RETURNING id`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    res.json({ ok: true, id: rows[0].id });
+  } catch (err) {
+    console.error('Error al eliminar lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // ── GET /api/validador-inventario/listas-conteo/:id/plantilla ────────────────
 // Genera el Excel en blanco para salir a contar en bodega.
 router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
@@ -1306,107 +1400,6 @@ router.get('/listas-conteo-consolidado-excel', authMiddleware, async (req, res) 
 });
 
 module.exports = router;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
