@@ -1376,6 +1376,10 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
       const res = await api.patch(`/validador-inventario/listas-conteo/${listaActual.id}/items/${item.id}`, { campo, valor: parseNumCO(valor) });
       setListaActual(prev => ({ ...prev, items: prev.items.map(it => (it.id === item.id ? res.data : it)) }));
       setEditConteo(prev => { const cp = { ...prev }; delete cp[key]; return cp; });
+      // La columna "Diferencia" se calcula aparte (endpoint /reporte), no se
+      // deriva sola del conteo recién guardado — hay que refrescarla para que
+      // se vea al instante, si no queda pareciendo que "no pasó nada".
+      await cargarReporte(listaActual.id);
     } catch (e) {
       alert('Error guardando el conteo: ' + (e.response?.data?.error || e.message));
     }
