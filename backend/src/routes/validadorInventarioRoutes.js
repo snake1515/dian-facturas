@@ -560,6 +560,25 @@ router.get('/clasificacion-conteo/opciones', authMiddleware, async (req, res) =>
   }
 });
 
+// ── POST /api/validador-inventario/clasificacion-conteo/limpiar-duplicados ───
+// Borra las filas "huérfanas" de 9 dígitos que quedaron de antes del fix del
+// cero inicial, SOLO cuando ya existe la versión correcta de 10 dígitos (para
+// no arriesgar ningún dato real). Solo admin.
+router.post('/clasificacion-conteo/limpiar-duplicados', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      DELETE FROM clasificacion_conteo cc9
+      WHERE cc9.codigo ~ '^[0-9]{9}$'
+        AND EXISTS (SELECT 1 FROM clasificacion_conteo cc10 WHERE cc10.codigo = '0' || cc9.codigo)
+      RETURNING cc9.codigo
+    `);
+    res.json({ ok: true, eliminados: rows.length, codigos: rows.map(r => r.codigo) });
+  } catch (err) {
+    console.error('Error al limpiar duplicados de clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // ── GET /api/validador-inventario/clasificacion-conteo?buscar= ───────────────
 // Lista TODOS los códigos con su grupo/subgrupo de conteo asignado (con el
 // nombre del artículo si existe en algún inventario), para la pestaña de
@@ -1400,6 +1419,7 @@ router.get('/listas-conteo-consolidado-excel', authMiddleware, async (req, res) 
 });
 
 module.exports = router;
+
 
 
 
