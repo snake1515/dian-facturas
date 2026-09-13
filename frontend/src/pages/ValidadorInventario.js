@@ -1183,6 +1183,14 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   const [opciones, setOpciones] = useState([]);
   const [opcionesSubgrupo, setOpcionesSubgrupo] = useState([]);
   const [creando, setCreando] = useState(false);
+  // ── Multi-selección de grupos/subgrupos de conteo (solo tipo 'grupo_conteo') ──
+  // gruposSel: [{ grupo, subgrupo: string|null }] — puede mezclar grupos
+  // completos y subgrupos puntuales de distintos grupos.
+  const [gruposSel, setGruposSel] = useState([]);
+  const [subgruposPorGrupo, setSubgruposPorGrupo] = useState({}); // grupo -> [{valor, items}]
+  const [gruposExpandidos, setGruposExpandidos] = useState({});
+  const [generarPorSeparado, setGenerarPorSeparado] = useState(true);
+  const [progresoLote, setProgresoLote] = useState(null); // { hecho, total } mientras crea varias listas
 
   const [listaActual, setListaActual] = useState(null); // { ...lista, items }
   const [reporte, setReporte] = useState(null);
@@ -1219,6 +1227,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   useEffect(() => {
     if (formTipo === 'general') { setOpciones([]); setFormCriterio(''); return; }
     setFormCriterio(''); setFormSubcriterio(''); setOpcionesSubgrupo([]);
+    setGruposSel([]); setGruposExpandidos({}); setSubgruposPorGrupo({});
     if (formTipo === 'grupo_conteo') {
       api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega } })
         .then(res => setOpciones(res.data || []))
@@ -1230,32 +1239,95 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
       .catch(() => setOpciones([]));
   }, [formTipo, bodega]);
 
-  // Al elegir el grupo (solo para tipo 'grupo_conteo'), carga los subgrupos
-  // disponibles dentro de ese grupo específico.
-  useEffect(() => {
-    if (formTipo !== 'grupo_conteo' || !formCriterio) { setOpcionesSubgrupo([]); return; }
-    setFormSubcriterio('');
-    api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega, grupo: formCriterio } })
-      .then(res => setOpcionesSubgrupo(res.data || []))
-      .catch(() => setOpcionesSubgrupo([]));
-  }, [formTipo, formCriterio, bodega]);
+  // Expande/colapsa un grupo en el checklist de "grupo_conteo" y carga sus
+  // subgrupos (con conteo de ítems) la primera vez que se abre.
+  async function toggleExpandirGrupo(grupo) {
+    setGruposExpandidos(prev => ({ ...prev, [grupo]: !prev[grupo] }));
+    if (!subgruposPorGrupo[grupo]) {
+      try {
+        const res = await api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega, grupo } });
+        setSubgruposPorGrupo(prev => ({ ...prev, [grupo]: res.data || [] }));
+      } catch (e) {
+        setSubgruposPorGrupo(prev => ({ ...prev, [grupo]: [] }));
+      }
+    }
+  }
+
+  function grupoSelKey(g) { return `${g.grupo}|${g.subgrupo || ''}`; }
+  function grupoEstaMarcado(grupo, subgrupo) {
+    const key = `${grupo}|${subgrupo || ''}`;
+    return gruposSel.some(g => grupoSelKey(g) === key);
+  }
+  function toggleGrupoSel(grupo, subgrupo) {
+    const key = `${grupo}|${subgrupo || ''}`;
+    setGruposSel(prev => {
+      const yaEsta = prev.some(g => grupoSelKey(g) === key);
+      if (yaEsta) return prev.filter(g => grupoSelKey(g) !== key);
+      // Marcar el grupo completo quita los subgrupos sueltos ya marcados de
+      // ese mismo grupo (quedarían redundantes), y viceversa.
+      let base = prev;
+      if (!subgrupo) base = prev.filter(g => g.grupo !== grupo);
+      else base = prev.filter(g => !(g.grupo === grupo && !g.subgrupo));
+      return [...base, { grupo, subgrupo: subgrupo || null }];
+    });
+  }
 
   async function crearLista() {
-    if (formTipo !== 'general' && !formCriterio) {
-      setError('Elige un criterio para este tipo de conteo');
+    const esMultiGrupo = formTipo === 'grupo_conteo' && gruposSel.length > 0;
+    if (formTipo !== 'general' && !esMultiGrupo && !formCriterio) {
+      setError('Elige al menos un criterio para este tipo de conteo');
       return;
     }
-    setCreando(true);
     setError('');
+
+    // Modo lote: una lista independiente por cada grupo/subgrupo marcado —
+    // así no hay que crearlas una por una a mano.
+    if (esMultiGrupo && gruposSel.length > 1 && generarPorSeparado) {
+      setCreando(true);
+      setProgresoLote({ hecho: 0, total: gruposSel.length });
+      let ultimoId = null;
+      const errores = [];
+      for (let i = 0; i < gruposSel.length; i++) {
+        const g = gruposSel[i];
+        try {
+          const res = await api.post('/validador-inventario/listas-conteo', {
+            bodega, tipo: 'grupo_conteo', criterio: g.grupo, subcriterio: g.subgrupo || null,
+            subclasificar_presentacion: formSubclasificar, conteo1_nombre: formConteo1Nombre, conteo2_nombre: formConteo2Nombre,
+          });
+          ultimoId = res.data.id;
+        } catch (e) {
+          errores.push(`${g.subgrupo ? `${g.grupo} > ${g.subgrupo}` : g.grupo}: ${e.response?.data?.error || e.message}`);
+        }
+        setProgresoLote({ hecho: i + 1, total: gruposSel.length });
+      }
+      setProgresoLote(null);
+      await cargarListas();
+      if (errores.length > 0) {
+        setError(`Se crearon ${gruposSel.length - errores.length} de ${gruposSel.length} listas. Fallaron: ` + errores.join(' · '));
+        setVistaInterna('listado');
+      } else if (ultimoId) {
+        await abrirLista(ultimoId);
+      }
+      setFormTipo('general'); setFormCriterio(''); setFormSubcriterio(''); setFormSubclasificar(false);
+      setFormConteo1Nombre(''); setFormConteo2Nombre(''); setGruposSel([]); setGenerarPorSeparado(true);
+      setCreando(false);
+      return;
+    }
+
+    setCreando(true);
     try {
-      const res = await api.post('/validador-inventario/listas-conteo', {
-        bodega, tipo: formTipo, criterio: formTipo === 'general' ? null : formCriterio,
-        subcriterio: formTipo === 'grupo_conteo' ? (formSubcriterio || null) : null,
+      const body = {
+        bodega, tipo: formTipo,
+        criterio: formTipo === 'general' ? null : (esMultiGrupo ? null : formCriterio),
+        subcriterio: formTipo === 'grupo_conteo' && !esMultiGrupo ? (formSubcriterio || null) : null,
         subclasificar_presentacion: formSubclasificar, conteo1_nombre: formConteo1Nombre, conteo2_nombre: formConteo2Nombre,
-      });
+      };
+      if (esMultiGrupo) body.criteriosGrupo = gruposSel; // combina todos los marcados en UNA sola lista
+      const res = await api.post('/validador-inventario/listas-conteo', body);
       await cargarListas();
       await abrirLista(res.data.id);
-      setFormTipo('general'); setFormCriterio(''); setFormSubcriterio(''); setFormSubclasificar(false); setFormConteo1Nombre(''); setFormConteo2Nombre('');
+      setFormTipo('general'); setFormCriterio(''); setFormSubcriterio(''); setFormSubclasificar(false);
+      setFormConteo1Nombre(''); setFormConteo2Nombre(''); setGruposSel([]); setGenerarPorSeparado(true);
     } catch (e) {
       setError('Error creando la lista: ' + (e.response?.data?.error || e.message));
     }
@@ -1486,7 +1558,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   // ── Vista: crear lista ──────────────────────────────────────────────────────
   if (vistaInterna === 'crear') {
     return (
-      <div style={{ maxWidth: 520 }}>
+      <div style={{ maxWidth: 640 }}>
         <button onClick={() => setVistaInterna('listado')} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13, marginBottom: 14 }}>← Volver</button>
         <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Nuevo conteo — bodega {bodega}</h3>
         {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
@@ -1503,9 +1575,9 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
             </select>
           </label>
 
-          {formTipo !== 'general' && (
+          {formTipo !== 'general' && formTipo !== 'grupo_conteo' && (
             <label style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-              {formTipo === 'grupo_conteo' ? 'Grupo' : 'Criterio'}
+              Criterio
               <select value={formCriterio} onChange={(e) => setFormCriterio(e.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
                 <option value="">— Selecciona —</option>
                 {opciones.map(o => <option key={o.valor} value={o.valor}>{o.valor} ({o.items} ítems)</option>)}
@@ -1513,14 +1585,65 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
             </label>
           )}
 
-          {formTipo === 'grupo_conteo' && formCriterio && (
-            <label style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-              Subgrupo (opcional — déjalo vacío para contar todo el grupo)
-              <select value={formSubcriterio} onChange={(e) => setFormSubcriterio(e.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
-                <option value="">— Todo el grupo —</option>
-                {opcionesSubgrupo.map(o => <option key={o.valor} value={o.valor}>{o.valor} ({o.items} ítems)</option>)}
-              </select>
-            </label>
+          {formTipo === 'grupo_conteo' && (
+            <div>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                Grupos y subgrupos <span style={{ opacity: 0.8 }}>(marca uno o varios — puedes combinar grupos completos con subgrupos sueltos de otros grupos)</span>
+              </div>
+              {opciones.length === 0 ? (
+                <p style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin grupos de conteo cargados para esta bodega. Cárgalos en Inventario → "Cargar Grupos de Conteo (Excel)", o en la pestaña Datos.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 280, overflowY: 'auto', border: '1px solid var(--t-border)', borderRadius: 8, padding: 8 }}>
+                  {opciones.map(g => (
+                    <div key={g.valor}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 4px', borderRadius: 4, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={grupoEstaMarcado(g.valor, null)} onChange={() => toggleGrupoSel(g.valor, null)} />
+                        <span style={{ flex: 1, fontWeight: 600 }}>{g.valor}</span>
+                        <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>{g.items} ítems</span>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); toggleExpandirGrupo(g.valor); }}
+                          style={{ background: 'none', border: 'none', color: 'var(--t-accent)', fontSize: 11, cursor: 'pointer' }}
+                        >
+                          {gruposExpandidos[g.valor] ? '▲ subgrupos' : '▼ subgrupos'}
+                        </button>
+                      </label>
+                      {gruposExpandidos[g.valor] && (
+                        <div style={{ marginLeft: 24, borderLeft: '1px solid var(--t-border)', paddingLeft: 10 }}>
+                          {!subgruposPorGrupo[g.valor] ? (
+                            <p style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Cargando…</p>
+                          ) : subgruposPorGrupo[g.valor].length === 0 ? (
+                            <p style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Sin subgrupos.</p>
+                          ) : subgruposPorGrupo[g.valor].map(s => (
+                            <label key={s.valor} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '2px 4px', cursor: 'pointer' }}>
+                              <input type="checkbox" checked={grupoEstaMarcado(g.valor, s.valor)} onChange={() => toggleGrupoSel(g.valor, s.valor)} />
+                              <span style={{ flex: 1 }}>{s.valor}</span>
+                              <span style={{ color: 'var(--t-text-muted)', fontSize: 10 }}>{s.items} ítems</span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {gruposSel.length > 1 && (
+                <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '8px 10px' }}>
+                  <input type="checkbox" checked={generarPorSeparado} onChange={(e) => setGenerarPorSeparado(e.target.checked)} />
+                  Generar listas de conteo por grupo o por subgrupo
+                  <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>
+                    {generarPorSeparado
+                      ? `— crea ${gruposSel.length} listas separadas, una por cada uno marcado`
+                      : '— combina todo lo marcado en una sola lista'}
+                  </span>
+                </label>
+              )}
+
+              {progresoLote && (
+                <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 8 }}>Creando listas… {progresoLote.hecho}/{progresoLote.total}</p>
+              )}
+            </div>
           )}
 
           {puedeSubclasificar && (
@@ -1544,7 +1667,11 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
             disabled={creando}
             style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '10px 14px', fontSize: 13, fontWeight: 600, cursor: creando ? 'not-allowed' : 'pointer', marginTop: 6 }}
           >
-            {creando ? 'Creando…' : 'Crear conteo y ver ítems'}
+            {creando
+              ? (progresoLote ? `Creando ${progresoLote.hecho}/${progresoLote.total}…` : 'Creando…')
+              : (formTipo === 'grupo_conteo' && gruposSel.length > 1 && generarPorSeparado
+                  ? `Crear ${gruposSel.length} listas y ver la última`
+                  : 'Crear conteo y ver ítems')}
           </button>
         </div>
       </div>
@@ -2467,3 +2594,4 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
