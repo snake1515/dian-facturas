@@ -5496,7 +5496,13 @@ function itemsPendientesDe(p, devoluciones, cruces = []) {
 function itemsPendientesDeDevolucion(d, cruces = []) {
   const asignadoPorCodigo = {};
   (cruces || []).filter(c => c.devolucion_id === d.id).forEach(c => {
-    (c.items_cruzados || []).forEach(it => {
+    // Igual que en el resto del archivo (líneas ~1064, ~2264, ~2938): usar
+    // items_cruzados (la asignación exacta) cuando existe; si el cruce es
+    // viejo y no lo tiene, caer a devolucion_items. Sin este fallback, los
+    // cruces antiguos se contaban como "nada asignado" y el documento
+    // aparecía como pendiente aunque ya estuviera cerrado.
+    const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+    items.forEach(it => {
       asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
     });
   });
@@ -6079,6 +6085,14 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 
 
 
