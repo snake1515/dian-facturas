@@ -5594,6 +5594,12 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
       return next;
     });
   }
+  function contraerTodas(nombresClinicas) {
+    setClinicasColapsadas(new Set(nombresClinicas));
+  }
+  function expandirTodas() {
+    setClinicasColapsadas(new Set());
+  }
 
   // Los documentos IDP/ED (devoluciones como DOCUMENTO) viven en la tabla
   // "prestamos" con tipo devolucion_ingreso/devolucion_egreso — igual que en
@@ -5776,9 +5782,23 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
       {/* Lista unificada — una sola tabla, no 4 árboles repetidos. Al hacer
           clic en una tarjeta de arriba se filtra a solo ese tipo; sin
           ninguna seleccionada, se ven los 4 juntos con su etiqueta de tipo. */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-muted)' }}>
-          {tipoActivo ? TIPOS.find(t => t.id === tipoActivo).titulo : 'Todos los tipos'}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-muted)' }}>
+            {tipoActivo ? TIPOS.find(t => t.id === tipoActivo).titulo : 'Todos los tipos'}
+          </span>
+          {clinicasUnificadas.length > 0 && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => contraerTodas(clinicasUnificadas.map(c => c.clinica))}
+                style={{ padding: '3px 9px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 6, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                Contraer todas
+              </button>
+              <button onClick={expandirTodas}
+                style={{ padding: '3px 9px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 6, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                Expandir todas
+              </button>
+            </div>
+          )}
         </div>
         <div style={{ textAlign: 'right' }}>
           <span style={{ fontWeight: 700, fontSize: 14, color: '#BA7517', marginRight: 10 }}>{fmt(granTotalUnificado)}</span>
@@ -6013,5 +6033,7 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
 
 
