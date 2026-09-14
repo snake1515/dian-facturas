@@ -105,6 +105,14 @@ function fmtFecha(f) {
   return String(f).substring(0, 10);
 }
 
+// Número de consecutivo del documento (ej. "EPO921" -> 921, "IPE1038" -> 1038),
+// para poder ordenar de menor a mayor o viceversa independientemente del texto.
+// A nivel de módulo porque lo usan varios componentes (TabCruces, TabPendientesCierre).
+function numeroConsecutivo(p) {
+  const m = (p.documento_contable || p.documento || '').match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
 // ─── Generador del reporte HTML descargable del Dashboard de Préstamos ────────
 // Recibe datos ya agregados/calculados desde TabDashboard (Prestamos.js) y
 // devuelve un documento HTML autocontenido (sin dependencias externas) listo
@@ -2200,13 +2208,6 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     { v: '07', n: 'Julio' }, { v: '08', n: 'Agosto' }, { v: '09', n: 'Septiembre' },
     { v: '10', n: 'Octubre' }, { v: '11', n: 'Noviembre' }, { v: '12', n: 'Diciembre' },
   ];
-  // Número de consecutivo del documento (ej. "EPO921" -> 921, "IPE1038" -> 1038),
-  // para poder ordenar de menor a mayor o viceversa independientemente del texto.
-  function numeroConsecutivo(p) {
-    const m = (p.documento_contable || '').match(/(\d+)/);
-    return m ? parseInt(m[1], 10) : 0;
-  }
-
   // Separar por tipo
   const prestamosBase  = prestamos.filter(p => ['ingreso','egreso'].includes(p.tipo));
   const devoluciones   = prestamos.filter(p => ['devolucion_ingreso','devolucion_egreso'].includes(p.tipo));
@@ -5585,6 +5586,14 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
   const [hasta, setHasta] = useState(new Date().toISOString().substring(0, 10));
   const [busqueda, setBusqueda] = useState('');
   const [expandidos, setExpandidos] = useState(() => new Set());
+  const [clinicasColapsadas, setClinicasColapsadas] = useState(() => new Set());
+  function toggleClinica(clinica) {
+    setClinicasColapsadas(prev => {
+      const next = new Set(prev);
+      if (next.has(clinica)) next.delete(clinica); else next.add(clinica);
+      return next;
+    });
+  }
 
   // Los documentos IDP/ED (devoluciones como DOCUMENTO) viven en la tabla
   // "prestamos" con tipo devolucion_ingreso/devolucion_egreso — igual que en
@@ -5685,7 +5694,9 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
   const clinicasUnificadas = Object.entries(porClinicaUnificado)
     .map(([clinica, data]) => ({
       clinica, valorTotal: data.valorTotal,
-      documentos: data.documentos.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))),
+      // Ordenados por consecutivo del documento, de menor a mayor (antes era
+      // por fecha) — ej. EPO37, EPO155, EPO427... en vez de por antigüedad.
+      documentos: data.documentos.sort((a, b) => numeroConsecutivo(a) - numeroConsecutivo(b)),
     }))
     .sort((a, b) => a.clinica.localeCompare(b.clinica));
   const granTotalUnificado = clinicasUnificadas.reduce((s, c) => s + c.valorTotal, 0);
@@ -5781,13 +5792,20 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
         </div>
       )}
 
-      {clinicasUnificadas.map(({ clinica, documentos, valorTotal }) => (
+      {clinicasUnificadas.map(({ clinica, documentos, valorTotal }) => {
+        const clinicaColapsada = clinicasColapsadas.has(clinica);
+        return (
         <div key={clinica} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden', background: 'var(--t-bg-inner)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 14px', background: 'var(--t-bg-primary)' }}>
-            <span style={{ fontWeight: 600, fontSize: 13 }}>{clinica}</span>
+          <div onClick={() => toggleClinica(clinica)}
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '9px 14px', background: 'var(--t-bg-primary)', cursor: 'pointer', userSelect: 'none' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 10, color: 'var(--t-text-muted)', width: 10, display: 'inline-block' }}>{clinicaColapsada ? '▸' : '▾'}</span>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>{clinica}</span>
+              <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>({documentos.length} doc{documentos.length === 1 ? '' : 's'})</span>
+            </span>
             <span style={{ fontWeight: 600, fontSize: 13, color: '#BA7517' }}>{fmt(valorTotal)}</span>
           </div>
-          {documentos.map((doc, di) => {
+          {!clinicaColapsada && documentos.map((doc, di) => {
             const tipo = doc._tipo;
             const key = `${tipo.id}__${clinica}__${doc.documento || 'sin-doc'}__${di}`;
             const docAbierto = expandidos.has(key);
@@ -5850,7 +5868,8 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
             );
           })}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -5994,4 +6013,5 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
 
