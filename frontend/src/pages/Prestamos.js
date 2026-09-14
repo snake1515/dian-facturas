@@ -5585,15 +5585,6 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
   const [hasta, setHasta] = useState(new Date().toISOString().substring(0, 10));
   const [busqueda, setBusqueda] = useState('');
   const [expandidos, setExpandidos] = useState(() => new Set());
-  const [tarjetasAbiertas, setTarjetasAbiertas] = useState(() => new Set());
-
-  function toggleTarjeta(tipoId) {
-    setTarjetasAbiertas(prev => {
-      const next = new Set(prev);
-      if (next.has(tipoId)) next.delete(tipoId); else next.add(tipoId);
-      return next;
-    });
-  }
 
   // Los documentos IDP/ED (devoluciones como DOCUMENTO) viven en la tabla
   // "prestamos" con tipo devolucion_ingreso/devolucion_egreso — igual que en
@@ -5611,6 +5602,15 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
   const reporteED  = useMemo(() => construirReporteDevolucionesPendientes(documentosDevolucion, cruces, 'devolucion_egreso', desde, hasta), [documentosDevolucion, cruces, desde, hasta]);
 
   const inputS = { padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' };
+
+  const [tipoActivo, setTipoActivo] = useState(null); // null = todos los tipos a la vez
+
+  const TIPOS = [
+    { id: 'epo', titulo: 'EPO — Préstamos pendientes', corto: 'EPO', icono: '🏥', reporte: reporteEPO, conMotivo: false, subtitulo: 'Documentos abiertos o parciales — solo los productos aún pendientes' },
+    { id: 'ipe', titulo: 'IPE — Préstamos pendientes', corto: 'IPE', icono: '📦', reporte: reporteIPE, conMotivo: false, subtitulo: 'Documentos abiertos o parciales — solo los productos aún pendientes' },
+    { id: 'ed',  titulo: 'ED — Devoluciones pendientes', corto: 'ED',  icono: '↩', reporte: reporteED,  conMotivo: true,  subtitulo: 'Solo los productos pendientes de cruzar o con sobrante sin asignar' },
+    { id: 'idp', titulo: 'IDP — Devoluciones pendientes', corto: 'IDP', icono: '↩', reporte: reporteIDP, conMotivo: true,  subtitulo: 'Solo los productos pendientes de cruzar o con sobrante sin asignar' },
+  ];
 
   function toggleDoc(key) {
     setExpandidos(prev => {
@@ -5640,108 +5640,56 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
     }).filter(c => c.documentos.length > 0);
   }
 
-  function bloque(tipoId, titulo, icono, subtitulo, reporte, mostrarMotivo) {
-    const clinicasFiltradas = filtrarReporte(reporte);
+  // Tarjeta resumen — ya no es un acordeón con su propio árbol adentro; es un
+  // filtro clicable. Al hacer clic selecciona ese tipo (la lista de abajo se
+  // filtra a solo esos documentos); al hacer clic de nuevo sobre la misma
+  // vuelve a mostrar los 4 tipos juntos en la lista unificada.
+  function tarjetaResumen(tipo) {
+    const clinicasFiltradas = filtrarReporte(tipo.reporte);
     const totalDocumentos = clinicasFiltradas.reduce((s, c) => s + c.documentos.length, 0);
-    // Si hay una búsqueda activa, la tarjeta se despliega sola para mostrar
-    // los resultados, sin necesidad de que el usuario la abra a mano.
-    const abierta = tarjetasAbiertas.has(tipoId) || busqueda.trim() !== '';
-
+    const activa = tipoActivo === tipo.id;
     return (
-      <div style={{ border: '1px solid var(--t-border)', borderRadius: 10, overflow: 'hidden', background: 'var(--t-bg-inner)' }}>
-        <div onClick={() => toggleTarjeta(tipoId)} style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          padding: '12px 14px', cursor: 'pointer', userSelect: 'none',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{abierta ? '▾' : '▸'}</span>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{icono} {titulo}</div>
-              <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{subtitulo}</div>
-            </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: '#BA7517' }}>{fmt(reporte.granTotal)}</div>
-            <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{totalDocumentos} documento{totalDocumentos === 1 ? '' : 's'}</div>
-          </div>
+      <div key={tipo.id} onClick={() => setTipoActivo(activa ? null : tipo.id)} style={{
+        border: activa ? '1px solid var(--t-accent)' : '1px solid var(--t-border)',
+        background: activa ? 'var(--t-accent-bg, rgba(186,117,23,0.10))' : 'var(--t-bg-inner)',
+        borderRadius: 10, padding: '12px 14px', cursor: 'pointer', userSelect: 'none',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
+      }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{tipo.icono} {tipo.titulo}</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{tipo.subtitulo}</div>
         </div>
-
-        {abierta && (
-          <div style={{ padding: '0 14px 14px' }}>
-            {clinicasFiltradas.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', padding: 10, textAlign: 'center', border: '1px dashed var(--t-border)', borderRadius: 8 }}>
-                {busqueda.trim() ? 'Sin resultados para tu búsqueda' : 'Nada pendiente de cierre en el rango seleccionado'}
-              </div>
-            )}
-            {clinicasFiltradas.map(({ clinica, documentos, valorTotal }) => (
-              <div key={clinica} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 8, overflow: 'hidden', background: 'var(--t-bg-primary)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--t-bg-inner)' }}>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>{clinica}</span>
-                  <span style={{ fontWeight: 600, fontSize: 13, color: '#BA7517' }}>{fmt(valorTotal)}</span>
-                </div>
-                {documentos.map((doc, di) => {
-                  const key = `${tipoId}__${clinica}__${doc.documento || 'sin-doc'}__${di}`;
-                  const docAbierto = expandidos.has(key);
-                  // Franja alterna muy sutil para seguir la fila con la vista en listas largas.
-                  const fondoBase = di % 2 === 1 ? 'var(--t-bg-inner)' : 'transparent';
-                  return (
-                    <div key={key} style={{ borderTop: '1px solid var(--t-border)' }}>
-                      <div onClick={() => toggleDoc(key)}
-                        onMouseEnter={e => e.currentTarget.style.background = 'var(--t-hover-bg, rgba(186,117,23,0.10))'}
-                        onMouseLeave={e => e.currentTarget.style.background = fondoBase}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                          cursor: 'pointer', userSelect: 'none', background: fondoBase,
-                          transition: 'background 0.12s ease',
-                        }}>
-                        <span style={{ fontSize: 10, color: 'var(--t-text-muted)', width: 10, display: 'inline-block' }}>{docAbierto ? '▾' : '▸'}</span>
-                        <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{doc.documento || '(sin documento)'}</span>
-                        <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{fmtFecha(doc.fecha)}</span>
-                        <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{doc.productos.length} producto{doc.productos.length === 1 ? '' : 's'}</span>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: '#BA7517', minWidth: 90, textAlign: 'right' }}>{fmt(doc.valorTotal)}</span>
-                      </div>
-                      {docAbierto && (
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                          <thead>
-                            <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left', borderTop: '1px solid var(--t-border)' }}>
-                              <th style={{ padding: '5px 12px 5px 32px', fontWeight: 500 }}>Producto</th>
-                              <th style={{ padding: '5px 12px', fontWeight: 500 }}>Código</th>
-                              {mostrarMotivo && <th style={{ padding: '5px 12px', fontWeight: 500 }}>Motivo</th>}
-                              <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Cantidad</th>
-                              <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Valor</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {doc.productos.map((prod, pi) => (
-                              <tr key={pi} style={{ borderTop: '1px solid var(--t-border)' }}>
-                                <td style={{ padding: '5px 12px 5px 32px' }}>{prod.nombre}</td>
-                                <td style={{ padding: '5px 12px', color: 'var(--t-text-muted)' }}>{prod.codigo}</td>
-                                {mostrarMotivo && (
-                                  <td style={{ padding: '5px 12px' }}>
-                                    <span style={{
-                                      padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
-                                      background: prod.motivo === 'Sobrante sin asignar' ? '#ef444422' : '#f59e0b22',
-                                      color: prod.motivo === 'Sobrante sin asignar' ? '#ef4444' : '#f59e0b',
-                                    }}>{prod.motivo}</span>
-                                  </td>
-                                )}
-                                <td style={{ padding: '5px 12px', textAlign: 'right' }}>{prod.cantidad.toLocaleString('es-CO')}</td>
-                                <td style={{ padding: '5px 12px', textAlign: 'right' }}>{fmt(prod.valor)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        )}
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: '#BA7517' }}>{fmt(tipo.reporte.granTotal)}</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{totalDocumentos} documento{totalDocumentos === 1 ? '' : 's'}</div>
+        </div>
       </div>
     );
   }
+
+  // Lista unificada: junta los documentos de los tipos visibles (todos, o
+  // solo el seleccionado) en un único árbol por clínica, en vez de 4 árboles
+  // independientes repetidos. Cada documento lleva la etiqueta de su tipo
+  // para poder distinguirlos cuando se muestran los 4 juntos.
+  const tiposVisibles = tipoActivo ? TIPOS.filter(t => t.id === tipoActivo) : TIPOS;
+  const porClinicaUnificado = {};
+  tiposVisibles.forEach(tipo => {
+    filtrarReporte(tipo.reporte).forEach(({ clinica, documentos }) => {
+      if (!porClinicaUnificado[clinica]) porClinicaUnificado[clinica] = { documentos: [], valorTotal: 0 };
+      documentos.forEach(doc => {
+        porClinicaUnificado[clinica].documentos.push({ ...doc, _tipo: tipo });
+        porClinicaUnificado[clinica].valorTotal += doc.valorTotal;
+      });
+    });
+  });
+  const clinicasUnificadas = Object.entries(porClinicaUnificado)
+    .map(([clinica, data]) => ({
+      clinica, valorTotal: data.valorTotal,
+      documentos: data.documentos.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))),
+    }))
+    .sort((a, b) => a.clinica.localeCompare(b.clinica));
+  const granTotalUnificado = clinicasUnificadas.reduce((s, c) => s + c.valorTotal, 0);
+  const totalDocsUnificado = clinicasUnificadas.reduce((s, c) => s + c.documentos.length, 0);
 
   function exportarExcel() {
     const filas = (reporte, tipoLabel, conMotivo) => {
@@ -5809,13 +5757,100 @@ function TabPendientesCierre({ prestamos, devoluciones, cruces, clinicas }) {
       </div>
 
       <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14,
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, marginBottom: 20,
       }}>
-        {bloque('epo', 'EPO — Préstamos pendientes', '🏥', 'Documentos abiertos o parciales — solo los productos aún pendientes', reporteEPO, false)}
-        {bloque('ipe', 'IPE — Préstamos pendientes', '📦', 'Documentos abiertos o parciales — solo los productos aún pendientes', reporteIPE, false)}
-        {bloque('ed', 'ED — Devoluciones pendientes', '↩', 'Solo los productos pendientes de cruzar o con sobrante sin asignar', reporteED, true)}
-        {bloque('idp', 'IDP — Devoluciones pendientes', '↩', 'Solo los productos pendientes de cruzar o con sobrante sin asignar', reporteIDP, true)}
+        {TIPOS.map(tipo => tarjetaResumen(tipo))}
       </div>
+
+      {/* Lista unificada — una sola tabla, no 4 árboles repetidos. Al hacer
+          clic en una tarjeta de arriba se filtra a solo ese tipo; sin
+          ninguna seleccionada, se ven los 4 juntos con su etiqueta de tipo. */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t-text-muted)' }}>
+          {tipoActivo ? TIPOS.find(t => t.id === tipoActivo).titulo : 'Todos los tipos'}
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: '#BA7517', marginRight: 10 }}>{fmt(granTotalUnificado)}</span>
+          <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{totalDocsUnificado} documento{totalDocsUnificado === 1 ? '' : 's'}</span>
+        </div>
+      </div>
+
+      {clinicasUnificadas.length === 0 && (
+        <div style={{ fontSize: 13, color: 'var(--t-text-muted)', padding: 20, textAlign: 'center', border: '1px dashed var(--t-border)', borderRadius: 8 }}>
+          {busqueda.trim() ? 'Sin resultados para tu búsqueda' : 'Nada pendiente de cierre en el rango seleccionado'}
+        </div>
+      )}
+
+      {clinicasUnificadas.map(({ clinica, documentos, valorTotal }) => (
+        <div key={clinica} style={{ border: '1px solid var(--t-border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden', background: 'var(--t-bg-inner)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 14px', background: 'var(--t-bg-primary)' }}>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>{clinica}</span>
+            <span style={{ fontWeight: 600, fontSize: 13, color: '#BA7517' }}>{fmt(valorTotal)}</span>
+          </div>
+          {documentos.map((doc, di) => {
+            const tipo = doc._tipo;
+            const key = `${tipo.id}__${clinica}__${doc.documento || 'sin-doc'}__${di}`;
+            const docAbierto = expandidos.has(key);
+            const fondoBase = di % 2 === 1 ? 'var(--t-bg-primary)' : 'transparent';
+            return (
+              <div key={key} style={{ borderTop: '1px solid var(--t-border)' }}>
+                <div onClick={() => toggleDoc(key)}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--t-hover-bg, rgba(186,117,23,0.10))'}
+                  onMouseLeave={e => e.currentTarget.style.background = fondoBase}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
+                    cursor: 'pointer', userSelect: 'none', background: fondoBase,
+                    transition: 'background 0.12s ease',
+                  }}>
+                  <span style={{ fontSize: 10, color: 'var(--t-text-muted)', width: 10, display: 'inline-block' }}>{docAbierto ? '▾' : '▸'}</span>
+                  {!tipoActivo && (
+                    <span title={tipo.titulo} style={{
+                      fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+                      background: 'var(--t-bg-primary)', color: 'var(--t-text-muted)', border: '1px solid var(--t-border)',
+                    }}>{tipo.corto}</span>
+                  )}
+                  <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{doc.documento || '(sin documento)'}</span>
+                  <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{fmtFecha(doc.fecha)}</span>
+                  <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{doc.productos.length} producto{doc.productos.length === 1 ? '' : 's'}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#BA7517', minWidth: 90, textAlign: 'right' }}>{fmt(doc.valorTotal)}</span>
+                </div>
+                {docAbierto && (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left', borderTop: '1px solid var(--t-border)' }}>
+                        <th style={{ padding: '5px 12px 5px 32px', fontWeight: 500 }}>Producto</th>
+                        <th style={{ padding: '5px 12px', fontWeight: 500 }}>Código</th>
+                        {tipo.conMotivo && <th style={{ padding: '5px 12px', fontWeight: 500 }}>Motivo</th>}
+                        <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Cantidad</th>
+                        <th style={{ padding: '5px 12px', fontWeight: 500, textAlign: 'right' }}>Valor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {doc.productos.map((prod, pi) => (
+                        <tr key={pi} style={{ borderTop: '1px solid var(--t-border)' }}>
+                          <td style={{ padding: '5px 12px 5px 32px' }}>{prod.nombre}</td>
+                          <td style={{ padding: '5px 12px', color: 'var(--t-text-muted)' }}>{prod.codigo}</td>
+                          {tipo.conMotivo && (
+                            <td style={{ padding: '5px 12px' }}>
+                              <span style={{
+                                padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                                background: prod.motivo === 'Sobrante sin asignar' ? '#ef444422' : '#f59e0b22',
+                                color: prod.motivo === 'Sobrante sin asignar' ? '#ef4444' : '#f59e0b',
+                              }}>{prod.motivo}</span>
+                            </td>
+                          )}
+                          <td style={{ padding: '5px 12px', textAlign: 'right' }}>{prod.cantidad.toLocaleString('es-CO')}</td>
+                          <td style={{ padding: '5px 12px', textAlign: 'right' }}>{fmt(prod.valor)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }
@@ -5959,3 +5994,4 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
