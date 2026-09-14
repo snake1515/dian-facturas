@@ -3464,7 +3464,7 @@ function TabKardex({ prestamos, productos, clinicas }) {
   // depender de cruces formales) — y, de paso, el mismo cálculo agrupado
   // por clínica para dar accesos rápidos también por clínica, además de un
   // valor total pendiente $ como KPI de la pantalla de inicio.
-  const { topPendientesGlobal, valorPendienteTotal, pendientePorClinica } = React.useMemo(() => {
+  const { topPendientesGlobal, topPendientesPorValor, valorPendienteTotal, pendientePorClinica } = React.useMemo(() => {
     const porCodigo = {};        // "tipoMov|codigo" -> {...}
     const porClinicaCodigo = {}; // "clinica|tipoMov|codigo" -> {...}
 
@@ -3518,6 +3518,11 @@ function TabKardex({ prestamos, productos, clinicas }) {
 
     return {
       topPendientesGlobal: pendientesGlobalCompleto.sort((a, b) => b.pendiente - a.pendiente).slice(0, 8),
+      // Mismo conjunto de productos, pero ordenado por VALOR en vez de
+      // cantidad — un producto con pocas unidades pero un precio corrupto
+      // (mal digitado) puede no aparecer en el top por cantidad, pero sí
+      // domina el total en $, así que este listado ayuda a encontrarlo.
+      topPendientesPorValor: [...pendientesGlobalCompleto].sort((a, b) => (b.pendiente * b.precio) - (a.pendiente * a.precio)).slice(0, 8),
       valorPendienteTotal: valorTotal,
       pendientePorClinica: clinicasTop,
     };
@@ -3650,6 +3655,33 @@ function TabKardex({ prestamos, productos, clinicas }) {
                     </span>
                     <span style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b' }}>pendiente: {p.pendiente}</span>
                     <span style={{ fontSize: 12, color: '#f59e0b', minWidth: 90, textAlign: 'right' }}>{fmt(p.pendiente * p.precio)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {topPendientesPorValor.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Acceso rápido — productos con mayor VALOR pendiente
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 8 }}>
+                Ordenado por dinero, no por cantidad — útil para detectar un precio mal digitado en algún documento (pocas unidades pero un valor total desproporcionado).
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {topPendientesPorValor.map(p => (
+                  <div key={`valor|${p.tipoMov}|${p.codigo}`}
+                    onClick={() => seleccionarProducto(p.codigo, p.nombre, p.tipoMov)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, cursor: 'pointer' }}>
+                    <span style={{ fontFamily: 'monospace', color: 'var(--t-accent)', fontSize: 12, minWidth: 90 }}>{p.codigo}</span>
+                    <span style={{ flex: 1, fontSize: 13, color: 'var(--t-text-primary)' }}>{p.nombre}</span>
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: 'var(--t-bg-inner)', color: 'var(--t-text-muted)' }}>
+                      {p.tipoMov === 'otorgados' ? 'EPO/IDP' : 'IPE/ED'}
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>pendiente: {p.pendiente}</span>
+                    <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>precio: {fmt(p.precio)}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b', minWidth: 100, textAlign: 'right' }}>{fmt(p.pendiente * p.precio)}</span>
                   </div>
                 ))}
               </div>
@@ -4296,9 +4328,23 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
 
   const totales = useMemo(() => {
     const t = { abierto: 0, parcial: 0, cerrado: 0 };
-    filtrados.forEach(p => { t[p.estado] = (t[p.estado] || 0) + valorDoc(p); });
+    filtrados.forEach(p => {
+      if (p.estado === 'parcial') {
+        // "Parcial" solo debe sumar lo que TODAVÍA falta por devolver de
+        // ese documento, no su valor completo (que incluiría lo que ya se
+        // devolvió) — si no, este total queda inflado y no coincide con
+        // "Pendientes de cierre".
+        if (modo === 'cantidad') {
+          t.parcial += itemsPendientesDe(p, devoluciones, cruces).reduce((s, i) => s + Number(i.pendiente || 0), 0);
+        } else {
+          t.parcial += itemsPendientesDe(p, devoluciones, cruces).reduce((s, i) => s + Number(i.pendiente || 0) * Number(i.precio_unitario || 0), 0);
+        }
+      } else {
+        t[p.estado] = (t[p.estado] || 0) + valorDoc(p);
+      }
+    });
     return t;
-  }, [filtrados, modo]);
+  }, [filtrados, modo, devoluciones, cruces]);
   const totalGeneral = totales.abierto + totales.parcial + totales.cerrado;
 
   // ── Devoluciones: agrupaciones ────────────────────────────────────
@@ -6033,6 +6079,10 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
 
 
 
