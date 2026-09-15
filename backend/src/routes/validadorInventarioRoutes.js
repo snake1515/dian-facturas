@@ -99,6 +99,23 @@ router.post('/importar', authMiddleware, async (req, res) => {
       );
     }
 
+    // Productos/lotes que se habían agregado a mano en alguna lista de conteo
+    // y que AHORA sí vienen en el Excel: el ajuste ya se reflejó en SIIS, así
+    // que dejan de aparecer como pendientes de inclusión.
+    await client.query(
+      `UPDATE listas_conteo_items li
+       SET incluido_en_siis = true
+       FROM listas_conteo lc
+       WHERE lc.id = li.lista_id AND lc.bodega = $1
+         AND li.origen = 'agregado' AND li.incluido_en_siis = false
+         AND EXISTS (
+           SELECT 1 FROM validador_inventario vi
+           WHERE vi.bodega = lc.bodega AND vi.codigo = li.codigo
+             AND COALESCE(vi.lote,'') = COALESCE(li.lote,'')
+         )`,
+      [bod]
+    );
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -979,8 +996,22 @@ function calcularDetalleReporte(lista, items) {
       ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
       : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null);
 
-    const diferenciaInicial = definitivo === null ? null : Number((definitivo - Number(it.existencia_siis)).toFixed(3));
-    const diferenciaActual = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
+    // Un ítem agregado a mano no existe en el inventario, así que el cruce en
+    // vivo no devuelve nada: su existencia esperada es la del snapshot (0),
+    // no "desconocida" — si no, nunca mostraría el sobrante.
+    const existenciaActualEfectiva = (existenciaActual === null && it.origen === 'agregado')
+      ? Number(it.existencia_siis)
+      : existenciaActual;
+
+    // Ajuste por cambios de lote / referencias cruzadas: lo que el sistema
+    // tenía en otra fila pero físicamente está en esta (o viceversa). Se suma
+    // a la existencia esperada para que ambas filas del cruce se neutralicen.
+    const ajuste = Number(it.ajuste_cruce || 0);
+    const esperadoInicial = Number(it.existencia_siis) + ajuste;
+    const esperadoActual = existenciaActualEfectiva === null ? null : existenciaActualEfectiva + ajuste;
+
+    const diferenciaInicial = definitivo === null ? null : Number((definitivo - esperadoInicial).toFixed(3));
+    const diferenciaActual = (definitivo === null || esperadoActual === null) ? null : Number((definitivo - esperadoActual).toFixed(3));
     const valorInicial = diferenciaInicial === null ? null : Number((diferenciaInicial * Number(it.costo_unitario)).toFixed(2));
     const valorActual = diferenciaActual === null ? null : Number((diferenciaActual * Number(it.costo_unitario)).toFixed(2));
     const reconteo = requiereReconteo(it);
@@ -994,7 +1025,7 @@ function calcularDetalleReporte(lista, items) {
       id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, presentacion: it.presentacion, cuenta: it.cuenta,
       grupo_conteo: it.grupo_conteo, subgrupo_conteo: it.subgrupo_conteo,
       existencia_siis_inicial: Number(it.existencia_siis),
-      existencia_siis_actual: existenciaActual,
+      existencia_siis_actual: existenciaActualEfectiva,
       conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
       conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null,
       definitivo,
@@ -1003,6 +1034,9 @@ function calcularDetalleReporte(lista, items) {
       requiere_reconteo: reconteo,
       motivo_diferencia: it.motivo_diferencia || '',
       dias_para_vencer: diasVence,
+      origen: it.origen || 'snapshot',
+      ajuste_cruce: ajuste,
+      costo_unitario: Number(it.costo_unitario || 0),
     };
   });
   return {
@@ -1496,7 +1530,355 @@ router.get('/listas-conteo-consolidado-excel', authMiddleware, async (req, res) 
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// AJUSTES DENTRO DE UNA LISTA DE CONTEO
+//  - Agregar productos/lotes encontrados en bodega que no estaban en el Excel
+//  - Cambios de lote (mismo código) y referencias cruzadas (códigos distintos)
+//  - Reporte final consolidado (JSON + Excel) para imprimir y firmar
+// ════════════════════════════════════════════════════════════════════════════
+
+async function listaAbiertaOError(listaId, res) {
+  const { rows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [listaId]);
+  if (!rows.length) { res.status(404).json({ error: 'Lista no encontrada' }); return null; }
+  if (rows[0].estado === 'cerrada') { res.status(400).json({ error: 'La lista está cerrada, no se puede modificar' }); return null; }
+  return rows[0];
+}
+
+// ── POST /api/validador-inventario/listas-conteo/:id/items ───────────────────
+// Agrega a la lista un producto/lote hallado físicamente que no venía en el
+// snapshot. Queda con existencia_siis = 0 y origen = 'agregado', así que todo
+// lo que se cuente de él aparece como sobrante hasta que se incluya en SIIS.
+router.post('/listas-conteo/:id/items', authMiddleware, async (req, res) => {
+  const lista = await listaAbiertaOError(req.params.id, res);
+  if (!lista) return;
+  try {
+    const { codigo, nombre, lote, fecha_vencimiento, costo_unitario, conteo_1 } = req.body;
+    const cod = truncar(codigo, 50);
+    if (!cod) return res.status(400).json({ error: 'codigo requerido' });
+
+    // Se completa lo que ya se sepa del código: nombre/costo desde el
+    // inventario de la bodega, y su clasificación desde los maestros.
+    const { rows: refRows } = await pool.query(
+      `SELECT vi.nombre, vi.costo_unitario, COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo, pi.presentacion
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+       LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       WHERE vi.bodega = $1 AND vi.codigo = $2 LIMIT 1`,
+      [lista.bodega, cod]
+    );
+    const ref = refRows[0] || {};
+
+    // Si no estaba en el inventario, igual se buscan sus maestros por código.
+    let cuenta = ref.cuenta, grupo = ref.grupo_conteo, subgrupo = ref.subgrupo_conteo, presentacion = ref.presentacion;
+    if (!refRows.length) {
+      const { rows: m } = await pool.query(
+        `SELECT COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta, cc.grupo, cc.subgrupo, pi.presentacion
+         FROM (SELECT $1::text AS codigo) x
+         LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(x.codigo)
+         LEFT JOIN clasificacion_conteo cc ON cc.codigo = x.codigo
+         LEFT JOIN presentaciones_inventario pi ON pi.codigo = x.codigo`,
+        [cod]
+      );
+      cuenta = m[0]?.cuenta || 'SIN CLASIFICAR';
+      grupo = m[0]?.grupo; subgrupo = m[0]?.subgrupo; presentacion = m[0]?.presentacion;
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO listas_conteo_items
+         (lista_id, codigo, nombre, lote, fecha_vencimiento, presentacion, cuenta, concat,
+          grupo_conteo, subgrupo_conteo, existencia_siis, costo_unitario, origen, conteo_1, conteo_1_por, conteo_1_en)
+       VALUES ($1,$2::text,$3,$4,$5,$6,$7,concat_tipo_inventario($2::text),$8,$9,0,$10,'agregado',$11::numeric,$12,
+               CASE WHEN $11::numeric IS NULL THEN NULL ELSE NOW() END)
+       RETURNING *`,
+      [lista.id, cod, truncar(nombre || ref.nombre || '', 300), truncar(lote, 100), truncar(fecha_vencimiento, 20),
+       truncar(presentacion, 200), truncar(cuenta, 100), truncar(grupo, 100), truncar(subgrupo, 100),
+       costo_unitario !== undefined && costo_unitario !== null && costo_unitario !== '' ? costo_unitario : (ref.costo_unitario || 0),
+       conteo_1 === undefined || conteo_1 === null || conteo_1 === '' ? null : conteo_1, req.user.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al agregar ítem a la lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/cruces ───────────────────
+router.get('/listas-conteo/:id/cruces', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT c.*, u.nombre AS creado_por_nombre,
+              o.codigo AS origen_codigo, o.nombre AS origen_nombre, o.lote AS origen_lote,
+              d.codigo AS destino_codigo, d.nombre AS destino_nombre, d.lote AS destino_lote
+       FROM listas_conteo_cruces c
+       LEFT JOIN usuarios u ON u.id = c.creado_por
+       JOIN listas_conteo_items o ON o.id = c.item_origen_id
+       JOIN listas_conteo_items d ON d.id = c.item_destino_id
+       WHERE c.lista_id = $1 ORDER BY c.creado_en DESC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar cruces:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/listas-conteo/:id/cruces ──────────────────
+// Registra un cambio de lote o referencia cruzada y aplica el ajuste a ambas
+// filas (origen -cantidad, destino +cantidad) para que las diferencias se
+// neutralicen. El movimiento queda registrado para el reporte final.
+router.post('/listas-conteo/:id/cruces', authMiddleware, async (req, res) => {
+  const lista = await listaAbiertaOError(req.params.id, res);
+  if (!lista) return;
+  const client = await pool.connect();
+  try {
+    const { item_origen_id, item_destino_id, cantidad, motivo } = req.body;
+    const cant = Number(cantidad);
+    if (!item_origen_id || !item_destino_id) { client.release(); return res.status(400).json({ error: 'item_origen_id e item_destino_id son requeridos' }); }
+    if (String(item_origen_id) === String(item_destino_id)) { client.release(); return res.status(400).json({ error: 'El origen y el destino no pueden ser el mismo ítem' }); }
+    if (!cant || cant <= 0) { client.release(); return res.status(400).json({ error: 'La cantidad debe ser mayor que cero' }); }
+
+    await client.query('BEGIN');
+    const { rows: itemsRows } = await client.query(
+      `SELECT * FROM listas_conteo_items WHERE id = ANY($1::int[]) AND lista_id = $2`,
+      [[item_origen_id, item_destino_id], lista.id]
+    );
+    if (itemsRows.length !== 2) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ error: 'Ítems no encontrados en esta lista' }); }
+    const origen = itemsRows.find(i => String(i.id) === String(item_origen_id));
+    const destino = itemsRows.find(i => String(i.id) === String(item_destino_id));
+    const tipo = origen.codigo === destino.codigo ? 'lote' : 'referencia';
+
+    await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce - $1 WHERE id = $2`, [cant, origen.id]);
+    await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce + $1 WHERE id = $2`, [cant, destino.id]);
+
+    const { rows } = await client.query(
+      `INSERT INTO listas_conteo_cruces (lista_id, item_origen_id, item_destino_id, cantidad, tipo, motivo, creado_por)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [lista.id, origen.id, destino.id, cant, tipo, truncar(motivo, 300), req.user.id]
+    );
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al registrar cruce:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── DELETE /api/validador-inventario/listas-conteo/:id/cruces/:cruceId ───────
+// Revierte el ajuste aplicado y borra el registro del cruce.
+router.delete('/listas-conteo/:id/cruces/:cruceId', authMiddleware, async (req, res) => {
+  const lista = await listaAbiertaOError(req.params.id, res);
+  if (!lista) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`SELECT * FROM listas_conteo_cruces WHERE id = $1 AND lista_id = $2`, [req.params.cruceId, lista.id]);
+    if (!rows.length) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ error: 'Cruce no encontrado' }); }
+    const c = rows[0];
+    await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce + $1 WHERE id = $2`, [c.cantidad, c.item_origen_id]);
+    await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce - $1 WHERE id = $2`, [c.cantidad, c.item_destino_id]);
+    await client.query(`DELETE FROM listas_conteo_cruces WHERE id = $1`, [c.id]);
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al revertir cruce:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/reporte-final ────────────
+// Reporte consolidado para imprimir/firmar: sobrantes, faltantes, cambios de
+// lote, referencias cruzadas y productos/lotes agregados en bodega.
+async function armarReporteFinal(listaId) {
+  const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [listaId]);
+  if (!listaRows.length) return null;
+  const lista = listaRows[0];
+  const itemsRaw = await obtenerItemsConActual(lista, listaId);
+  const { resumen, items } = calcularDetalleReporte(lista, itemsRaw);
+
+  const { rows: cruces } = await pool.query(
+    `SELECT c.*, u.nombre AS creado_por_nombre,
+            o.codigo AS origen_codigo, o.nombre AS origen_nombre, o.lote AS origen_lote,
+            d.codigo AS destino_codigo, d.nombre AS destino_nombre, d.lote AS destino_lote,
+            o.costo_unitario AS origen_costo
+     FROM listas_conteo_cruces c
+     LEFT JOIN usuarios u ON u.id = c.creado_por
+     JOIN listas_conteo_items o ON o.id = c.item_origen_id
+     JOIN listas_conteo_items d ON d.id = c.item_destino_id
+     WHERE c.lista_id = $1 ORDER BY c.tipo, c.creado_en`,
+    [listaId]
+  );
+
+  const sobrantes = items.filter(i => i.diferencia_cantidad_actual > 0 && i.origen !== 'agregado');
+  const faltantes = items.filter(i => i.diferencia_cantidad_actual < 0);
+  const agregados = items.filter(i => i.origen === 'agregado');
+  const cambiosLote = cruces.filter(c => c.tipo === 'lote');
+  const referenciasCruzadas = cruces.filter(c => c.tipo === 'referencia');
+
+  const suma = (arr, campo) => Number(arr.reduce((s, x) => s + Number(x[campo] || 0), 0).toFixed(2));
+
+  return {
+    lista,
+    resumen: {
+      ...resumen,
+      total_sobrantes: sobrantes.length,
+      valor_sobrantes: suma(sobrantes, 'diferencia_valor_actual'),
+      total_faltantes: faltantes.length,
+      valor_faltantes: suma(faltantes, 'diferencia_valor_actual'),
+      total_agregados: agregados.length,
+      valor_agregados: suma(agregados, 'diferencia_valor_actual'),
+      total_cambios_lote: cambiosLote.length,
+      total_referencias_cruzadas: referenciasCruzadas.length,
+    },
+    sobrantes, faltantes, agregados, cambios_lote: cambiosLote, referencias_cruzadas: referenciasCruzadas,
+  };
+}
+
+router.get('/listas-conteo/:id/reporte-final', authMiddleware, async (req, res) => {
+  try {
+    const data = await armarReporteFinal(req.params.id);
+    if (!data) return res.status(404).json({ error: 'Lista no encontrada' });
+    res.json(data);
+  } catch (err) {
+    console.error('Error al generar reporte final:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/reporte-final-excel ──────
+router.get('/listas-conteo/:id/reporte-final-excel', authMiddleware, async (req, res) => {
+  try {
+    const data = await armarReporteFinal(req.params.id);
+    if (!data) return res.status(404).json({ error: 'Lista no encontrada' });
+    const { lista, resumen, sobrantes, faltantes, agregados, cambios_lote, referencias_cruzadas } = data;
+
+    const wb = new ExcelJS.Workbook();
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}${lista.subcriterio ? ' / ' + lista.subcriterio : ''}`;
+
+    const hojaResumen = wb.addWorksheet('Resumen');
+    hojaResumen.columns = [{ width: 38 }, { width: 22 }];
+    hojaResumen.mergeCells('A1:B1');
+    hojaResumen.getCell('A1').value = `Reporte final de conteo #${lista.id}`;
+    hojaResumen.getCell('A1').font = { bold: true, size: 14 };
+    hojaResumen.getCell('A2').value = tituloCriterio;
+    [
+      ['Bodega', lista.bodega],
+      ['Estado', lista.estado === 'cerrada' ? 'CERRADA' : 'ABIERTA'],
+      ['Conteo 1 por', lista.conteo1_nombre || ''],
+      ['Conteo 2 por', lista.conteo2_nombre || ''],
+      ['Fecha de impresión', new Date().toLocaleString('es-CO')],
+      ['', ''],
+      ['Total ítems', resumen.total_items],
+      ['Contados', resumen.contados],
+      ['Pendientes', resumen.pendientes],
+      ['Sobrantes', `${resumen.total_sobrantes} (${resumen.valor_sobrantes})`],
+      ['Faltantes', `${resumen.total_faltantes} (${resumen.valor_faltantes})`],
+      ['Productos/lotes agregados', `${resumen.total_agregados} (${resumen.valor_agregados})`],
+      ['Cambios de lote', resumen.total_cambios_lote],
+      ['Referencias cruzadas', resumen.total_referencias_cruzadas],
+      ['Diferencia neta en valor', resumen.diferencia_valor_total_actual],
+    ].forEach((fila, i) => {
+      const r = hojaResumen.getRow(4 + i);
+      r.getCell(1).value = fila[0]; r.getCell(2).value = fila[1];
+      r.getCell(1).font = { bold: true };
+    });
+    const filaFirmas = 4 + 16;
+    hojaResumen.getCell(`A${filaFirmas}`).value = 'Firma Conteo 1: ______________________';
+    hojaResumen.getCell(`A${filaFirmas + 2}`).value = 'Firma Conteo 2: ______________________';
+    hojaResumen.getCell(`A${filaFirmas + 4}`).value = 'Firma Responsable: ___________________';
+
+    const hojaDif = (nombre, filas) => {
+      const ws = wb.addWorksheet(nombre);
+      ws.columns = [{ width: 16 }, { width: 40 }, { width: 16 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 13 }, { width: 14 }, { width: 30 }];
+      ws.getRow(1).values = ['Código', 'Nombre', 'Lote', 'Presentación', 'SIIS', 'Contado', 'Diferencia', 'Valor', 'Motivo'];
+      ws.getRow(1).font = { bold: true };
+      filas.forEach((it, i) => {
+        ws.getRow(2 + i).values = [
+          it.codigo, it.nombre, it.lote || '', it.presentacion || '',
+          it.existencia_siis_actual, it.definitivo, it.diferencia_cantidad_actual, it.diferencia_valor_actual, it.motivo_diferencia || '',
+        ];
+      });
+      if (filas.length === 0) ws.getRow(2).values = ['— Sin registros —'];
+    };
+    hojaDif('Sobrantes', sobrantes);
+    hojaDif('Faltantes', faltantes);
+    hojaDif('Agregados en bodega', agregados);
+
+    const hojaCruces = (nombre, filas) => {
+      const ws = wb.addWorksheet(nombre);
+      ws.columns = [{ width: 16 }, { width: 34 }, { width: 14 }, { width: 16 }, { width: 34 }, { width: 14 }, { width: 12 }, { width: 30 }, { width: 18 }];
+      ws.getRow(1).values = ['Cód. origen', 'Producto origen', 'Lote origen', 'Cód. destino', 'Producto destino', 'Lote destino', 'Cantidad', 'Motivo', 'Registrado por'];
+      ws.getRow(1).font = { bold: true };
+      filas.forEach((c, i) => {
+        ws.getRow(2 + i).values = [
+          c.origen_codigo, c.origen_nombre, c.origen_lote || '',
+          c.destino_codigo, c.destino_nombre, c.destino_lote || '',
+          Number(c.cantidad), c.motivo || '', c.creado_por_nombre || '',
+        ];
+      });
+      if (filas.length === 0) ws.getRow(2).values = ['— Sin registros —'];
+    };
+    hojaCruces('Cambios de lote', cambios_lote);
+    hojaCruces('Referencias cruzadas', referencias_cruzadas);
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="reporte_final_conteo_${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al exportar reporte final:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/pendientes-inclusion-siis?bodega=BV ────────
+// Productos/lotes que se agregaron a mano en alguna lista de conteo y que aún
+// NO aparecen en el inventario de la bodega — es decir, el ajuste todavía no
+// se reflejó en el Excel de SIIS que se sube a la app.
+router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const { rows } = await pool.query(
+      `SELECT li.id, li.codigo, li.nombre, li.lote, li.fecha_vencimiento, li.conteo_1, li.conteo_2,
+              li.lista_id, lc.criterio, lc.creado_en AS lista_creada_en
+       FROM listas_conteo_items li
+       JOIN listas_conteo lc ON lc.id = li.lista_id
+       WHERE lc.bodega = $1 AND li.origen = 'agregado' AND li.incluido_en_siis = false
+         AND NOT EXISTS (
+           SELECT 1 FROM validador_inventario vi
+           WHERE vi.bodega = lc.bodega AND vi.codigo = li.codigo
+             AND COALESCE(vi.lote,'') = COALESCE(li.lote,'')
+         )
+       ORDER BY lc.creado_en DESC`,
+      [bodega]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar pendientes de inclusión en SIIS:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
 
 
 
