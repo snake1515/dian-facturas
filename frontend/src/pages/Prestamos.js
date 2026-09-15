@@ -483,10 +483,20 @@ function TabResumen({ prestamos, cruces, onRefresh }) {
   egresos.forEach(p => {
     (p.items || []).forEach(item => {
       const cat = item.categoria || 'Otro';
-      if (!porCategoria[cat]) porCategoria[cat] = { valor: 0, cuenta: item.cuenta_contable };
+      if (!porCategoria[cat]) porCategoria[cat] = { valor: 0, cuenta: item.cuenta_contable, productos: {} };
       porCategoria[cat].valor += item.cantidad * item.precio_unitario;
+      // Se guarda también el detalle por producto (agrupado por código) para
+      // poder ver, sobre todo en "Otro", cuáles productos concretos no
+      // tienen categoría asignada en el catálogo.
+      const key = item.codigo || item.nombre || '—';
+      if (!porCategoria[cat].productos[key]) {
+        porCategoria[cat].productos[key] = { codigo: item.codigo, nombre: item.nombre, cantidad: 0, valor: 0 };
+      }
+      porCategoria[cat].productos[key].cantidad += Number(item.cantidad || 0);
+      porCategoria[cat].productos[key].valor += Number(item.cantidad || 0) * Number(item.precio_unitario || 0);
     });
   });
+  const [categoriaExpandida, setCategoriaExpandida] = React.useState(null);
 
   const statStyle = {
     background: 'var(--t-bg-card)', borderRadius: 10, padding: '14px 16px', border: '1px solid var(--t-border)',
@@ -545,13 +555,41 @@ function TabResumen({ prestamos, cruces, onRefresh }) {
               ))}</tr>
             </thead>
             <tbody>
-              {Object.entries(porCategoria).map(([cat, info]) => (
-                <tr key={cat}>
-                  <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}><CatTag categoria={cat} /></td>
-                  <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontSize: 12, color: 'var(--t-text-muted)' }}>{info.cuenta}</td>
-                  <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{fmt(info.valor)}</td>
-                </tr>
-              ))}
+              {Object.entries(porCategoria).map(([cat, info]) => {
+                const abierta = categoriaExpandida === cat;
+                const productos = Object.values(info.productos).sort((a, b) => b.valor - a.valor);
+                return (
+                  <React.Fragment key={cat}>
+                    <tr onClick={() => setCategoriaExpandida(abierta ? null : cat)} style={{ cursor: 'pointer' }}>
+                      <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
+                        <span style={{ fontSize: 10, color: 'var(--t-text-muted)', marginRight: 6 }}>{abierta ? '▾' : '▸'}</span>
+                        <CatTag categoria={cat} />
+                      </td>
+                      <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontSize: 12, color: 'var(--t-text-muted)' }}>{info.cuenta}</td>
+                      <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{fmt(info.valor)}</td>
+                    </tr>
+                    {abierta && (
+                      <tr>
+                        <td colSpan={3} style={{ padding: '10px 10px 14px 30px', borderBottom: '1px solid var(--t-border)', background: 'var(--t-bg-inner)' }}>
+                          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                            {productos.length} producto{productos.length !== 1 ? 's' : ''} en esta categoría
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflowY: 'auto' }}>
+                            {productos.map((prod, i) => (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, padding: '4px 0' }}>
+                                <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)', minWidth: 90 }}>{prod.codigo || '—'}</span>
+                                <span style={{ flex: 1, color: 'var(--t-text-primary)' }}>{prod.nombre || 'Sin nombre'}</span>
+                                <span style={{ color: 'var(--t-text-muted)' }}>x{prod.cantidad}</span>
+                                <span style={{ fontWeight: 500, minWidth: 100, textAlign: 'right' }}>{fmt(prod.valor)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
               {Object.keys(porCategoria).length === 0 && (
                 <tr><td colSpan={3} style={{ padding: '20px 10px', color: 'var(--t-text-muted)', fontSize: 12, textAlign: 'center' }}>Sin egresos abiertos</td></tr>
               )}
@@ -6102,6 +6140,38 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
