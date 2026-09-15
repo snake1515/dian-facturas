@@ -104,6 +104,7 @@ export default function ValidadorInventario() {
   const [loading, setLoading] = useState(true);
   const [importando, setImportando] = useState(false);
   const [alertaNuevosSinClasificar, setAlertaNuevosSinClasificar] = useState(null);
+  const [pendientesSiis, setPendientesSiis] = useState([]);
   const [busqueda, setBusqueda] = useState('');
   const [filtro, setFiltro] = useState('todos');
   const [sortCol, setSortCol] = useState(null);   // 'costo_unitario' | 'costo_total' | null
@@ -186,6 +187,14 @@ export default function ValidadorInventario() {
   }, []);
 
   useEffect(() => { cargar(bodega); }, [bodega, cargar]);
+
+  // Productos/lotes agregados a mano en algún conteo que todavía no aparecen
+  // en el Excel de SIIS de esta bodega.
+  useEffect(() => {
+    api.get('/validador-inventario/pendientes-inclusion-siis', { params: { bodega } })
+      .then(res => setPendientesSiis(res.data || []))
+      .catch(() => setPendientesSiis([]));
+  }, [bodega, items]);
 
   // ── Cargar / actualizar Excel del sistema (SIIS) ────────────────────────────
   function handleArchivo(e) {
@@ -821,6 +830,14 @@ export default function ValidadorInventario() {
         </div>
       )}
 
+      {pendientesSiis.length > 0 && (
+        <div style={{ background: '#0f2a3a', color: '#38bdf8', border: '1px solid #0f5c7a', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
+          📦 Hay <strong>{pendientesSiis.length}</strong> producto(s)/lote(s) agregado(s) a mano en un conteo (bodega {bodega}) que aún no aparecen en el Excel de SIIS que subes:{' '}
+          {pendientesSiis.slice(0, 5).map(p => `${p.codigo} (${p.lote || 's/lote'})`).join(', ')}
+          {pendientesSiis.length > 5 ? ` y ${pendientesSiis.length - 5} más` : ''}. Cuando SIIS los incluya, esta lista se limpia sola.
+        </div>
+      )}
+
       {alertaNuevosSinClasificar && (
         <div style={{ background: '#3a2f0f', color: '#fbbf24', border: '1px solid #7a5c0f', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
           <span>
@@ -1272,6 +1289,21 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   const inputEscaneoRef = useRef(null);
   const conteoInputRefs = useRef({});
 
+  // ── Agregar producto/lote encontrado en bodega, cruces (cambio de lote /
+  // referencia cruzada) y reporte final consolidado ─────────────────────────
+  const [mostrarFormAgregar, setMostrarFormAgregar] = useState(false);
+  const [formAgregar, setFormAgregar] = useState({ codigo: '', nombre: '', lote: '', fecha_vencimiento: '', costo_unitario: '', conteo_1: '' });
+  const [agregandoItem, setAgregandoItem] = useState(false);
+  const [mostrarFormCruce, setMostrarFormCruce] = useState(false);
+  const [formCruce, setFormCruce] = useState({ item_origen_id: '', item_destino_id: '', cantidad: '', motivo: '' });
+  const [registrandoCruce, setRegistrandoCruce] = useState(false);
+  const [cruces, setCruces] = useState([]);
+  const [mostrarReporteFinal, setMostrarReporteFinal] = useState(false);
+  const [reporteFinal, setReporteFinal] = useState(null);
+  const [cargandoReporteFinal, setCargandoReporteFinal] = useState(false);
+  const [descargandoReporteFinal, setDescargandoReporteFinal] = useState(false);
+
+
   const cargarListas = useCallback(async () => {
     setLoading(true);
     try {
@@ -1409,14 +1441,106 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   async function abrirLista(id) {
     setLoading(true);
     setReporte(null);
+    setCruces([]);
+    setReporteFinal(null);
+    setMostrarReporteFinal(false);
     try {
       const res = await api.get(`/validador-inventario/listas-conteo/${id}`);
       setListaActual(res.data);
       setVistaInterna('detalle');
+      cargarCruces(id);
     } catch (e) {
       setError('No se pudo abrir la lista');
     }
     setLoading(false);
+  }
+
+  async function cargarCruces(listaId) {
+    try {
+      const res = await api.get(`/validador-inventario/listas-conteo/${listaId}/cruces`);
+      setCruces(res.data || []);
+    } catch (e) { /* silencioso */ }
+  }
+
+  // ── Agregar producto/lote encontrado físicamente en bodega ──────────────────
+  async function agregarItem() {
+    if (!formAgregar.codigo.trim()) { alert('El código es requerido'); return; }
+    setAgregandoItem(true);
+    try {
+      const res = await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/items`, {
+        codigo: formAgregar.codigo.trim(), nombre: formAgregar.nombre.trim(), lote: formAgregar.lote.trim(),
+        fecha_vencimiento: formAgregar.fecha_vencimiento.trim(), costo_unitario: formAgregar.costo_unitario || undefined,
+        conteo_1: formAgregar.conteo_1 === '' ? undefined : parseNumCO(formAgregar.conteo_1),
+      });
+      setListaActual(prev => ({ ...prev, items: [...prev.items, res.data] }));
+      setFormAgregar({ codigo: '', nombre: '', lote: '', fecha_vencimiento: '', costo_unitario: '', conteo_1: '' });
+      setMostrarFormAgregar(false);
+      await cargarReporte(listaActual.id);
+    } catch (e) {
+      alert('Error agregando el producto: ' + (e.response?.data?.error || e.message));
+    }
+    setAgregandoItem(false);
+  }
+
+  // ── Cambio de lote / referencia cruzada — neutraliza ambas diferencias ─────
+  async function registrarCruce() {
+    if (!formCruce.item_origen_id || !formCruce.item_destino_id) { alert('Elige el ítem origen y el destino'); return; }
+    if (formCruce.item_origen_id === formCruce.item_destino_id) { alert('El origen y el destino no pueden ser el mismo ítem'); return; }
+    const cant = parseNumCO(formCruce.cantidad);
+    if (!cant || cant <= 0) { alert('La cantidad debe ser mayor que cero'); return; }
+    setRegistrandoCruce(true);
+    try {
+      await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/cruces`, {
+        item_origen_id: formCruce.item_origen_id, item_destino_id: formCruce.item_destino_id,
+        cantidad: cant, motivo: formCruce.motivo.trim(),
+      });
+      setFormCruce({ item_origen_id: '', item_destino_id: '', cantidad: '', motivo: '' });
+      setMostrarFormCruce(false);
+      await cargarCruces(listaActual.id);
+      await cargarReporte(listaActual.id);
+    } catch (e) {
+      alert('Error registrando el cruce: ' + (e.response?.data?.error || e.message));
+    }
+    setRegistrandoCruce(false);
+  }
+
+  async function revertirCruce(cruceId) {
+    if (!window.confirm('¿Revertir este cruce? Las diferencias de ambos ítems volverán a su valor original.')) return;
+    try {
+      await api.delete(`/validador-inventario/listas-conteo/${listaActual.id}/cruces/${cruceId}`);
+      await cargarCruces(listaActual.id);
+      await cargarReporte(listaActual.id);
+    } catch (e) {
+      alert('Error revirtiendo el cruce: ' + (e.response?.data?.error || e.message));
+    }
+  }
+
+  // ── Reporte final consolidado (sobrantes, faltantes, agregados, cruces) ────
+  async function verReporteFinal() {
+    setMostrarReporteFinal(true);
+    setCargandoReporteFinal(true);
+    try {
+      const res = await api.get(`/validador-inventario/listas-conteo/${listaActual.id}/reporte-final`);
+      setReporteFinal(res.data);
+    } catch (e) {
+      alert('Error generando el reporte final: ' + (e.response?.data?.error || e.message));
+    }
+    setCargandoReporteFinal(false);
+  }
+
+  async function descargarReporteFinalExcel() {
+    setDescargandoReporteFinal(true);
+    try {
+      const res = await api.get(`/validador-inventario/listas-conteo/${listaActual.id}/reporte-final-excel`, { responseType: 'blob' });
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = blobUrl; a.download = `reporte_final_conteo_${listaActual.id}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      alert('Error descargando el reporte final: ' + (e.response?.data?.error || e.message));
+    }
+    setDescargandoReporteFinal(false);
   }
 
   async function cargarReporte(id) {
@@ -1787,8 +1911,105 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                 📷 {modoEscaneo ? 'Modo escaneo: ON' : 'Modo escaneo'}
               </button>
             )}
+            {abierta && (
+              <button
+                onClick={() => { setMostrarFormAgregar(m => !m); setMostrarFormCruce(false); }}
+                style={{ background: mostrarFormAgregar ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: mostrarFormAgregar ? '#fff' : 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, cursor: 'pointer' }}
+              >
+                ➕ Agregar producto/lote
+              </button>
+            )}
+            {abierta && (
+              <button
+                onClick={() => { setMostrarFormCruce(m => !m); setMostrarFormAgregar(false); }}
+                style={{ background: mostrarFormCruce ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: mostrarFormCruce ? '#fff' : 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, cursor: 'pointer' }}
+              >
+                🔀 Registrar cruce
+              </button>
+            )}
+            <button onClick={verReporteFinal} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
+              📋 Reporte final
+            </button>
           </div>
         </div>
+
+        {mostrarFormAgregar && (
+          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Agregar producto/lote encontrado en bodega (no estaba en el Excel de SIIS)</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Código*
+                <input value={formAgregar.codigo} onChange={e => setFormAgregar(p => ({ ...p, codigo: e.target.value }))} style={{ ...inputStyle, width: 130, display: 'block', marginTop: 3 }} />
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Nombre
+                <input value={formAgregar.nombre} onChange={e => setFormAgregar(p => ({ ...p, nombre: e.target.value }))} placeholder="(se toma del maestro si existe)" style={{ ...inputStyle, width: 200, display: 'block', marginTop: 3 }} />
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Lote
+                <input value={formAgregar.lote} onChange={e => setFormAgregar(p => ({ ...p, lote: e.target.value }))} style={{ ...inputStyle, width: 100, display: 'block', marginTop: 3 }} />
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Fecha venc.
+                <input type="date" value={formAgregar.fecha_vencimiento} onChange={e => setFormAgregar(p => ({ ...p, fecha_vencimiento: e.target.value }))} style={{ ...inputStyle, width: 130, display: 'block', marginTop: 3 }} />
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Costo unit.
+                <input type="number" value={formAgregar.costo_unitario} onChange={e => setFormAgregar(p => ({ ...p, costo_unitario: e.target.value }))} style={{ ...inputStyle, width: 100, display: 'block', marginTop: 3 }} />
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Conteo 1
+                <input type="number" value={formAgregar.conteo_1} onChange={e => setFormAgregar(p => ({ ...p, conteo_1: e.target.value }))} style={{ ...inputStyle, width: 80, display: 'block', marginTop: 3 }} />
+              </label>
+              <button onClick={agregarItem} disabled={agregandoItem} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                {agregandoItem ? 'Agregando…' : 'Agregar'}
+              </button>
+            </div>
+            <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 8 }}>
+              Queda con existencia SIIS = 0, así que lo que cuentes aparece como sobrante hasta que este código+lote entre en una carga de Excel — el sistema avisa cuando eso pase.
+            </p>
+          </div>
+        )}
+
+        {mostrarFormCruce && (
+          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Registrar cambio de lote o referencia cruzada</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Ítem origen (de donde salió)*
+                <select value={formCruce.item_origen_id} onChange={e => setFormCruce(p => ({ ...p, item_origen_id: e.target.value }))} style={{ ...inputStyle, width: 260, display: 'block', marginTop: 3 }}>
+                  <option value="">— Selecciona —</option>
+                  {l.items.map(it => <option key={it.id} value={it.id}>{it.codigo} — {it.nombre} ({it.lote || 'sin lote'})</option>)}
+                </select>
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Ítem destino (a donde llegó)*
+                <select value={formCruce.item_destino_id} onChange={e => setFormCruce(p => ({ ...p, item_destino_id: e.target.value }))} style={{ ...inputStyle, width: 260, display: 'block', marginTop: 3 }}>
+                  <option value="">— Selecciona —</option>
+                  {l.items.map(it => <option key={it.id} value={it.id}>{it.codigo} — {it.nombre} ({it.lote || 'sin lote'})</option>)}
+                </select>
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Cantidad*
+                <input type="number" value={formCruce.cantidad} onChange={e => setFormCruce(p => ({ ...p, cantidad: e.target.value }))} style={{ ...inputStyle, width: 90, display: 'block', marginTop: 3 }} />
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--t-text-muted)', flex: 1, minWidth: 180 }}>Motivo
+                <input value={formCruce.motivo} onChange={e => setFormCruce(p => ({ ...p, motivo: e.target.value }))} placeholder="Ej: reetiquetado, producto mal ubicado…" style={{ ...inputStyle, width: '100%', display: 'block', marginTop: 3 }} />
+              </label>
+              <button onClick={registrarCruce} disabled={registrandoCruce} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                {registrandoCruce ? 'Registrando…' : 'Registrar'}
+              </button>
+            </div>
+            <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 8 }}>
+              Si origen y destino tienen el mismo código, se registra como cambio de lote; si son distintos, como referencia cruzada. La diferencia del origen baja y la del destino sube en la misma cantidad.
+            </p>
+            {cruces.length > 0 && (
+              <div style={{ marginTop: 12, borderTop: '1px solid var(--t-border)', paddingTop: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Cruces registrados en este conteo</div>
+                {cruces.map(c => (
+                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, padding: '4px 0', borderBottom: '1px solid #1a2234' }}>
+                    <span>
+                      {c.tipo === 'lote' ? '📦 Lote' : '🔀 Referencia'}: {c.origen_codigo} ({c.origen_lote || 's/lote'}) → {c.destino_codigo} ({c.destino_lote || 's/lote'}) · <strong>{Number(c.cantidad)}</strong>
+                      {c.motivo && <span style={{ color: 'var(--t-text-muted)' }}> — {c.motivo}</span>}
+                    </span>
+                    <button onClick={() => revertirCruce(c.id)} title="Revertir" style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '3px 8px', fontSize: 11, color: '#f87171', cursor: 'pointer' }}>↺ Revertir</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {modoEscaneo && (
           <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: '10px 14px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1877,8 +2098,11 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                   );
                 };
                 return (
-                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : undefined, transition: 'background 0.3s' }}>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
+                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : (item.origen === 'agregado' ? 'rgba(56,189,248,0.06)' : undefined), transition: 'background 0.3s' }}>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>
+                      {item.codigo}
+                      {item.origen === 'agregado' && <div style={{ fontSize: 9, color: '#38bdf8', fontWeight: 600 }}>➕ Agregado</div>}
+                    </td>
                     <td style={{ padding: '6px 8px', maxWidth: 220 }}>{item.nombre}</td>
                     <td style={{ padding: '6px 8px' }}>
                       {isEditor ? (
@@ -2008,6 +2232,118 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                     ))}
                   </tbody>
                 </table>
+              )}
+            </div>
+          </div>
+        )}
+
+        {mostrarReporteFinal && (
+          <div className="reporte-final-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '30px 16px' }} onClick={() => setMostrarReporteFinal(false)}>
+            <style>{`
+              @media print {
+                body * { visibility: hidden; }
+                .reporte-final-imprimible, .reporte-final-imprimible * { visibility: visible; }
+                .reporte-final-imprimible { position: absolute; left: 0; top: 0; width: 100%; }
+                .no-imprimir { display: none !important; }
+              }
+            `}</style>
+            <div className="reporte-final-imprimible" onClick={(e) => e.stopPropagation()} style={{ background: '#fff', color: '#111', borderRadius: 10, padding: 24, maxWidth: 900, width: '100%' }}>
+              <div className="no-imprimir" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: '#111' }}>Reporte final — Conteo #{listaActual.id}</h3>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => window.print()} style={{ background: '#111', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}>🖨️ Imprimir</button>
+                  <button onClick={descargarReporteFinalExcel} disabled={descargandoReporteFinal} style={{ background: '#f3f4f6', color: '#111', border: '1px solid #ccc', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}>
+                    📥 {descargandoReporteFinal ? 'Generando…' : 'Descargar Excel'}
+                  </button>
+                  <button onClick={() => setMostrarReporteFinal(false)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}>✕</button>
+                </div>
+              </div>
+
+              {cargandoReporteFinal || !reporteFinal ? (
+                <p style={{ color: '#111' }}>Generando…</p>
+              ) : (
+                <div style={{ fontSize: 13, color: '#111' }}>
+                  <h2 style={{ fontSize: 18, marginBottom: 2 }}>Reporte final de conteo #{reporteFinal.lista.id}</h2>
+                  <p style={{ color: '#444', marginBottom: 14 }}>
+                    {LABEL_TIPO_LISTA[reporteFinal.lista.tipo]}{reporteFinal.lista.criterio ? `: ${reporteFinal.lista.criterio}` : ''}
+                    {reporteFinal.lista.subcriterio ? ` / ${reporteFinal.lista.subcriterio}` : ''} · Bodega {reporteFinal.lista.bodega} ·{' '}
+                    {reporteFinal.lista.estado === 'cerrada' ? 'CERRADA' : 'ABIERTA'} · Impreso {new Date().toLocaleString('es-CO')}
+                  </p>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
+                    {[
+                      ['Total ítems', reporteFinal.resumen.total_items],
+                      ['Sobrantes', `${reporteFinal.resumen.total_sobrantes} (${fmtPesos(reporteFinal.resumen.valor_sobrantes)})`],
+                      ['Faltantes', `${reporteFinal.resumen.total_faltantes} (${fmtPesos(reporteFinal.resumen.valor_faltantes)})`],
+                      ['Agregados en bodega', reporteFinal.resumen.total_agregados],
+                      ['Cambios de lote', reporteFinal.resumen.total_cambios_lote],
+                      ['Referencias cruzadas', reporteFinal.resumen.total_referencias_cruzadas],
+                      ['Diferencia neta en valor', fmtPesos(reporteFinal.resumen.diferencia_valor_total_actual)],
+                    ].map(([label, val]) => (
+                      <div key={label} style={{ border: '1px solid #ddd', borderRadius: 6, padding: '8px 10px' }}>
+                        <div style={{ fontWeight: 700 }}>{val}</div>
+                        <div style={{ fontSize: 11, color: '#666' }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {[
+                    ['Sobrantes', reporteFinal.sobrantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia']],
+                    ['Faltantes', reporteFinal.faltantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia']],
+                    ['Productos/lotes agregados en bodega', reporteFinal.agregados, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia']],
+                  ].map(([titulo, filas, cols]) => (
+                    <div key={titulo} style={{ marginBottom: 16 }}>
+                      <h4 style={{ fontSize: 14, marginBottom: 6 }}>{titulo} ({filas.length})</h4>
+                      {filas.length === 0 ? <p style={{ color: '#888', fontSize: 12 }}>Sin registros.</p> : (
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <thead><tr>{cols.map(c => <th key={c} style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '3px 6px' }}>{c}</th>)}</tr></thead>
+                          <tbody>
+                            {filas.map(f => (
+                              <tr key={f.id}>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.codigo}</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.nombre}</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.lote || '—'}</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.definitivo}</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.existencia_siis_actual}</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee', fontWeight: 700 }}>{f.diferencia_cantidad_actual > 0 ? '+' : ''}{f.diferencia_cantidad_actual}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  ))}
+
+                  {[
+                    ['Cambios de lote', reporteFinal.cambios_lote],
+                    ['Referencias cruzadas', reporteFinal.referencias_cruzadas],
+                  ].map(([titulo, filas]) => (
+                    <div key={titulo} style={{ marginBottom: 16 }}>
+                      <h4 style={{ fontSize: 14, marginBottom: 6 }}>{titulo} ({filas.length})</h4>
+                      {filas.length === 0 ? <p style={{ color: '#888', fontSize: 12 }}>Sin registros.</p> : (
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <thead><tr>{['Origen', 'Destino', 'Cantidad', 'Motivo'].map(c => <th key={c} style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '3px 6px' }}>{c}</th>)}</tr></thead>
+                          <tbody>
+                            {filas.map(c => (
+                              <tr key={c.id}>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{c.origen_codigo} — {c.origen_nombre} ({c.origen_lote || 's/lote'})</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{c.destino_codigo} — {c.destino_nombre} ({c.destino_lote || 's/lote'})</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{Number(c.cantidad)}</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{c.motivo || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  ))}
+
+                  <div style={{ marginTop: 30, display: 'flex', gap: 40 }}>
+                    <div style={{ flex: 1, borderTop: '1px solid #333', paddingTop: 4, fontSize: 12 }}>Firma Conteo 1 ({reporteFinal.lista.conteo1_nombre || '_____'})</div>
+                    <div style={{ flex: 1, borderTop: '1px solid #333', paddingTop: 4, fontSize: 12 }}>Firma Conteo 2 ({reporteFinal.lista.conteo2_nombre || '_____'})</div>
+                    <div style={{ flex: 1, borderTop: '1px solid #333', paddingTop: 4, fontSize: 12 }}>Firma Responsable</div>
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -2659,5 +2995,8 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
 
 
