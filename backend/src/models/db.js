@@ -622,6 +622,38 @@ const initDB = async () => {
       -- el sustento que pide contabilidad/auditoría).
       ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS motivo_diferencia VARCHAR(300);
 
+      -- Origen del ítem dentro de la lista: 'snapshot' = venía del inventario
+      -- al crear la lista; 'agregado' = se encontró físicamente en bodega y se
+      -- agregó a mano (lote nuevo, o producto que no estaba en el Excel SIIS).
+      ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS origen VARCHAR(20) DEFAULT 'snapshot';
+
+      -- Marca que el ítem agregado ya fue incorporado al Excel de SIIS que se
+      -- sube a la app (se resuelve solo cuando el código+lote aparece en una
+      -- carga posterior de validador_inventario).
+      ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS incluido_en_siis BOOLEAN NOT NULL DEFAULT false;
+
+      -- Ajuste neto acumulado por cambios de lote / referencias cruzadas. La
+      -- existencia "esperada" pasa a ser existencia_siis + ajuste_cruce, de
+      -- modo que al registrar un cruce las diferencias de las dos filas
+      -- involucradas se neutralizan solas.
+      ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS ajuste_cruce NUMERIC(14,3) NOT NULL DEFAULT 0;
+
+      -- Cruces registrados dentro de una lista: mover N unidades de un ítem a
+      -- otro. Mismo código = "cambio de lote"; códigos distintos =
+      -- "referencia cruzada". Se conservan para el reporte final.
+      CREATE TABLE IF NOT EXISTS listas_conteo_cruces (
+        id                SERIAL PRIMARY KEY,
+        lista_id          INTEGER NOT NULL REFERENCES listas_conteo(id) ON DELETE CASCADE,
+        item_origen_id    INTEGER NOT NULL REFERENCES listas_conteo_items(id) ON DELETE CASCADE,
+        item_destino_id   INTEGER NOT NULL REFERENCES listas_conteo_items(id) ON DELETE CASCADE,
+        cantidad          NUMERIC(14,3) NOT NULL,
+        tipo              VARCHAR(20) NOT NULL, -- 'lote' | 'referencia'
+        motivo            VARCHAR(300),
+        creado_por        INTEGER REFERENCES usuarios(id),
+        creado_en         TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_listas_conteo_cruces_lista ON listas_conteo_cruces(lista_id);
+
       -- Auditoría de reclasificaciones: cada cambio de cuenta/grupo en
       -- tipos_inventario (por Excel, edición manual, o desde una lista de
       -- conteo) queda con su valor anterior y nuevo, quién y cuándo.
@@ -673,17 +705,4 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
-
-
-
-
-
-
-
-
-
-
-
-
-
 
