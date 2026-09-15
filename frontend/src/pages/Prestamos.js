@@ -409,7 +409,7 @@ export default function Prestamos() {
         </div>
       ) : (
         <>
-          {activeTab === 'resumen'     && <TabResumen prestamos={prestamos} devoluciones={devoluciones} onRefresh={cargarDatos} />}
+          {activeTab === 'resumen'     && <TabResumen prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} productos={productos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
           {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
@@ -432,7 +432,7 @@ export default function Prestamos() {
 
 // ─── TAB RESUMEN ────────────────────────────────────────────────────────────────
 
-function TabResumen({ prestamos, devoluciones, onRefresh }) {
+function TabResumen({ prestamos, cruces, onRefresh }) {
   const [confirmPurga, setConfirmPurga] = React.useState(false);
   const [purgando,     setPurgando]     = React.useState(false);
 
@@ -447,20 +447,37 @@ function TabResumen({ prestamos, devoluciones, onRefresh }) {
     setPurgando(false);
   }
 
+  // Devoluciones reales (sistema de cruces actual) — antes esta pestaña
+  // usaba una tabla vieja (prestamo_devoluciones) desconectada del sistema
+  // de cruces real, que estaba prácticamente vacía: por eso "pendiente"
+  // nunca restaba nada y terminaba siendo igual al valor completo del
+  // documento. Se recalcula aquí igual que en el resto del archivo.
+  const devolucionesReales = prestamos.filter(p => ['devolucion_ingreso', 'devolucion_egreso'].includes(p.tipo));
+
+  // Valor pendiente REAL de un documento: solo lo que falta por devolver de
+  // cada producto puntual (usa los cruces ya registrados), no el valor
+  // completo del documento — así un préstamo "parcial" no cuenta como si
+  // nada se hubiera devuelto.
   function saldoPendiente(p) {
-    const totalPrestado = (p.items || []).reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
-    const totalDevuelto = devoluciones
-      .filter(d => d.prestamo_id === p.id)
-      .flatMap(d => d.items || [])
-      .reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
-    return Math.max(0, totalPrestado - totalDevuelto);
+    return itemsPendientesDe(p, devolucionesReales, cruces)
+      .reduce((s, i) => s + Number(i.pendiente || 0) * Number(i.precio_unitario || 0), 0);
+  }
+
+  // Valor bruto de un documento (todos sus productos, cantidad original
+  // completa) — para las tarjetas "Prestado a clínicas" / "Recibido de
+  // clínicas", que muestran cuánto hay actualmente en préstamos abiertos o
+  // parciales en total, sin descontar lo ya devuelto.
+  function valorBruto(p) {
+    return (p.items || []).reduce((s, i) => s + Number(i.cantidad || 0) * Number(i.precio_unitario || 0), 0);
   }
 
   const abiertos     = prestamos.filter(p => p.estado !== 'cerrado');
   const egresos      = abiertos.filter(p => p.tipo === 'egreso');
   const ingresos     = abiertos.filter(p => p.tipo === 'ingreso');
-  const totalEgreso  = egresos.reduce((s, p) => s + saldoPendiente(p), 0);
-  const totalIngreso = ingresos.reduce((s, p) => s + saldoPendiente(p), 0);
+  const totalEgresoBruto  = egresos.reduce((s, p) => s + valorBruto(p), 0);
+  const totalIngresoBruto = ingresos.reduce((s, p) => s + valorBruto(p), 0);
+  const totalEgresoPendiente  = egresos.reduce((s, p) => s + saldoPendiente(p), 0);
+  const totalIngresoPendiente = ingresos.reduce((s, p) => s + saldoPendiente(p), 0);
 
   const porCategoria = {};
   egresos.forEach(p => {
@@ -498,21 +515,21 @@ function TabResumen({ prestamos, devoluciones, onRefresh }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: 24 }}>
         <div style={statStyle}>
           <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Prestado a clínicas (egreso)</div>
-          <div style={{ fontSize: 20, fontWeight: 600, color: '#BA7517' }}>{fmt(totalEgreso)}</div>
+          <div style={{ fontSize: 20, fontWeight: 600, color: '#BA7517' }}>{fmt(totalEgresoBruto)}</div>
           <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 3 }}>{egresos.length} abierto{egresos.length !== 1 ? 's' : ''}</div>
         </div>
         <div style={statStyle}>
           <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Pendiente de recibir</div>
-          <div style={{ fontSize: 20, fontWeight: 600, color: '#BA7517' }}>{fmt(totalEgreso)}</div>
+          <div style={{ fontSize: 20, fontWeight: 600, color: '#BA7517' }}>{fmt(totalEgresoPendiente)}</div>
         </div>
         <div style={statStyle}>
           <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Recibido de clínicas (ingreso)</div>
-          <div style={{ fontSize: 20, fontWeight: 600, color: '#185FA5' }}>{fmt(totalIngreso)}</div>
+          <div style={{ fontSize: 20, fontWeight: 600, color: '#185FA5' }}>{fmt(totalIngresoBruto)}</div>
           <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 3 }}>{ingresos.length} abierto{ingresos.length !== 1 ? 's' : ''}</div>
         </div>
         <div style={statStyle}>
           <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Pendiente de devolver</div>
-          <div style={{ fontSize: 20, fontWeight: 600, color: '#185FA5' }}>{fmt(totalIngreso)}</div>
+          <div style={{ fontSize: 20, fontWeight: 600, color: '#185FA5' }}>{fmt(totalIngresoPendiente)}</div>
         </div>
       </div>
 
@@ -6085,6 +6102,22 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
