@@ -3973,6 +3973,51 @@ function TabProductos({ productos: productosProp, onRefresh }) {
   const [saving,          setSaving]          = useState('');
   const [progreso,        setProgreso]        = React.useState(0);
   const [productosLocales, setProductosLocales] = useState(productosProp);
+  const [editandoId,      setEditandoId]      = React.useState(null);
+  const [editCategoria,   setEditCategoria]   = React.useState('');
+  const [editCuenta,      setEditCuenta]      = React.useState('');
+  const [guardandoEdicion,setGuardandoEdicion]= React.useState(false);
+  const [sincronizando,   setSincronizando]   = React.useState(false);
+
+  function abrirEdicionCategoria(p) {
+    setEditandoId(p.id);
+    setEditCategoria(p.categoria || '');
+    setEditCuenta(p.cuenta_contable || '');
+  }
+
+  async function guardarCategoria(id) {
+    setGuardandoEdicion(true);
+    try {
+      const actualizado = await apiFetch(`/prestamos/productos/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoria: editCategoria, cuenta_contable: editCuenta }),
+      });
+      setProductosLocales(prev => prev.map(p => p.id === id ? actualizado : p));
+      setEditandoId(null);
+    } catch (err) {
+      alert('Error guardando categoría: ' + err.message);
+    }
+    setGuardandoEdicion(false);
+  }
+
+  // Aplica la categoría/cuenta contable ya corregidas en el catálogo hacia
+  // los documentos de préstamo ya existentes (que guardan su propia copia
+  // congelada por ítem) — sin esto, corregir el catálogo no cambia nada en
+  // "Resumen" para los préstamos que ya estaban creados antes de la
+  // corrección.
+  async function sincronizarConPrestamos() {
+    if (!window.confirm('¿Aplicar la categoría/cuenta contable del catálogo a todos los documentos de préstamo ya existentes (por código de producto)? Esto corrige retroactivamente "Otro" en Resumen para lo que ya está creado.')) return;
+    setSincronizando(true);
+    try {
+      const r = await apiFetch('/prestamos/sincronizar-categorias', { method: 'POST' });
+      alert(`Documentos revisados: ${r.documentos_revisados}.\nDocumentos actualizados: ${r.documentos_actualizados}.\nÍtems corregidos: ${r.items_actualizados}.`);
+      onRefresh();
+    } catch (err) {
+      alert('Error sincronizando: ' + err.message);
+    }
+    setSincronizando(false);
+  }
 
   const prevPropLen = useRef(productosProp.length);
   useEffect(() => {
@@ -4102,6 +4147,11 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         <button onClick={descargarPlantilla} style={{ padding: '7px 13px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>
           ↓ Plantilla
         </button>
+        <button onClick={sincronizarConPrestamos} disabled={sincronizando}
+          title='Aplica la categoría/cuenta contable del catálogo a los documentos de préstamo ya existentes (por código)'
+          style={{ padding: '7px 13px', border: '1px solid #f59e0b', borderRadius: 7, fontSize: 13, cursor: sincronizando ? 'default' : 'pointer', background: 'transparent', color: '#f59e0b', whiteSpace: 'nowrap', opacity: sincronizando ? 0.6 : 1 }}>
+          {sincronizando ? 'Sincronizando…' : '🔁 Sincronizar categorías'}
+        </button>
       </div>
 
       {productosLocales.length === 0 ? (
@@ -4125,12 +4175,41 @@ function TabProductos({ productos: productosProp, onRefresh }) {
             <tbody>
               {filtrados.map(p => {
                 const g = getCategoriaFromCodigo(p.codigo);
+                const editando = editandoId === p.id;
                 return (
                   <tr key={p.codigo}>
                     <td style={{ ...tdS, fontFamily: 'monospace', fontSize: 12 }}>{p.codigo}</td>
                     <td style={{ ...tdS, fontFamily: 'monospace', fontSize: 12, color: 'var(--t-text-muted)' }}>{String(p.codigo).substring(0, 6)}</td>
-                    <td style={{ ...tdS, fontSize: 12, color: 'var(--t-text-muted)' }}>{g?.cuenta || p.cuenta_contable || '—'}</td>
-                    <td style={tdS}><CatTag categoria={g?.categoria || p.categoria} /></td>
+                    {editando ? (
+                      <>
+                        <td style={tdS}>
+                          <input value={editCuenta} onChange={e => setEditCuenta(e.target.value)} placeholder='Cuenta contable'
+                            style={{ width: 110, padding: '4px 6px', fontSize: 12, border: '1px solid var(--t-border)', borderRadius: 5, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                        </td>
+                        <td style={tdS}>
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                            <input value={editCategoria} onChange={e => setEditCategoria(e.target.value)} placeholder='Categoría'
+                              style={{ width: 130, padding: '4px 6px', fontSize: 12, border: '1px solid var(--t-border)', borderRadius: 5, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                            <button onClick={() => guardarCategoria(p.id)} disabled={guardandoEdicion}
+                              style={{ padding: '3px 8px', fontSize: 11, border: 'none', borderRadius: 5, cursor: 'pointer', background: 'var(--t-accent)', color: '#fff' }}>
+                              ✓
+                            </button>
+                            <button onClick={() => setEditandoId(null)}
+                              style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--t-border)', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'var(--t-text-muted)' }}>
+                              ✕
+                            </button>
+                          </div>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td style={{ ...tdS, fontSize: 12, color: 'var(--t-text-muted)' }}>{g?.cuenta || p.cuenta_contable || '—'}</td>
+                        <td onClick={() => abrirEdicionCategoria(p)} title='Clic para editar categoría / cuenta contable' style={{ ...tdS, cursor: 'pointer' }}>
+                          <CatTag categoria={g?.categoria || p.categoria} />
+                          <span style={{ fontSize: 10, color: 'var(--t-text-muted)', marginLeft: 6 }}>✏️</span>
+                        </td>
+                      </>
+                    )}
                     <td style={tdS}>{p.nombre}</td>
                     <td style={{ ...tdS, color: 'var(--t-text-muted)' }}>{p.unidad || '—'}</td>
                     <td style={{ ...tdS, fontWeight: 500 }}>{fmt(p.precio_unitario)}</td>
@@ -6140,67 +6219,5 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
