@@ -166,15 +166,69 @@ router.post('/', upload.single('soporte'), async (req, res) => {
 
 
 // Actualizar precio de un producto
+// Actualizar un producto del catálogo (precio, categoría, cuenta contable)
 router.patch('/productos/:id', async (req, res) => {
   try {
-    const { precio_unitario } = req.body;
+    const { precio_unitario, categoria, cuenta_contable } = req.body;
+    const { rows: [actual] } = await pool.query('SELECT * FROM prestamo_productos WHERE id = $1', [req.params.id]);
+    if (!actual) return res.status(404).json({ error: 'Producto no encontrado' });
     const { rows } = await pool.query(
-      'UPDATE prestamo_productos SET precio_unitario = $1 WHERE id = $2 RETURNING *',
-      [precio_unitario, req.params.id]
+      'UPDATE prestamo_productos SET precio_unitario = $1, categoria = $2, cuenta_contable = $3 WHERE id = $4 RETURNING *',
+      [
+        precio_unitario !== undefined ? precio_unitario : actual.precio_unitario,
+        categoria !== undefined ? (categoria || null) : actual.categoria,
+        cuenta_contable !== undefined ? (cuenta_contable || null) : actual.cuenta_contable,
+        req.params.id,
+      ]
     );
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Sincroniza categoría/cuenta contable del catálogo (prestamo_productos)
+// hacia los ítems YA guardados en documentos de préstamo existentes
+// (prestamos.items, por código). Es necesario porque cada documento guarda
+// su propia copia (congelada) de categoría/cuenta al momento de crearse —
+// corregir el catálogo por sí solo no actualiza retroactivamente los
+// documentos que ya existen, y por eso "Otro" en el resumen no bajaba
+// aunque se corrigiera el catálogo.
+router.post('/sincronizar-categorias', authMiddleware, adminOnly, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { rows: catalogo } = await client.query('SELECT codigo, categoria, cuenta_contable FROM prestamo_productos');
+    const mapaCatalogo = {};
+    catalogo.forEach(p => { mapaCatalogo[p.codigo] = { categoria: p.categoria, cuenta_contable: p.cuenta_contable }; });
+
+    const { rows: docs } = await client.query('SELECT id, items FROM prestamos');
+    let documentosActualizados = 0;
+    let itemsActualizados = 0;
+
+    await client.query('BEGIN');
+    for (const doc of docs) {
+      let cambio = false;
+      const nuevosItems = (doc.items || []).map(it => {
+        const info = mapaCatalogo[it.codigo];
+        if (!info) return it;
+        const catNueva = info.categoria || null;
+        const cuentaNueva = info.cuenta_contable || null;
+        if ((it.categoria || null) !== catNueva || (it.cuenta_contable || null) !== cuentaNueva) {
+          cambio = true;
+          itemsActualizados++;
+          return { ...it, categoria: catNueva, cuenta_contable: cuentaNueva };
+        }
+        return it;
+      });
+      if (cambio) {
+        await client.query('UPDATE prestamos SET items = $1 WHERE id = $2', [JSON.stringify(nuevosItems), doc.id]);
+        documentosActualizados++;
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ documentos_revisados: docs.length, documentos_actualizados: documentosActualizados, items_actualizados: itemsActualizados });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
 });
 
 // Limpiar tabla productos
@@ -1577,38 +1631,5 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
