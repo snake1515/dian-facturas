@@ -482,8 +482,13 @@ function TabResumen({ prestamos, cruces, onRefresh }) {
   const porCategoria = {};
   egresos.forEach(p => {
     (p.items || []).forEach(item => {
-      const cat = item.categoria || 'Otro';
-      if (!porCategoria[cat]) porCategoria[cat] = { valor: 0, cuenta: item.cuenta_contable, productos: {} };
+      // Respaldo: si el ítem no trae categoría propia ni existe en el
+      // catálogo de Productos, se consulta la tabla de prefijos de código
+      // (misma que usa la pestaña Productos) antes de caer en "Otro" —
+      // muchos productos nunca se dieron de alta en el catálogo pero su
+      // prefijo de código ya identifica su categoría igual.
+      const cat = item.categoria || getCategoriaFromCodigo(item.codigo)?.categoria || 'Otro';
+      if (!porCategoria[cat]) porCategoria[cat] = { valor: 0, cuenta: item.cuenta_contable || getCategoriaFromCodigo(item.codigo)?.cuenta, productos: {} };
       porCategoria[cat].valor += item.cantidad * item.precio_unitario;
       // Se guarda también el detalle por producto (agrupado por código) para
       // poder ver, sobre todo en "Otro", cuáles productos concretos no
@@ -6219,5 +6224,7 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
 
 
