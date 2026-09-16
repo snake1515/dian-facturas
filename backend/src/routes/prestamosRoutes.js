@@ -13,6 +13,48 @@ const { authMiddleware, adminOnly } = require('../middleware/auth');
 // ─── Multer en memoria → Supabase Storage ───────────────────────────────────
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
+// Misma tabla de prefijos de código -> categoría/cuenta contable que usa el
+// frontend (Prestamos.js, GRUPOS_CONTABLES) — se replica aquí porque
+// /sincronizar-categorias corre en el servidor y necesita el mismo criterio
+// de respaldo para productos que nunca se dieron de alta en el catálogo
+// (prestamo_productos) pero cuyo prefijo de código ya identifica su
+// categoría real.
+const GRUPOS_CONTABLES = {
+  '010101': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010102': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010103': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010104': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010105': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010106': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010107': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010108': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010201': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010202': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010203': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010204': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010205': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010206': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010207': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '010208': { cuenta: '14150501', categoria: 'Medicamentos' },
+  '020101': { cuenta: '14200501', categoria: 'Dispositivos médicos' },
+  '020102': { cuenta: '14200501', categoria: 'Dispositivos médicos' },
+  '020103': { cuenta: '14200501', categoria: 'Dispositivos médicos' },
+  '150101': { cuenta: '14230501', categoria: 'Glóbulos rojos' },
+  '150202': { cuenta: '14230502', categoria: 'Plasma' },
+  '150303': { cuenta: '14230503', categoria: 'Plaquetas' },
+  '150401': { cuenta: '14230504', categoria: 'Crioprecipitados' },
+  '030101': { cuenta: '14151001', categoria: 'Complementos nutricionales' },
+  '030201': { cuenta: '14151001', categoria: 'Complementos nutricionales' },
+  '070101': { cuenta: '14210101', categoria: 'Gases medicinales' },
+  '070202': { cuenta: '14210201', categoria: 'Gases arteriales' },
+  '070303': { cuenta: '14210301', categoria: 'Laboratorio clínico' },
+};
+function getCategoriaFromCodigo(codigo) {
+  if (!codigo) return null;
+  const cod10 = String(codigo).padStart(10, '0');
+  return GRUPOS_CONTABLES[cod10.substring(0, 6)] || null;
+}
+
 async function subirPDF(file, carpeta) {
   if (!file) return null;
   const filename = `prestamos/${carpeta}/${Date.now()}_${file.originalname}`;
@@ -207,10 +249,15 @@ router.post('/sincronizar-categorias', authMiddleware, adminOnly, async (req, re
     for (const doc of docs) {
       let cambio = false;
       const nuevosItems = (doc.items || []).map(it => {
-        const info = mapaCatalogo[it.codigo];
-        if (!info) return it;
-        const catNueva = info.categoria || null;
-        const cuentaNueva = info.cuenta_contable || null;
+        // Prioridad: catálogo (prestamo_productos) primero; si el código no
+        // está catalogado o no tiene categoría propia, se usa la tabla de
+        // prefijos como respaldo — así se corrigen también los productos
+        // que nunca se dieron de alta en el catálogo.
+        const infoCatalogo = mapaCatalogo[it.codigo];
+        const infoPrefijo = getCategoriaFromCodigo(it.codigo);
+        const catNueva = infoCatalogo?.categoria || infoPrefijo?.categoria || null;
+        const cuentaNueva = infoCatalogo?.cuenta_contable || infoPrefijo?.cuenta || null;
+        if (!catNueva && !cuentaNueva) return it; // nada que corregir para este código
         if ((it.categoria || null) !== catNueva || (it.cuenta_contable || null) !== cuentaNueva) {
           cambio = true;
           itemsActualizados++;
@@ -1631,5 +1678,8 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
 
 
