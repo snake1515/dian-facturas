@@ -1525,6 +1525,8 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
   const [importResult,setImportResult]= useState(null);
   const [reparando,   setReparando]   = useState(false);
   const [repararResult, setRepararResult] = useState(null);
+  const [auditando,   setAuditando]   = useState(false);
+  const [auditResult, setAuditResult] = useState(null);
 
   // Nueva clínica rápida
   const [nuevaClinica, setNuevaClinica] = useState('');
@@ -1623,19 +1625,36 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       // Un mismo código puede repetirse en varias filas cuando llega en distintos
       // lotes — sumamos la cantidad en vez de descartar las filas siguientes,
       // que antes se perdían silenciosamente.
+      //
+      // Cada lote puede tener un costo unitario DISTINTO, así que además de sumar
+      // la cantidad hay que acumular el costo total y recalcular el precio
+      // unitario como promedio ponderado. Quedarse con el precio de la primera
+      // fila (como se hacía antes) inflaba o desinflaba el valor del documento
+      // completo — p. ej. IPE293: 600 u. valoradas a 35.390,29 (precio del lote
+      // de 500) daban 21.234.174 en vez de los 20.014.908 reales.
       const itemExistente = documentos[docKey].items.find(i => i.codigo === codigo);
       if (itemExistente) {
-        itemExistente.cantidad += cantidad;
+        itemExistente.cantidad    += cantidad;
+        itemExistente._totalCosto  = Number(itemExistente._totalCosto || 0) + totalCosto;
+        if (itemExistente.cantidad > 0 && itemExistente._totalCosto > 0) {
+          itemExistente.precio_unitario = itemExistente._totalCosto / itemExistente.cantidad;
+        }
       } else {
         documentos[docKey].items.push({
           codigo, nombre: nombre || prodMaestro?.nombre || '',
-          cantidad, precio_unitario: precioUnit || prodMaestro?.precio_unitario || 0,
+          cantidad,
+          _totalCosto: totalCosto,
+          precio_unitario: precioUnit || prodMaestro?.precio_unitario || 0,
           categoria: prodMaestro?.categoria || '', cuenta_contable: prodMaestro?.cuenta_contable || '',
           lote, fecha_vencimiento: fechaVenc,
         });
       }
     }
-    return { documentos: Object.values(documentos), codigosNuevos: [...codigosNuevos] };
+    // _totalCosto es solo un acumulador de trabajo — no debe viajar al backend
+    // ni guardarse dentro de prestamos.items.
+    const docsFinal = Object.values(documentos);
+    docsFinal.forEach(d => d.items.forEach(i => { delete i._totalCosto; }));
+    return { documentos: docsFinal, codigosNuevos: [...codigosNuevos] };
   }
 
   async function importarMasivo() {
@@ -1670,6 +1689,59 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       onSaved();
     } catch (e) { setError('Error reparando: ' + e.message); }
     setReparando(false);
+  }
+
+  // Dry run de la reparación: compara este Excel contra lo que hay guardado y
+  // reporta las diferencias de cantidad y valor SIN modificar nada. Sirve para
+  // dimensionar el daño del bug de precio unitario mal promediado antes de
+  // decidir reparar.
+  async function auditarMasivo() {
+    if (!excelData) return;
+    setAuditando(true); setError(''); setAuditResult(null);
+    try {
+      const { documentos } = procesarExcelMasivo(excelData);
+      if (documentos.length === 0) { setError('No se encontraron documentos válidos'); setAuditando(false); return; }
+      const result = await apiFetch('/prestamos/auditar-items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentos }),
+      });
+      setAuditResult(result);
+    } catch (e) { setError('Error auditando: ' + e.message); }
+    setAuditando(false);
+  }
+
+  function exportarAuditoria() {
+    if (!auditResult || !auditResult.diferencias?.length) return;
+    const filas = [];
+    auditResult.diferencias.forEach(d => {
+      const base = {
+        Documento: d.documento_contable,
+        Fecha: String(d.fecha || '').substring(0, 10),
+        'Clínica': d.clinica || '',
+        Problema: d.tipo_problema,
+        'Cant. documento (actual)': d.cantidad_actual,
+        'Cant. documento (Excel)': d.cantidad_excel,
+        'Valor documento (actual)': Math.round(d.valor_actual),
+        'Valor documento (Excel)': Math.round(d.valor_excel),
+        'Diferencia valor': Math.round(d.diferencia_valor),
+      };
+      if (!d.items || d.items.length === 0) { filas.push(base); return; }
+      d.items.forEach(i => filas.push({
+        ...base,
+        'Código': i.codigo,
+        Producto: i.nombre,
+        'Cant. item (actual)': i.cantidad_actual,
+        'Cant. item (Excel)': i.cantidad_excel,
+        'Precio unit. (actual)': Math.round(Number(i.precio_actual || 0) * 100) / 100,
+        'Precio unit. (Excel)': Math.round(Number(i.precio_excel || 0) * 100) / 100,
+        'Valor item (actual)': Math.round(i.valor_actual),
+        'Valor item (Excel)': Math.round(i.valor_excel),
+      }));
+    });
+    const ws = XLSX.utils.json_to_sheet(filas);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Auditoria');
+    XLSX.writeFile(wb, `auditoria_prestamos_${new Date().toISOString().substring(0, 10)}.xlsx`);
   }
 
   async function buscarEnExcel() {
@@ -1757,14 +1829,21 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
       }
 
       // Un mismo código puede repetirse en varias filas (distintos lotes) —
-      // sumamos la cantidad en vez de descartar las filas repetidas.
+      // sumamos la cantidad y promediamos el precio unitario de forma ponderada
+      // por el costo total de cada fila (ver nota extendida en procesarExcelMasivo).
       if (nuevosItemsPorCodigo[codigo]) {
-        nuevosItemsPorCodigo[codigo].cantidad += cantidad;
+        const it = nuevosItemsPorCodigo[codigo];
+        it.cantidad    += cantidad;
+        it._totalCosto  = Number(it._totalCosto || 0) + totalCosto;
+        if (it.cantidad > 0 && it._totalCosto > 0) {
+          it.precio_unitario = it._totalCosto / it.cantidad;
+        }
       } else {
         nuevosItemsPorCodigo[codigo] = {
           codigo,
           nombre:            nombre || prodMaestro?.nombre || '',
           cantidad,
+          _totalCosto:       totalCosto,
           precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
           categoria:         prodMaestro?.categoria || '',
           cuenta_contable:   prodMaestro?.cuenta_contable || '',
@@ -1773,6 +1852,7 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
         };
       }
     }
+    Object.values(nuevosItemsPorCodigo).forEach(i => { delete i._totalCosto; });
     const nuevosItems = Object.values(nuevosItemsPorCodigo);
 
     if (codigosNuevos.length > 0) {
@@ -1904,6 +1984,71 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
               }}>
               {reparando ? 'Reparando…' : '🩹 Reparar documentos existentes'}
             </button>
+            <button onClick={auditarMasivo} disabled={auditando} title="Solo lectura: compara este Excel contra lo guardado y reporta diferencias de cantidad y valor por documento y por producto. No modifica nada."
+              style={{
+                padding: '5px 14px', fontSize: 12, cursor: 'pointer', borderRadius: 6,
+                background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', fontWeight: 600,
+              }}>
+              {auditando ? 'Auditando…' : '🔍 Auditar (sin modificar)'}
+            </button>
+          </div>
+        )}
+        {auditResult && (
+          <div style={{ marginTop: 8, fontSize: 12, padding: '10px 12px', borderRadius: 6, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  🔍 {auditResult.con_diferencias} documento(s) con diferencias
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 2 }}>
+                  {auditResult.sin_cambios} sin cambios · {auditResult.no_encontrados} no existen todavía · impacto neto{' '}
+                  <b style={{ color: auditResult.impacto_total_valor < 0 ? '#ef4444' : '#22c55e' }}>
+                    {fmt(auditResult.impacto_total_valor)}
+                  </b>
+                </div>
+              </div>
+              {auditResult.con_diferencias > 0 && (
+                <button onClick={exportarAuditoria}
+                  style={{ padding: '5px 12px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                  ↓ Exportar a Excel
+                </button>
+              )}
+            </div>
+            {auditResult.con_diferencias === 0 ? (
+              <span style={{ color: 'var(--t-text-muted)' }}>Todos los documentos de este Excel coinciden con lo guardado.</span>
+            ) : (
+              <>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left' }}>
+                      <th style={{ padding: '4px 8px', fontWeight: 500 }}>Documento</th>
+                      <th style={{ padding: '4px 8px', fontWeight: 500 }}>Problema</th>
+                      <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Guardado</th>
+                      <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Debería ser</th>
+                      <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Diferencia</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditResult.diferencias.slice(0, 60).map(d => (
+                      <tr key={d.id} style={{ borderTop: '1px solid var(--t-border)' }}>
+                        <td style={{ padding: '4px 8px', fontWeight: 600 }}>{d.documento_contable}</td>
+                        <td style={{ padding: '4px 8px', color: 'var(--t-text-muted)' }}>{d.tipo_problema}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmt(d.valor_actual)}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmt(d.valor_excel)}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: d.diferencia_valor < 0 ? '#ef4444' : '#22c55e' }}>
+                          {fmt(d.diferencia_valor)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {auditResult.con_diferencias > 60 && (
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 6 }}>
+                    Mostrando 60 de {auditResult.con_diferencias} — exporta a Excel para ver el resto.
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
         {importResult && (
@@ -6224,6 +6369,11 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
 
 
 
