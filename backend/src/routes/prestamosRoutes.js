@@ -518,6 +518,106 @@ router.post('/importar-masivo', async (req, res) => {
 //  cantidades — si el archivo re-subido diera un total menor, se omite ese
 //  documento como medida de seguridad, para no perder datos por accidente.
 // ═══════════════════════════════════════════════════════════════════════════
+// Dry run de /reparar-items: compara lo que el Excel dice que debería ser contra
+// lo que hay guardado, y devuelve el detalle de las diferencias SIN tocar la base.
+// Sirve para dimensionar el daño del bug de precio unitario mal promediado (cuando
+// un mismo código venía en varias filas/lotes con costos unitarios distintos y el
+// import se quedaba con el precio de la primera fila) antes de decidir reparar.
+router.post('/auditar-items', async (req, res) => {
+  try {
+    const { documentos } = req.body;
+    if (!Array.isArray(documentos) || documentos.length === 0)
+      return res.status(400).json({ error: 'documentos requerido' });
+
+    const diferencias   = [];
+    const sinCambios    = [];
+    const noEncontrados = [];
+
+    for (const doc of documentos) {
+      const { rows: existentes } = await pool.query(
+        'SELECT id, documento_contable, fecha, clinica_nombre, items FROM prestamos WHERE documento_contable = $1',
+        [doc.documento_contable]
+      );
+      if (existentes.length === 0) { noEncontrados.push(doc.documento_contable); continue; }
+
+      const actual        = existentes[0];
+      const itemsActuales = actual.items || [];
+      const itemsNuevos   = doc.items    || [];
+
+      const sum     = (arr, f) => arr.reduce((s, i) => s + f(i), 0);
+      const cantAct = sum(itemsActuales, i => Number(i.cantidad || 0));
+      const cantNue = sum(itemsNuevos,   i => Number(i.cantidad || 0));
+      const valAct  = sum(itemsActuales, i => Number(i.cantidad || 0) * Number(i.precio_unitario || 0));
+      const valNue  = sum(itemsNuevos,   i => Number(i.cantidad || 0) * Number(i.precio_unitario || 0));
+
+      const difCant = cantNue - cantAct;
+      const difVal  = valNue  - valAct;
+
+      if (Math.abs(difCant) < 0.001 && Math.abs(difVal) <= 1) {
+        sinCambios.push(doc.documento_contable);
+        continue;
+      }
+
+      // Detalle por código, para saber exactamente qué producto está mal
+      const porCodigo = {};
+      const slot = (c, nombre) => (porCodigo[c] = porCodigo[c] || {
+        codigo: c, nombre: nombre || '',
+        cantidad_actual: 0, precio_actual: 0,
+        cantidad_excel: 0,  precio_excel: 0,
+      });
+
+      itemsActuales.forEach(i => {
+        const s = slot(i.codigo, i.nombre);
+        s.cantidad_actual = Number(i.cantidad || 0);
+        s.precio_actual   = Number(i.precio_unitario || 0);
+      });
+      itemsNuevos.forEach(i => {
+        const s = slot(i.codigo, i.nombre);
+        s.nombre         = s.nombre || i.nombre || '';
+        s.cantidad_excel = Number(i.cantidad || 0);
+        s.precio_excel   = Number(i.precio_unitario || 0);
+      });
+
+      const itemsConDiferencia = Object.values(porCodigo)
+        .filter(c => Math.abs(c.cantidad_excel - c.cantidad_actual) > 0.001
+                  || Math.abs(c.precio_excel   - c.precio_actual)   > 0.01)
+        .map(c => ({
+          ...c,
+          valor_actual: c.cantidad_actual * c.precio_actual,
+          valor_excel:  c.cantidad_excel  * c.precio_excel,
+        }));
+
+      diferencias.push({
+        id: actual.id,
+        documento_contable: doc.documento_contable,
+        fecha:   actual.fecha,
+        clinica: actual.clinica_nombre,
+        cantidad_actual: cantAct, cantidad_excel: cantNue, diferencia_cantidad: difCant,
+        valor_actual:    valAct,  valor_excel:    valNue,  diferencia_valor:    difVal,
+        tipo_problema:
+          Math.abs(difCant) > 0.001 && Math.abs(difVal) > 1
+            ? 'cantidad y valor'
+            : Math.abs(difCant) > 0.001
+              ? 'solo cantidad'
+              : 'solo valor (precio unitario mal promediado)',
+        items: itemsConDiferencia,
+      });
+    }
+
+    diferencias.sort((a, b) => Math.abs(b.diferencia_valor) - Math.abs(a.diferencia_valor));
+
+    res.json({
+      con_diferencias: diferencias.length, diferencias,
+      sin_cambios:     sinCambios.length,
+      no_encontrados:  noEncontrados.length, no_encontrados_docs: noEncontrados,
+      impacto_total_valor: diferencias.reduce((s, d) => s + d.diferencia_valor, 0),
+    });
+  } catch (e) {
+    console.error('auditar-items ERROR:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/reparar-items', async (req, res) => {
   try {
     const { documentos } = req.body;
@@ -551,19 +651,28 @@ router.post('/reparar-items', async (req, res) => {
         const valorActual = itemsActuales.reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
         const valorNuevo = itemsNuevos.reduce((s, i) => s + Number(i.cantidad) * Number(i.precio_unitario || 0), 0);
 
-        if (cantidadNueva <= cantidadActual) {
-          // No hay corrección que hacer (o el archivo re-subido trae MENOS
-          // de lo que ya había registrado — no se toca, por seguridad).
-          if (cantidadNueva < cantidadActual) {
-            omitidosPorReduccion.push({
-              documento_contable: doc.documento_contable,
-              cantidad_actual: cantidadActual, cantidad_en_archivo: cantidadNueva,
-            });
-          } else {
-            sinCambios.push(doc.documento_contable);
-          }
+        const mismaCantidad = Math.abs(cantidadNueva - cantidadActual) < 0.001;
+        const valorDifiere  = Math.abs(valorNuevo - valorActual) > 1;
+
+        // Protección original: si el archivo re-subido trae MENOS cantidad de la
+        // que ya está registrada, no se toca nada.
+        if (cantidadNueva < cantidadActual) {
+          omitidosPorReduccion.push({
+            documento_contable: doc.documento_contable,
+            cantidad_actual: cantidadActual, cantidad_en_archivo: cantidadNueva,
+          });
           continue;
         }
+
+        // Misma cantidad y mismo valor: no hay nada que corregir.
+        if (mismaCantidad && !valorDifiere) {
+          sinCambios.push(doc.documento_contable);
+          continue;
+        }
+
+        // Se llega aquí si la cantidad aumentó, o si la cantidad es la misma pero
+        // el valor difiere — el caso del precio unitario mal promediado entre
+        // lotes. En ese escenario el valor SÍ puede bajar: esa es la corrección.
 
         await client.query('UPDATE prestamos SET items = $1 WHERE id = $2', [JSON.stringify(itemsNuevos), actual.id]);
         const nuevoEstado = await recalcularEstadoDocumento(client, actual.id);
@@ -1678,6 +1787,12 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
 
 
 
