@@ -420,7 +420,7 @@ export default function Prestamos() {
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
           {activeTab === 'dashboard'   && (
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-              <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />
+              <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} productos={productos} />
             </div>
           )}
           {activeTab === 'pendientes_cierre' && <TabPendientesCierre prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
@@ -4574,11 +4574,12 @@ function PanelDashboard({ titulo, filas, modo }) {
   );
 }
 
-function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinicas }) {
+function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinicas, productos }) {
   const [tipoDoc,      setTipoDoc]      = useState('egreso');
   const [filtroClinica,setFiltroClinica]= useState('todas');
   const [filtroAnio,   setFiltroAnio]   = useState('todos');
-  const [filtroEstado, setFiltroEstado] = useState('todos');
+  const [filtroMes,    setFiltroMes]    = useState('todos'); // '01'..'12' | 'todos'
+  const [filtroEstado, setFiltroEstado] = useState([]); // array de: abierto | parcial | cerrado (vacío = todos)
   const [modo,         setModo]         = useState('valor');
   // seccion activa: 'prestamos' | 'devoluciones' | 'eficiencia' | 'tendencia' | 'antiguedad' | 'productos'
   const [seccion, setSeccion] = useState('prestamos');
@@ -4599,8 +4600,9 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
   const filtrados = useMemo(() => porTipo.filter(p =>
     (filtroClinica === 'todas' || p.clinica_nombre === filtroClinica) &&
     (filtroAnio   === 'todos' || String(new Date(p.fecha).getFullYear()) === filtroAnio) &&
-    (filtroEstado === 'todos' || p.estado === filtroEstado)
-  ), [porTipo, filtroClinica, filtroAnio, filtroEstado]);
+    (filtroMes    === 'todos' || String(new Date(p.fecha).getMonth() + 1).padStart(2, '0') === filtroMes) &&
+    (filtroEstado.length === 0 || filtroEstado.includes(p.estado))
+  ), [porTipo, filtroClinica, filtroAnio, filtroMes, filtroEstado]);
 
   // ── Devoluciones del tipo correspondiente ─────────────────────────
   // IDP = devoluciones de lo que prestamos (egreso → IDP)
@@ -4615,9 +4617,21 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
       const matchTipo    = d.tipo === tipoDevolucion;
       const matchClinica = filtroClinica === 'todas' || d.clinica_nombre === filtroClinica;
       const matchAnio    = filtroAnio   === 'todos'  || String(new Date(d.fecha).getFullYear()) === filtroAnio;
-      return matchTipo && matchClinica && matchAnio;
+      const matchMes     = filtroMes    === 'todos'  || String(new Date(d.fecha).getMonth() + 1).padStart(2, '0') === filtroMes;
+      return matchTipo && matchClinica && matchAnio && matchMes;
     });
-  }, [prestamos, tipoDevolucion, filtroClinica, filtroAnio]);
+  }, [prestamos, tipoDevolucion, filtroClinica, filtroAnio, filtroMes]);
+
+  // ── Categoría contable por código (según el catálogo actual de Productos;
+  //    si un código no está en el catálogo, se cae al mapeo fijo GRUPOS_CONTABLES). ──
+  const categoriaPorCodigo = useMemo(() => {
+    const m = {};
+    (productos || []).forEach(p => { if (p.codigo) m[p.codigo] = p.categoria || ''; });
+    return m;
+  }, [productos]);
+  function categoriaDeItem(item) {
+    return categoriaPorCodigo[item.codigo] || item.categoria || getCategoriaFromCodigo(item.codigo)?.categoria || 'Sin categoría';
+  }
 
   function valorDoc(doc) {
     const items = doc.items || [];
@@ -4648,6 +4662,33 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
     return filas.sort((a, b) => MESES_NOMBRES.findIndex(m => a.label.startsWith(m)) - MESES_NOMBRES.findIndex(m => b.label.startsWith(m)));
   }, [filtrados, modo, filtroAnio]);
   const porBodega  = useMemo(() => agrupar(filtrados, p => p.bodega_nombre || p.bodega_codigo || 'Sin bodega'), [filtrados, modo]);
+
+  // ── Por categoría contable (según el catálogo de Productos) ──────
+  const porCategoria = useMemo(() => {
+    const mapa = {};
+    function add(cat, estadoKey, v) {
+      if (!mapa[cat]) mapa[cat] = { label: cat, abierto: 0, parcial: 0, cerrado: 0 };
+      mapa[cat][estadoKey] = (mapa[cat][estadoKey] || 0) + v;
+    }
+    filtrados.forEach(p => {
+      if (p.estado === 'parcial') {
+        // Igual que en "totales": para documentos parciales solo cuenta lo
+        // que todavía falta por devolver, no el valor completo del documento.
+        itemsPendientesDe(p, devoluciones, cruces).forEach(i => {
+          const cat = categoriaDeItem(i);
+          const v = modo === 'cantidad' ? Number(i.pendiente || 0) : Number(i.pendiente || 0) * Number(i.precio_unitario || 0);
+          add(cat, 'parcial', v);
+        });
+      } else {
+        (p.items || []).forEach(item => {
+          const cat = categoriaDeItem(item);
+          const v = modo === 'cantidad' ? Number(item.cantidad || 0) : Number(item.cantidad || 0) * Number(item.precio_unitario || 0);
+          add(cat, p.estado, v);
+        });
+      }
+    });
+    return Object.values(mapa).sort((a, b) => (b.abierto + b.parcial + b.cerrado) - (a.abierto + a.parcial + a.cerrado));
+  }, [filtrados, modo, devoluciones, cruces, categoriaPorCodigo]);
 
   const totales = useMemo(() => {
     const t = { abierto: 0, parcial: 0, cerrado: 0 };
@@ -4868,12 +4909,11 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
           <option value="todos">Todos los años</option>
           {anios.map(a => <option key={a} value={a}>{a}</option>)}
         </select>
-        <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)} style={selectStyle}>
-          <option value="todos">Todos los estados</option>
-          <option value="abierto">Abierto</option>
-          <option value="parcial">Parcial</option>
-          <option value="cerrado">Cerrado / Total</option>
+        <select value={filtroMes} onChange={e => setFiltroMes(e.target.value)} style={selectStyle}>
+          <option value="todos">Todos los meses</option>
+          {MESES_NOMBRES.map((m, i) => <option key={m} value={String(i + 1).padStart(2, '0')}>{m}</option>)}
         </select>
+        <FiltroEstadoMultiple value={filtroEstado} onChange={setFiltroEstado} style={{ minWidth: 150 }} />
         <div style={{ display: 'flex', gap: 4 }}>
           <button onClick={() => setModo('valor')}    style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'valor'    ? 700 : 400 }}>$ Valor</button>
           <button onClick={() => setModo('cantidad')} style={{ ...selectStyle, cursor: 'pointer', fontWeight: modo === 'cantidad' ? 700 : 400 }}>Cantidad</button>
@@ -4917,6 +4957,7 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
           <PanelDashboard titulo="Por bodega"            filas={porBodega}  modo={modo} />
           <PanelDashboard titulo="Por año"               filas={porAnio}    modo={modo} />
           <PanelDashboard titulo="Por mes"               filas={porMes}     modo={modo} />
+          <PanelDashboard titulo="Por categoría contable" filas={porCategoria} modo={modo} />
         </div>
       )}
 
@@ -6408,6 +6449,28 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
