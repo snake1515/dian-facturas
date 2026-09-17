@@ -420,7 +420,7 @@ export default function Prestamos() {
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
           {activeTab === 'dashboard'   && (
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-              <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} productos={productos} />
+              <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} productos={productos} onRefresh={cargarDatos} />
             </div>
           )}
           {activeTab === 'pendientes_cierre' && <TabPendientesCierre prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
@@ -4574,7 +4574,7 @@ function PanelDashboard({ titulo, filas, modo }) {
   );
 }
 
-function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinicas, productos }) {
+function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinicas, productos, onRefresh }) {
   const [tipoDoc,      setTipoDoc]      = useState('egreso');
   const [filtroClinica,setFiltroClinica]= useState('todas');
   const [filtroAnio,   setFiltroAnio]   = useState('todos');
@@ -4624,13 +4624,28 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
 
   // ── Categoría contable por código (según el catálogo actual de Productos;
   //    si un código no está en el catálogo, se cae al mapeo fijo GRUPOS_CONTABLES). ──
-  const categoriaPorCodigo = useMemo(() => {
+  const productoPorCodigo = useMemo(() => {
     const m = {};
-    (productos || []).forEach(p => { if (p.codigo) m[p.codigo] = p.categoria || ''; });
+    (productos || []).forEach(p => { if (p.codigo) m[p.codigo] = p; });
     return m;
   }, [productos]);
+
+  // Normaliza para que "MEDICAMENTOS", "Medicamentos" y "medicamentos" caigan
+  // en la misma barra: si coincide (sin importar mayúsculas) con una de las
+  // categorías ya definidas en CATEGORIAS_COLORES se usa esa forma canónica;
+  // si no, se pasa a Title Case para que al menos no compitan por mayúsculas.
+  function normalizarCategoria(cat) {
+    const raw = (cat || '').trim();
+    if (!raw) return 'Sin categoría';
+    const key = raw.toLowerCase();
+    const canonico = Object.keys(CATEGORIAS_COLORES).find(c => c.toLowerCase() === key);
+    if (canonico) return canonico;
+    return raw.toLowerCase().replace(/(^|\s)([a-záéíóúñ])/g, (_, sp, ch) => sp + ch.toUpperCase());
+  }
+
   function categoriaDeItem(item) {
-    return categoriaPorCodigo[item.codigo] || item.categoria || getCategoriaFromCodigo(item.codigo)?.categoria || 'Sin categoría';
+    const cat = productoPorCodigo[item.codigo]?.categoria || item.categoria || getCategoriaFromCodigo(item.codigo)?.categoria || '';
+    return normalizarCategoria(cat);
   }
 
   function valorDoc(doc) {
@@ -4688,7 +4703,62 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
       }
     });
     return Object.values(mapa).sort((a, b) => (b.abierto + b.parcial + b.cerrado) - (a.abierto + a.parcial + a.cerrado));
-  }, [filtrados, modo, devoluciones, cruces, categoriaPorCodigo]);
+  }, [filtrados, modo, devoluciones, cruces, productoPorCodigo]);
+
+  // ── Productos "Sin categoría" (dentro de lo que está filtrado ahora mismo),
+  //    para poder revisarlos y corregir su categoría sin salir del dashboard. ──
+  const productosSinCategoria = useMemo(() => {
+    const vistos = {};
+    filtrados.forEach(p => (p.items || []).forEach(item => {
+      if (categoriaDeItem(item) !== 'Sin categoría') return;
+      const v = Number(item.cantidad || 0) * Number(item.precio_unitario || 0);
+      if (vistos[item.codigo]) {
+        vistos[item.codigo].valor += v;
+        vistos[item.codigo].cantidad += Number(item.cantidad || 0);
+      } else {
+        const prod = productoPorCodigo[item.codigo];
+        vistos[item.codigo] = {
+          codigo: item.codigo, nombre: item.nombre,
+          valor: v, cantidad: Number(item.cantidad || 0),
+          productoId: prod?.id || null,
+        };
+      }
+    }));
+    return Object.values(vistos).sort((a, b) => b.valor - a.valor);
+  }, [filtrados, productoPorCodigo]);
+
+  const [verSinCategoria, setVerSinCategoria] = React.useState(false);
+  const [editandoCodigo,  setEditandoCodigo]  = React.useState(null);
+  const [categoriaEdit,   setCategoriaEdit]   = React.useState('');
+  const [guardandoCat,    setGuardandoCat]    = React.useState(null);
+
+  function abrirEdicionCategoria(item) {
+    setEditandoCodigo(item.codigo);
+    setCategoriaEdit('');
+  }
+
+  async function guardarCategoriaProducto(item) {
+    if (!item.productoId) return;
+    if (!categoriaEdit.trim()) { alert('Escribe una categoría antes de guardar.'); return; }
+    setGuardandoCat(item.codigo);
+    try {
+      await apiFetch(`/prestamos/productos/${item.productoId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoria: categoriaEdit.trim() }),
+      });
+      // Empuja la categoría corregida hacia los documentos ya existentes
+      // (que guardan su propia copia congelada por ítem), para que Resumen,
+      // Movimientos e Historial de Cruces queden consistentes al instante,
+      // sin tener que ir manualmente a Productos a sincronizar.
+      await apiFetch('/prestamos/sincronizar-categorias', { method: 'POST' });
+      setEditandoCodigo(null);
+      if (onRefresh) await onRefresh();
+    } catch (err) {
+      alert('Error guardando categoría: ' + err.message);
+    }
+    setGuardandoCat(null);
+  }
 
   const totales = useMemo(() => {
     const t = { abierto: 0, parcial: 0, cerrado: 0 };
@@ -4958,6 +5028,60 @@ function DashboardPrestamosInteractivo({ prestamos, devoluciones, cruces, clinic
           <PanelDashboard titulo="Por año"               filas={porAnio}    modo={modo} />
           <PanelDashboard titulo="Por mes"               filas={porMes}     modo={modo} />
           <PanelDashboard titulo="Por categoría contable" filas={porCategoria} modo={modo} />
+        </div>
+      )}
+
+      {/* ── Productos sin categoría (según lo filtrado arriba) ── */}
+      {seccion === 'prestamos' && productosSinCategoria.length > 0 && (
+        <div style={{ background: 'var(--t-bg-card)', border: '1px solid #f59e0b55', borderRadius: 10, padding: '14px 16px', marginTop: 16 }}>
+          <div onClick={() => setVerSinCategoria(v => !v)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
+            <div style={{ fontWeight: 600, fontSize: 13, color: '#f59e0b' }}>
+              ⚠ {productosSinCategoria.length} producto(s) sin categoría — {formatearValorDash(productosSinCategoria.reduce((s, p) => s + p.valor, 0), 'valor')}
+            </div>
+            <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{verSinCategoria ? '▲ ocultar' : '▼ ver y editar'}</span>
+          </div>
+          {verSinCategoria && (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 2 }}>
+                Al guardar, la categoría se corrige en el catálogo de Productos y además se sincroniza automáticamente con todos los documentos ya existentes (Resumen, Movimientos, Historial de Cruces, etc.).
+              </div>
+              {productosSinCategoria.map(item => (
+                <div key={item.codigo} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+                  border: '1px solid var(--t-border)', borderRadius: 8, flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 260px', minWidth: 200 }}>
+                    <div style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--t-text-muted)' }}>{item.codigo}</div>
+                    <div style={{ fontSize: 13 }}>{item.nombre}</div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--t-text-muted)', minWidth: 90, textAlign: 'right' }}>
+                    {item.cantidad} uds · {formatearValorDash(item.valor, 'valor')}
+                  </div>
+                  {!item.productoId ? (
+                    <div style={{ fontSize: 11, color: 'var(--t-text-muted)', flex: '0 0 260px' }}>
+                      No está en el catálogo de Productos — créalo ahí primero para poder asignarle categoría.
+                    </div>
+                  ) : editandoCodigo === item.codigo ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <input value={categoriaEdit} onChange={e => setCategoriaEdit(e.target.value)} placeholder="Nueva categoría"
+                        autoFocus style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', fontSize: 12, width: 160 }} />
+                      <button onClick={() => guardarCategoriaProducto(item)} disabled={guardandoCat === item.codigo}
+                        style={{ padding: '5px 10px', fontSize: 12, borderRadius: 6, border: 'none', background: '#22c55e', color: '#fff', cursor: 'pointer' }}>
+                        {guardandoCat === item.codigo ? 'Guardando y sincronizando…' : 'Guardar'}
+                      </button>
+                      <button onClick={() => setEditandoCodigo(null)}
+                        style={{ padding: '5px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--t-border)', background: 'transparent', color: 'var(--t-text-muted)', cursor: 'pointer' }}>
+                        Cancelar
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={() => abrirEdicionCategoria(item)}
+                      style={{ padding: '5px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--t-border)', background: 'transparent', color: 'var(--t-text-primary)', cursor: 'pointer' }}>
+                      ✎ Asignar categoría
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -6449,6 +6573,7 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
 
 
 
