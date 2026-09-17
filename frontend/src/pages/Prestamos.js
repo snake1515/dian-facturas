@@ -1999,64 +1999,97 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
             </button>
           </div>
         )}
-        {auditResult && (
-          <div style={{ marginTop: 8, fontSize: 12, padding: '10px 12px', borderRadius: 6, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>
-                  🔍 {auditResult.con_diferencias} documento(s) con diferencias
+        {auditResult && (() => {
+          const protegidos = auditResult.diferencias.filter(d => d.accion === 'protegido_reduccion');
+          const seCorrigen = auditResult.diferencias.filter(d => d.accion !== 'protegido_reduccion');
+          const renderTabla = (lista) => (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left' }}>
+                  <th style={{ padding: '4px 8px', fontWeight: 500 }}>Documento</th>
+                  <th style={{ padding: '4px 8px', fontWeight: 500 }}>Problema</th>
+                  <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Guardado</th>
+                  <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Excel</th>
+                  <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Diferencia</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lista.slice(0, 60).map(d => (
+                  <tr key={d.id} style={{ borderTop: '1px solid var(--t-border)' }}>
+                    <td style={{ padding: '4px 8px', fontWeight: 600 }}>{d.documento_contable}</td>
+                    <td style={{ padding: '4px 8px', color: 'var(--t-text-muted)' }}>{d.tipo_problema}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmt(d.valor_actual)}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmt(d.valor_excel)}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: d.diferencia_valor < 0 ? '#ef4444' : '#22c55e' }}>
+                      {fmt(d.diferencia_valor)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+          return (
+            <div style={{ marginTop: 8, fontSize: 12, padding: '10px 12px', borderRadius: 6, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    🔍 {auditResult.con_diferencias} documento(s) con diferencias
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 2 }}>
+                    {auditResult.sin_cambios} sin cambios · {auditResult.no_encontrados} no existen todavía · impacto neto de lo que SÍ se corregiría{' '}
+                    <b style={{ color: auditResult.impacto_total_valor < 0 ? '#ef4444' : '#22c55e' }}>
+                      {fmt(auditResult.impacto_total_valor)}
+                    </b>
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 2 }}>
-                  {auditResult.sin_cambios} sin cambios · {auditResult.no_encontrados} no existen todavía · impacto neto{' '}
-                  <b style={{ color: auditResult.impacto_total_valor < 0 ? '#ef4444' : '#22c55e' }}>
-                    {fmt(auditResult.impacto_total_valor)}
-                  </b>
-                </div>
+                {auditResult.con_diferencias > 0 && (
+                  <button onClick={exportarAuditoria}
+                    style={{ padding: '5px 12px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                    ↓ Exportar a Excel
+                  </button>
+                )}
               </div>
-              {auditResult.con_diferencias > 0 && (
-                <button onClick={exportarAuditoria}
-                  style={{ padding: '5px 12px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, cursor: 'pointer', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
-                  ↓ Exportar a Excel
-                </button>
+              {auditResult.con_diferencias === 0 ? (
+                <span style={{ color: 'var(--t-text-muted)' }}>Todos los documentos de este Excel coinciden con lo guardado.</span>
+              ) : (
+                <>
+                  {seCorrigen.length > 0 && (
+                    <div style={{ marginBottom: protegidos.length > 0 ? 14 : 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4, color: '#22c55e' }}>
+                        ✓ {seCorrigen.length} se corregirán al pulsar "Reparar documentos existentes"
+                      </div>
+                      {renderTabla(seCorrigen)}
+                      {seCorrigen.length > 60 && (
+                        <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 6 }}>
+                          Mostrando 60 de {seCorrigen.length} — exporta a Excel para ver el resto.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {protegidos.length > 0 && (
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4, color: '#f59e0b' }}>
+                        🛡️ {protegidos.length} protegidos — NO se van a tocar
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                        Este Excel trae menos cantidad de la que ya está guardada para estos documentos —
+                        seguramente porque el archivo no incluye todas sus filas (un producto quedó fuera
+                        de este export puntual). Por seguridad, reparar-items nunca reduce cantidades: estos
+                        documentos van a quedar exactamente como están, sin ningún cambio.
+                      </div>
+                      {renderTabla(protegidos)}
+                      {protegidos.length > 60 && (
+                        <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 6 }}>
+                          Mostrando 60 de {protegidos.length} — exporta a Excel para ver el resto.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
-            {auditResult.con_diferencias === 0 ? (
-              <span style={{ color: 'var(--t-text-muted)' }}>Todos los documentos de este Excel coinciden con lo guardado.</span>
-            ) : (
-              <>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                  <thead>
-                    <tr style={{ color: 'var(--t-text-muted)', textAlign: 'left' }}>
-                      <th style={{ padding: '4px 8px', fontWeight: 500 }}>Documento</th>
-                      <th style={{ padding: '4px 8px', fontWeight: 500 }}>Problema</th>
-                      <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Guardado</th>
-                      <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Debería ser</th>
-                      <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Diferencia</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {auditResult.diferencias.slice(0, 60).map(d => (
-                      <tr key={d.id} style={{ borderTop: '1px solid var(--t-border)' }}>
-                        <td style={{ padding: '4px 8px', fontWeight: 600 }}>{d.documento_contable}</td>
-                        <td style={{ padding: '4px 8px', color: 'var(--t-text-muted)' }}>{d.tipo_problema}</td>
-                        <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmt(d.valor_actual)}</td>
-                        <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmt(d.valor_excel)}</td>
-                        <td style={{ padding: '4px 8px', textAlign: 'right', color: d.diferencia_valor < 0 ? '#ef4444' : '#22c55e' }}>
-                          {fmt(d.diferencia_valor)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {auditResult.con_diferencias > 60 && (
-                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 6 }}>
-                    Mostrando 60 de {auditResult.con_diferencias} — exporta a Excel para ver el resto.
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
+          );
+        })()}
         {importResult && (
           <div style={{ marginTop: 8, fontSize: 12, padding: '8px 12px', borderRadius: 6, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)' }}>
             ✅ <b>{importResult.creados}</b> documentos creados
@@ -6375,6 +6408,10 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
 
 
 
