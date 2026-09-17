@@ -1640,11 +1640,15 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
           itemExistente.precio_unitario = itemExistente._totalCosto / itemExistente.cantidad;
         }
       } else {
+        // OJO: si el documento trae costo real en 0 (p. ej. un EGRESO por
+        // préstamo que SIIS registra sin valorizar), NO se debe rellenar con
+        // el precio histórico del catálogo maestro — eso inventa un valor que
+        // el documento nunca tuvo. Cero en el origen se importa como cero.
         documentos[docKey].items.push({
           codigo, nombre: nombre || prodMaestro?.nombre || '',
           cantidad,
           _totalCosto: totalCosto,
-          precio_unitario: precioUnit || prodMaestro?.precio_unitario || 0,
+          precio_unitario: precioUnit,
           categoria: prodMaestro?.categoria || '', cuenta_contable: prodMaestro?.cuenta_contable || '',
           lote, fecha_vencimiento: fechaVenc,
         });
@@ -1839,12 +1843,14 @@ function TabNuevo({ clinicas, productos, onSaved, onRefreshClinicas }) {
           it.precio_unitario = it._totalCosto / it.cantidad;
         }
       } else {
+        // Mismo criterio que en procesarExcelMasivo: costo real 0 se importa
+        // como 0, sin rellenar con el precio histórico del catálogo maestro.
         nuevosItemsPorCodigo[codigo] = {
           codigo,
           nombre:            nombre || prodMaestro?.nombre || '',
           cantidad,
           _totalCosto:       totalCosto,
-          precio_unitario:   precioUnit || prodMaestro?.precio_unitario || 0,
+          precio_unitario:   precioUnit,
           categoria:         prodMaestro?.categoria || '',
           cuenta_contable:   prodMaestro?.cuenta_contable || '',
           lote,
@@ -6369,6 +6375,10 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
 
 
 
