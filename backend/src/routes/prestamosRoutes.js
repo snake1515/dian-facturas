@@ -587,6 +587,16 @@ router.post('/auditar-items', async (req, res) => {
           valor_excel:  c.cantidad_excel  * c.precio_excel,
         }));
 
+      // reparar-items nunca reduce la cantidad total de un documento: si este
+      // Excel trae menos cantidad de la que ya hay guardada (típico cuando el
+      // archivo no incluye TODAS las filas del documento — un producto quedó
+      // fuera de este export puntual), el documento queda protegido y
+      // reparar-items lo deja intacto. Esto se calcula aquí con el mismo
+      // criterio exacto que usa reparar-items, para no mostrarle al usuario
+      // una advertencia de "se va a corregir" sobre un documento que en
+      // realidad no se va a tocar.
+      const accion = difCant < -0.001 ? 'protegido_reduccion' : 'corrige';
+
       diferencias.push({
         id: actual.id,
         documento_contable: doc.documento_contable,
@@ -594,6 +604,7 @@ router.post('/auditar-items', async (req, res) => {
         clinica: actual.clinica_nombre,
         cantidad_actual: cantAct, cantidad_excel: cantNue, diferencia_cantidad: difCant,
         valor_actual:    valAct,  valor_excel:    valNue,  diferencia_valor:    difVal,
+        accion,
         tipo_problema:
           Math.abs(difCant) > 0.001 && Math.abs(difVal) > 1
             ? 'cantidad y valor'
@@ -606,11 +617,18 @@ router.post('/auditar-items', async (req, res) => {
 
     diferencias.sort((a, b) => Math.abs(b.diferencia_valor) - Math.abs(a.diferencia_valor));
 
+    const protegidos = diferencias.filter(d => d.accion === 'protegido_reduccion');
+    const seCorrigen = diferencias.filter(d => d.accion === 'corrige');
+
     res.json({
       con_diferencias: diferencias.length, diferencias,
-      sin_cambios:     sinCambios.length,
-      no_encontrados:  noEncontrados.length, no_encontrados_docs: noEncontrados,
-      impacto_total_valor: diferencias.reduce((s, d) => s + d.diferencia_valor, 0),
+      se_corrigen: seCorrigen.length,
+      protegidos:  protegidos.length,
+      sin_cambios: sinCambios.length,
+      no_encontrados: noEncontrados.length, no_encontrados_docs: noEncontrados,
+      // Impacto neto SOLO de lo que reparar-items realmente va a aplicar —
+      // los documentos protegidos no aportan a este número porque no se tocan.
+      impacto_total_valor: seCorrigen.reduce((s, d) => s + d.diferencia_valor, 0),
     });
   } catch (e) {
     console.error('auditar-items ERROR:', e.message);
@@ -1787,6 +1805,11 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
 
 
 
