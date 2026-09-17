@@ -123,6 +123,28 @@ router.get('/productos', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Crear o actualizar un solo producto del catálogo (por código) — para dar de
+// alta, desde la pestaña Productos, productos que solo existían como ítems
+// dentro de documentos de préstamo pero nunca se habían catalogado.
+router.post('/productos', async (req, res) => {
+  try {
+    const { codigo, nombre, unidad, precio_unitario, categoria, cuenta_contable } = req.body;
+    if (!codigo) return res.status(400).json({ error: 'codigo requerido' });
+    const { rows } = await pool.query(`
+      INSERT INTO prestamo_productos (codigo, nombre, unidad, precio_unitario, categoria, cuenta_contable)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (codigo) DO UPDATE SET
+        nombre          = COALESCE(EXCLUDED.nombre, prestamo_productos.nombre),
+        unidad          = COALESCE(EXCLUDED.unidad, prestamo_productos.unidad),
+        precio_unitario = COALESCE(NULLIF(EXCLUDED.precio_unitario, 0), prestamo_productos.precio_unitario),
+        categoria       = EXCLUDED.categoria,
+        cuenta_contable = COALESCE(EXCLUDED.cuenta_contable, prestamo_productos.cuenta_contable)
+      RETURNING *
+    `, [codigo, nombre || null, unidad || null, precio_unitario || 0, categoria || null, cuenta_contable || null]);
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Carga masiva desde Excel
 router.post('/productos/bulk', async (req, res) => {
   try {
@@ -1805,6 +1827,22 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
