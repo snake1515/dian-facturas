@@ -412,7 +412,7 @@ export default function Prestamos() {
           {activeTab === 'resumen'     && <TabResumen prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'movimientos' && <TabMovimientos prestamos={prestamos} devoluciones={devoluciones} clinicas={clinicas} productos={productos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'nuevo'       && <TabNuevo clinicas={clinicas} productos={productos} onSaved={() => { cargarDatos(); setActiveTab('movimientos'); }} onRefreshClinicas={cargarDatos} />}
-          {activeTab === 'productos'   && <TabProductos productos={productos} onRefresh={cargarDatos} />}
+          {activeTab === 'productos'   && <TabProductos productos={productos} prestamos={prestamos} onRefresh={cargarDatos} />}
           {activeTab === 'cruces'      && <TabCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'historial_cruces' && <TabHistorialCruces prestamos={prestamos} cruces={cruces} productos={productos} clinicas={clinicas} onRefresh={cargarDatos} />}
           {activeTab === 'kardex'      && <TabKardex prestamos={prestamos} productos={productos} clinicas={clinicas} />}
@@ -4156,7 +4156,7 @@ function TabSoportesPendientes({ onRefresh }) {
   );
 }
 
-function TabProductos({ productos: productosProp, onRefresh }) {
+function TabProductos({ productos: productosProp, prestamos = [], onRefresh }) {
   const [busqueda,        setBusqueda]        = useState('');
   const [filtroCat,       setFiltroCat]        = useState('');
   const [saving,          setSaving]          = useState('');
@@ -4167,6 +4167,12 @@ function TabProductos({ productos: productosProp, onRefresh }) {
   const [editCuenta,      setEditCuenta]      = React.useState('');
   const [guardandoEdicion,setGuardandoEdicion]= React.useState(false);
   const [sincronizando,   setSincronizando]   = React.useState(false);
+
+  // Lista fija de categorías para el desplegable — las mismas que ya
+  // reconoce el resto de la app (CATEGORIAS_COLORES), para no crear
+  // categorías nuevas sueltas que luego no coincidan visualmente en ningún
+  // lado (Resumen, Dashboard, etc.).
+  const OPCIONES_CATEGORIA = Object.keys(CATEGORIAS_COLORES);
 
   function abrirEdicionCategoria(p) {
     setEditandoId(p.id);
@@ -4184,10 +4190,88 @@ function TabProductos({ productos: productosProp, onRefresh }) {
       });
       setProductosLocales(prev => prev.map(p => p.id === id ? actualizado : p));
       setEditandoId(null);
+      // Empuja la corrección hacia los documentos ya existentes de una vez,
+      // para que Resumen/Dashboard/Historial de Cruces queden consistentes
+      // sin un paso manual aparte.
+      await apiFetch('/prestamos/sincronizar-categorias', { method: 'POST' });
+      if (onRefresh) onRefresh();
     } catch (err) {
       alert('Error guardando categoría: ' + err.message);
     }
     setGuardandoEdicion(false);
+  }
+
+  // ── Banner persistente de "productos sin categoría" ───────────────────
+  // A diferencia de la tabla de abajo (que solo muestra lo que YA está en
+  // el catálogo prestamo_productos), este banner recorre TODOS los
+  // documentos de préstamo para encontrar códigos que nunca se dieron de
+  // alta en el catálogo — por eso hoy "no aparecían en Productos" aunque
+  // sí existieran como ítems dentro de algún préstamo. Se agrupan por
+  // código (sin duplicar), y el banner no desaparece hasta que todos
+  // tengan categoría asignada.
+  const catalogoPorCodigo = React.useMemo(() => {
+    const m = {};
+    productosLocales.forEach(p => { if (p.codigo) m[p.codigo] = p; });
+    return m;
+  }, [productosLocales]);
+
+  const productosSinCategoria = React.useMemo(() => {
+    const vistos = {};
+    (prestamos || []).forEach(doc => (doc.items || []).forEach(item => {
+      if (!item.codigo) return;
+      const enCatalogo = catalogoPorCodigo[item.codigo];
+      const tieneCategoria = enCatalogo?.categoria || item.categoria || getCategoriaFromCodigo(item.codigo)?.categoria;
+      if (tieneCategoria) return;
+      if (vistos[item.codigo]) {
+        vistos[item.codigo].cantidad += Number(item.cantidad || 0);
+        vistos[item.codigo].valor += Number(item.cantidad || 0) * Number(item.precio_unitario || 0);
+      } else {
+        vistos[item.codigo] = {
+          codigo: item.codigo, nombre: item.nombre,
+          unidad: item.unidad, precio_unitario: item.precio_unitario,
+          cantidad: Number(item.cantidad || 0),
+          valor: Number(item.cantidad || 0) * Number(item.precio_unitario || 0),
+          productoId: enCatalogo?.id || null,
+        };
+      }
+    }));
+    return Object.values(vistos).sort((a, b) => b.valor - a.valor);
+  }, [prestamos, catalogoPorCodigo]);
+
+  const [categoriaBanner, setCategoriaBanner] = React.useState({}); // codigo -> categoría elegida
+  const [guardandoBanner, setGuardandoBanner] = React.useState(null); // código en proceso de guardar
+
+  async function guardarCategoriaBanner(item) {
+    const categoria = categoriaBanner[item.codigo];
+    if (!categoria) { alert('Elige una categoría de la lista antes de guardar.'); return; }
+    setGuardandoBanner(item.codigo);
+    try {
+      if (item.productoId) {
+        // Ya existe en el catálogo (pero sin categoría) — se actualiza.
+        await apiFetch(`/prestamos/productos/${item.productoId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ categoria }),
+        });
+      } else {
+        // Nunca se dio de alta en el catálogo — se crea ahora con los datos
+        // que ya se conocen del documento donde aparece.
+        await apiFetch('/prestamos/productos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            codigo: item.codigo, nombre: item.nombre, unidad: item.unidad,
+            precio_unitario: item.precio_unitario, categoria,
+          }),
+        });
+      }
+      // Aplica de una vez a los documentos ya existentes.
+      await apiFetch('/prestamos/sincronizar-categorias', { method: 'POST' });
+      if (onRefresh) await onRefresh();
+    } catch (err) {
+      alert('Error guardando categoría: ' + err.message);
+    }
+    setGuardandoBanner(null);
   }
 
   // Aplica la categoría/cuenta contable ya corregidas en el catálogo hacia
@@ -4343,6 +4427,39 @@ function TabProductos({ productos: productosProp, onRefresh }) {
         </button>
       </div>
 
+      {productosSinCategoria.length > 0 && (
+        <div style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid #ef4444', borderRadius: 10, padding: '14px 16px', marginBottom: 18 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: '#ef4444', marginBottom: 4 }}>
+            ⚠ {productosSinCategoria.length} producto{productosSinCategoria.length !== 1 ? 's' : ''} sin categoría — {fmt(productosSinCategoria.reduce((s, p) => s + p.valor, 0))}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 10 }}>
+            Este aviso se queda visible hasta que todos tengan categoría asignada. Al guardar, se crea/actualiza en el catálogo y se sincroniza de una vez con los documentos ya existentes.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 340, overflowY: 'auto' }}>
+            {productosSinCategoria.map(item => (
+              <div key={item.codigo} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', border: '1px solid #ef444455', borderRadius: 8, background: 'var(--t-bg-card)', flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 240px', minWidth: 200 }}>
+                  <div style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--t-text-muted)' }}>{item.codigo}</div>
+                  <div style={{ fontSize: 13 }}>{item.nombre}</div>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--t-text-muted)', minWidth: 90, textAlign: 'right' }}>
+                  {item.cantidad} uds · {fmt(item.valor)}
+                </div>
+                <select value={categoriaBanner[item.codigo] || ''} onChange={e => setCategoriaBanner(prev => ({ ...prev, [item.codigo]: e.target.value }))}
+                  style={{ padding: '5px 8px', fontSize: 12, border: '1px solid var(--t-border)', borderRadius: 6, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)', minWidth: 170 }}>
+                  <option value=''>— Elegir categoría —</option>
+                  {OPCIONES_CATEGORIA.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <button onClick={() => guardarCategoriaBanner(item)} disabled={guardandoBanner === item.codigo}
+                  style={{ padding: '5px 12px', fontSize: 12, border: 'none', borderRadius: 6, cursor: 'pointer', background: '#22c55e', color: '#fff', whiteSpace: 'nowrap' }}>
+                  {guardandoBanner === item.codigo ? 'Guardando…' : 'Guardar'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {productosLocales.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '50px 20px', color: 'var(--t-text-muted)', fontSize: 13 }}>
           Sin productos — carga un Excel con la plantilla
@@ -4377,8 +4494,11 @@ function TabProductos({ productos: productosProp, onRefresh }) {
                         </td>
                         <td style={tdS}>
                           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                            <input value={editCategoria} onChange={e => setEditCategoria(e.target.value)} placeholder='Categoría'
-                              style={{ width: 130, padding: '4px 6px', fontSize: 12, border: '1px solid var(--t-border)', borderRadius: 5, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                            <select value={editCategoria} onChange={e => setEditCategoria(e.target.value)}
+                              style={{ width: 150, padding: '4px 6px', fontSize: 12, border: '1px solid var(--t-border)', borderRadius: 5, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                              <option value=''>— Elegir categoría —</option>
+                              {OPCIONES_CATEGORIA.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
                             <button onClick={() => guardarCategoria(p.id)} disabled={guardandoEdicion}
                               style={{ padding: '3px 8px', fontSize: 11, border: 'none', borderRadius: 5, cursor: 'pointer', background: 'var(--t-accent)', color: '#fff' }}>
                               ✓
@@ -6573,25 +6693,6 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
