@@ -4168,14 +4168,12 @@ function TabProductos({ productos: productosProp, prestamos = [], onRefresh }) {
   const [guardandoEdicion,setGuardandoEdicion]= React.useState(false);
   const [sincronizando,   setSincronizando]   = React.useState(false);
 
-  // Lista de categorías para los desplegables: las fijas que ya reconoce el
-  // resto de la app (colores/badges consistentes) MÁS cualquier categoría
-  // real que ya exista en el catálogo (ej. subida por Excel) — así no se
-  // pierden categorías propias del negocio que no estén en la lista base.
+  // Lista de categorías para los desplegables: solo las que ya existen de
+  // verdad en el catálogo (subidas por Excel) — nada de una lista fija
+  // aparte, para no duplicar la misma categoría con distinto texto/mayúsculas
+  // (ej. "Complementos nutricionales" vs "COMPLEMENTOS NUTRICIONALES").
   const OPCIONES_CATEGORIA = React.useMemo(() => {
-    const base = Object.keys(CATEGORIAS_COLORES);
-    const delCatalogo = productosLocales.map(p => p.categoria).filter(Boolean);
-    return Array.from(new Set([...base, ...delCatalogo])).sort();
+    return Array.from(new Set(productosLocales.map(p => p.categoria).filter(Boolean))).sort();
   }, [productosLocales]);
 
   function abrirEdicionCategoria(p) {
@@ -6704,6 +6702,29 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
