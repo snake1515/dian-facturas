@@ -4168,11 +4168,15 @@ function TabProductos({ productos: productosProp, prestamos = [], onRefresh }) {
   const [guardandoEdicion,setGuardandoEdicion]= React.useState(false);
   const [sincronizando,   setSincronizando]   = React.useState(false);
 
-  // Lista fija de categorías para el desplegable — las mismas que ya
-  // reconoce el resto de la app (CATEGORIAS_COLORES), para no crear
-  // categorías nuevas sueltas que luego no coincidan visualmente en ningún
-  // lado (Resumen, Dashboard, etc.).
-  const OPCIONES_CATEGORIA = Object.keys(CATEGORIAS_COLORES);
+  // Lista de categorías para los desplegables: las fijas que ya reconoce el
+  // resto de la app (colores/badges consistentes) MÁS cualquier categoría
+  // real que ya exista en el catálogo (ej. subida por Excel) — así no se
+  // pierden categorías propias del negocio que no estén en la lista base.
+  const OPCIONES_CATEGORIA = React.useMemo(() => {
+    const base = Object.keys(CATEGORIAS_COLORES);
+    const delCatalogo = productosLocales.map(p => p.categoria).filter(Boolean);
+    return Array.from(new Set([...base, ...delCatalogo])).sort();
+  }, [productosLocales]);
 
   function abrirEdicionCategoria(p) {
     setEditandoId(p.id);
@@ -4303,7 +4307,12 @@ function TabProductos({ productos: productosProp, prestamos = [], onRefresh }) {
   const filtrados = productosLocales.filter(p => {
     const q      = busqueda.toLowerCase();
     const matchQ = !q       || p.codigo?.toLowerCase().includes(q) || p.nombre?.toLowerCase().includes(q);
-    const matchC = !filtroCat || (getCategoriaFromCodigo(p.codigo)?.categoria || '').includes(filtroCat);
+    // Mismo criterio de categoría que se muestra en la tabla (catálogo
+    // primero, tabla de prefijos como respaldo) — antes comparaba solo
+    // contra la tabla de prefijos, que podía no coincidir con las opciones
+    // reales del desplegable (que sí vienen de p.categoria).
+    const catEfectiva = p.categoria || getCategoriaFromCodigo(p.codigo)?.categoria || '';
+    const matchC = !filtroCat || catEfectiva === filtroCat;
     return matchQ && matchC;
   });
 
@@ -4331,9 +4340,11 @@ function TabProductos({ productos: productosProp, prestamos = [], onRefresh }) {
           const nombre    = String(row['Nombre']          ?? row['nombre']          ?? '').trim();
           const unidad    = String(row['Unidad']          ?? row['unidad']          ?? '').trim();
           const precioRaw = row['Precio unitario']        ?? row['precio_unitario'] ?? 0;
-          // En el Excel las columnas están invertidas: 'Categoría' trae la cuenta y 'Cuenta contable' trae la categoría
-          const catRaw    = row['Cuenta contable']        ?? row['cuenta_contable'] ?? '';
-          const cuentaRaw = row['Categoría']              ?? row['Categoria']       ?? '';
+          // Categoría y cuenta contable en su orden natural (columna con
+          // columna) — la plantilla oficial ya trae 'Categoría' con el
+          // nombre de categoría y 'Cuenta contable' con el código contable.
+          const catRaw    = row['Categoría']              ?? row['Categoria']       ?? '';
+          const cuentaRaw = row['Cuenta contable']        ?? row['cuenta_contable'] ?? '';
           const precio    = Number(String(precioRaw).replace(/[^0-9.]/g, '')) || 0;
           const catExcel    = String(catRaw).trim();
           const cuentaExcel = String(cuentaRaw).trim();
@@ -4404,7 +4415,7 @@ function TabProductos({ productos: productosProp, prestamos = [], onRefresh }) {
         <select value={filtroCat} onChange={e => setFiltroCat(e.target.value)}
           style={{ padding: '7px 10px', border: '1px solid var(--t-border)', borderRadius: 7, fontSize: 13, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
           <option value=''>Todas las categorías</option>
-          {[...new Set(productosLocales.map(p => p.categoria).filter(Boolean))].sort().map(c => (
+          {[...new Set(productosLocales.map(p => p.categoria || getCategoriaFromCodigo(p.codigo)?.categoria).filter(Boolean))].sort().map(c => (
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
@@ -6693,6 +6704,32 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
