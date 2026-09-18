@@ -1746,6 +1746,26 @@ router.delete('/:id/soporte', async (req, res) => {
   } catch (e) { console.error('Error creando tabla soportes_pendientes:', e.message); }
 })();
 
+// ─── Ampliar columnas de prestamo_productos que quedaron demasiado cortas ────
+// La tabla se creó fuera de este repo (no hay CREATE TABLE rastreable) con
+// columnas de texto en VARCHAR(30) — suficiente para códigos/cuentas
+// contables, pero no para nombres de producto reales (fácilmente >100
+// caracteres) ni para algunas categorías, lo que producía el error
+// "value too long for type character varying(30)" al cargar el Excel
+// masivo del catálogo. Ampliar un VARCHAR es una operación segura en
+// Postgres (no trunca ni pierde datos existentes), así que se ejecuta sola
+// al arrancar el servidor, igual que la tabla de soportes_pendientes.
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE prestamo_productos ALTER COLUMN nombre TYPE VARCHAR(500);
+      ALTER TABLE prestamo_productos ALTER COLUMN categoria TYPE VARCHAR(150);
+      ALTER TABLE prestamo_productos ALTER COLUMN unidad TYPE VARCHAR(100);
+      ALTER TABLE prestamo_productos ALTER COLUMN cuenta_contable TYPE VARCHAR(50);
+    `);
+  } catch (e) { console.error('Error ampliando columnas de prestamo_productos:', e.message); }
+})();
+
 // Normaliza un texto de código (documento_contable o nombre de archivo)
 // dejando solo letras/números en mayúscula — mismo criterio que el frontend,
 // para poder comparar "EPO851" (documento) con "EPO-851" (nombre de archivo).
@@ -1827,6 +1847,38 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
