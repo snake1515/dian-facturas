@@ -252,6 +252,12 @@ function Badge({ tipo }) {
   const estilos = {
     ingreso:    { bg: '#E6F1FB', color: '#185FA5', label: 'Ingreso' },
     egreso:     { bg: '#FBEAF0', color: '#993556', label: 'Egreso' },
+    // Antes no existían estas dos claves, así que cualquier documento IDP/ED
+    // (tipo 'devolucion_ingreso'/'devolucion_egreso') caía en el fallback
+    // `estilos.abierto` de más abajo y mostraba "Abierto" en el campo Tipo,
+    // sin relación alguna con su estado real.
+    devolucion_ingreso: { bg: '#E6F1FB', color: '#185FA5', label: 'Devolución (IDP)' },
+    devolucion_egreso:  { bg: '#FBEAF0', color: '#993556', label: 'Devolución (ED)' },
     abierto:    { bg: '#FAEEDA', color: '#854F0B', label: 'Abierto' },
     parcial:    { bg: '#FAECE7', color: '#993C1D', label: 'Parcial' },
     cerrado:    { bg: '#EAF3DE', color: '#3B6D11', label: 'Cerrado' },
@@ -6134,24 +6140,54 @@ function itemsPendientesDeDevolucion(d, cruces = []) {
 // que no se pudieron asignar a ningún préstamo al momento de cruzar). Se
 // deduplica por grupo de cruce, igual que en TabHistorialCruces, para no
 // sumar el mismo sobrante varias veces si el grupo tiene varios pares.
+//
+// OJO: grupo_tiene_sobrante/grupo_sobrante_detalle son una FOTO del momento
+// en que se registró ESE cruce puntual. Si después se hace otro cruce que
+// termina asignando esas mismas unidades a otro préstamo (por ejemplo, una
+// corrección), el cruce original nunca se actualiza — su foto vieja sigue
+// diciendo "sobrante" aunque ya se haya resuelto. Por eso acá se topa el
+// sobrante bruto acumulado con lo que en verdad sigue sin cubrir: cantidad
+// total del ítem en la devolución menos todo lo ya asignado en CUALQUIER
+// cruce de esa devolución (no solo los marcados con sobrante).
 function itemsSobranteDeDevolucion(d, cruces = []) {
+  const cs = cruces || [];
+
   const gruposVistos = new Set();
-  const sobrantePorCodigo = {};
-  (cruces || [])
-    .filter(c => c.devolucion_id === d.id && c.grupo_tiene_sobrante && c.grupo_numero)
+  const sobranteBrutoPorCodigo = {};
+  cs.filter(c => c.devolucion_id === d.id && c.grupo_tiene_sobrante && c.grupo_numero)
     .forEach(c => {
       if (gruposVistos.has(c.grupo_numero)) return;
       gruposVistos.add(c.grupo_numero);
       (c.grupo_sobrante_detalle || [])
         .filter(s => s.devolucion_id === d.id)
         .forEach(s => {
-          if (!sobrantePorCodigo[s.codigo]) {
-            sobrantePorCodigo[s.codigo] = { codigo: s.codigo, nombre: s.nombre, cantidad: 0 };
-          }
-          sobrantePorCodigo[s.codigo].cantidad += Number(s.cantidad_sobrante || 0);
+          sobranteBrutoPorCodigo[s.codigo] = (sobranteBrutoPorCodigo[s.codigo] || 0) + Number(s.cantidad_sobrante || 0);
         });
     });
-  return Object.values(sobrantePorCodigo).filter(s => s.cantidad > 0);
+
+  const asignadoPorCodigo = {};
+  cs.filter(c => c.devolucion_id === d.id).forEach(c => {
+    const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+    items.forEach(it => {
+      asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
+    });
+  });
+
+  const cantidadPorCodigo = {};
+  (d.items || []).forEach(i => { cantidadPorCodigo[i.codigo] = Number(i.cantidad || 0); });
+
+  const resultado = {};
+  Object.keys(sobranteBrutoPorCodigo).forEach(codigo => {
+    const totalItem = cantidadPorCodigo[codigo] || 0;
+    const asignado = asignadoPorCodigo[codigo] || 0;
+    const sinCubrir = Math.max(0, totalItem - asignado);
+    const real = Math.min(sobranteBrutoPorCodigo[codigo], sinCubrir);
+    if (real > 0) {
+      const nombre = (d.items || []).find(i => i.codigo === codigo)?.nombre || codigo;
+      resultado[codigo] = { codigo, nombre, cantidad: real };
+    }
+  });
+  return Object.values(resultado);
 }
 
 function construirReportePendientes(prestamos, devoluciones, cruces, tipo, desde, hasta) {
@@ -6702,153 +6738,3 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
