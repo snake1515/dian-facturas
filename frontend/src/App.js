@@ -11,6 +11,7 @@ import CruceDIAN from './pages/CruceDIAN';
 import Prestamos from './pages/Prestamos';
 import Pendientes from './pages/Pendientes';
 import ValidadorInventario from './pages/ValidadorInventario';
+import DocumentosSoporte from './pages/DocumentosSoporte';
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
@@ -28,6 +29,7 @@ function landingPathFor(puede) {
   if (puede.verPendientes) return '/pendientes';
   if (puede.verValidadorInventario) return '/validador-inventario';
   if (puede.verCruceDIAN) return '/cruce-dian';
+  if (puede.verDocumentosSoporte) return '/documentos-soporte';
   return '/login';
 }
 
@@ -121,6 +123,12 @@ function Layout({ children }) {
           <NavLink to="/validador-inventario" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/><circle cx="12" cy="12" r="1"/></svg>
             Validador Inventarios
+          </NavLink>
+        )}
+        {puede.verDocumentosSoporte && (
+          <NavLink to="/documentos-soporte" style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><circle cx="12" cy="15" r="2"/></svg>
+            Documentos Soporte
           </NavLink>
         )}
         {puede.verConfiguracion && (
@@ -247,6 +255,7 @@ export default function App() {
           <Route path="/prestamos" element={<PrivateRoute perm="verPrestamos"><Layout><Prestamos /></Layout></PrivateRoute>} />
           <Route path="/validador-inventario" element={<PrivateRoute perm="verValidadorInventario"><Layout><ValidadorInventario /></Layout></PrivateRoute>} />
           <Route path="/pendientes" element={<PrivateRoute perm="verPendientes"><Layout><Pendientes /></Layout></PrivateRoute>} />
+          <Route path="/documentos-soporte" element={<PrivateRoute perm="verDocumentosSoporte"><Layout><DocumentosSoporte /></Layout></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
