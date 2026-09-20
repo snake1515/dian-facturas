@@ -24,47 +24,47 @@ const BODEGAS = [
 ];
 
 const GRUPOS_CONTABLES = {
-  '010101': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010102': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010103': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010104': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010105': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010106': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010107': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010108': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010201': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010202': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010203': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010204': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010205': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010206': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010207': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '010208': { cuenta: '14150501', categoria: 'Medicamentos' },
-  '020101': { cuenta: '14200501', categoria: 'Dispositivos médicos' },
-  '020102': { cuenta: '14200501', categoria: 'Dispositivos médicos' },
-  '020103': { cuenta: '14200501', categoria: 'Dispositivos médicos' },
-  '150101': { cuenta: '14230501', categoria: 'Glóbulos rojos' },
-  '150202': { cuenta: '14230502', categoria: 'Plasma' },
-  '150303': { cuenta: '14230503', categoria: 'Plaquetas' },
-  '150401': { cuenta: '14230504', categoria: 'Crioprecipitados' },
-  '030101': { cuenta: '14151001', categoria: 'Complementos nutricionales' },
-  '030201': { cuenta: '14151001', categoria: 'Complementos nutricionales' },
-  '070101': { cuenta: '14210101', categoria: 'Gases medicinales' },
-  '070202': { cuenta: '14210201', categoria: 'Gases arteriales' },
-  '070303': { cuenta: '14210301', categoria: 'Laboratorio clínico' },
+  '010101': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010102': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010103': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010104': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010105': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010106': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010107': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010108': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010201': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010202': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010203': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010204': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010205': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010206': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010207': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '010208': { cuenta: '14150501', categoria: 'MEDICAMENTOS' },
+  '020101': { cuenta: '14200501', categoria: 'DISPOSITIVOS MEDICOS' },
+  '020102': { cuenta: '14200501', categoria: 'DISPOSITIVOS MEDICOS' },
+  '020103': { cuenta: '14200501', categoria: 'DISPOSITIVOS MEDICOS' },
+  '150101': { cuenta: '14230501', categoria: 'GLOBULOS ROJOS' },
+  '150202': { cuenta: '14230502', categoria: 'PLASMA' },
+  '150303': { cuenta: '14230503', categoria: 'PLAQUETAS' },
+  '150401': { cuenta: '14230504', categoria: 'CRIOPRECIPITADOS' },
+  '030101': { cuenta: '14151001', categoria: 'COMPLEMENTOS NUTRICIONALES' },
+  '030201': { cuenta: '14151001', categoria: 'COMPLEMENTOS NUTRICIONALES' },
+  '070101': { cuenta: '14210101', categoria: 'GASES MEDICINALES' },
+  '070202': { cuenta: '14210201', categoria: 'GASES ARTERIALES' },
+  '070303': { cuenta: '14210301', categoria: 'LABORATORIO CLINICO' },
 };
 
 const CATEGORIAS_COLORES = {
-  'Medicamentos':             { bg: '#E6F1FB', color: '#0C447C' },
-  'Dispositivos médicos':     { bg: '#E1F5EE', color: '#085041' },
-  'Glóbulos rojos':           { bg: '#FBEAF0', color: '#72243E' },
-  'Plasma':                   { bg: '#FBEAF0', color: '#72243E' },
-  'Plaquetas':                { bg: '#FBEAF0', color: '#72243E' },
-  'Crioprecipitados':         { bg: '#FBEAF0', color: '#72243E' },
-  'Complementos nutricionales':{ bg: '#FAEEDA', color: '#633806' },
-  'Gases medicinales':        { bg: '#EEEDFE', color: '#3C3489' },
-  'Gases arteriales':         { bg: '#EEEDFE', color: '#3C3489' },
-  'Laboratorio clínico':      { bg: '#F1EFE8', color: '#444441' },
+  'MEDICAMENTOS':               { bg: '#E6F1FB', color: '#0C447C' },
+  'DISPOSITIVOS MEDICOS':       { bg: '#E1F5EE', color: '#085041' },
+  'GLOBULOS ROJOS':             { bg: '#FBEAF0', color: '#72243E' },
+  'PLASMA':                     { bg: '#FBEAF0', color: '#72243E' },
+  'PLAQUETAS':                  { bg: '#FBEAF0', color: '#72243E' },
+  'CRIOPRECIPITADOS':           { bg: '#FBEAF0', color: '#72243E' },
+  'COMPLEMENTOS NUTRICIONALES': { bg: '#FAEEDA', color: '#633806' },
+  'GASES MEDICINALES':          { bg: '#EEEDFE', color: '#3C3489' },
+  'GASES ARTERIALES':           { bg: '#EEEDFE', color: '#3C3489' },
+  'LABORATORIO CLINICO':        { bg: '#F1EFE8', color: '#444441' },
 };
 
 function getCategoriaFromCodigo(codigo) {
@@ -6702,6 +6702,81 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
