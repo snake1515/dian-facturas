@@ -54,7 +54,7 @@ router.post('/usuarios', async (req, res) => {
     }
 
     const hash = await bcrypt.hash(password, 10);
-    const rolesValidos = ['admin', 'editor', 'lector', 'consulta', 'obra', 'regente'];
+    const rolesValidos = ['admin', 'editor', 'lector', 'consulta', 'obra', 'regente', 'contable'];
     const rolFinal = esPrimero ? 'admin' : (rolesValidos.includes(rol) ? rol : 'consulta');
 
     const { alias } = req.body;
@@ -130,6 +130,45 @@ router.put('/tema', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
