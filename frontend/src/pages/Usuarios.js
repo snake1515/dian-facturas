@@ -85,8 +85,8 @@ export default function Usuarios() {
     catch (err) { alert(err.response?.data?.error || 'Error'); }
   };
 
-  const rolLabel = (r) => ({ admin: 'Administrador', editor: 'Editor', lector: 'Lector', consulta: 'Consulta', obra: 'Obra', regente: 'Regente' }[r] || r);
-  const rolColor = (r) => ({ admin: badgeBlue, editor: badgePurple, lector: badgeGray, consulta: badgeGray, obra: badgeOrange, regente: badgeTeal }[r] || badgeGray);
+  const rolLabel = (r) => ({ admin: 'Administrador', editor: 'Editor', lector: 'Lector', consulta: 'Consulta', obra: 'Obra', regente: 'Regente', contable: 'Contable' }[r] || r);
+  const rolColor = (r) => ({ admin: badgeBlue, editor: badgePurple, lector: badgeGray, consulta: badgeGray, obra: badgeOrange, regente: badgeTeal, contable: badgeGreen }[r] || badgeGray);
 
   return (
     <div style={{ padding: '16px 8px' }}>
@@ -180,6 +180,7 @@ export default function Usuarios() {
                   <option value="consulta">Consulta — ver, descargar y reenviar</option>
                   <option value="obra">Obra — facturas + notas + pendientes</option>
                   <option value="regente">Regente — solo módulo préstamos</option>
+                  <option value="contable">Contable — solo Documentos Soporte</option>
                   <option value="editor">Editor — edición completa sin configuración</option>
                   <option value="admin">Administrador — acceso total</option>
                 </select>
@@ -285,6 +286,12 @@ const overlay = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', dis
 const modalBox = { background: '#161b27', border: '1px solid #374460', borderRadius: 14, width: 480, maxWidth: '100%', maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' };
 const modalHeader = { padding: '18px 20px', borderBottom: '1px solid #2a3348', display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
 const closeBtn = { background: '#1e2535', border: 'none', color: '#94a3b8', borderRadius: 6, width: 28, height: 28, cursor: 'pointer', fontSize: 18, lineHeight: 1 };
+
+
+
+
+
+
 
 
 
