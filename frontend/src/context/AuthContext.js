@@ -65,6 +65,7 @@ export function AuthProvider({ children }) {
   const isObra    = rol === 'obra'    || rol === 'editor' || rol === 'admin';
   const isLector  = rol === 'lector'  || rol === 'consulta' || rol === 'obra' || rol === 'editor' || rol === 'admin';
   const isRegente = rol === 'regente' || rol === 'admin';
+  const isContable = rol === 'contable' || rol === 'admin';
 
   // Capacidades específicas por rol
   // consulta: ver/descargar/reenviar facturas y NC, nada más
@@ -110,10 +111,13 @@ export function AuthProvider({ children }) {
 
     // Validador de Inventarios
     verValidadorInventario: isEditor || esObra,
+
+    // Documentos Soporte
+    verDocumentosSoporte: isContable,
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isObra, isLector, isRegente, puede, doLogin, doLogout, updateUser }}>
+    <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isObra, isLector, isRegente, isContable, puede, doLogin, doLogout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -126,6 +130,13 @@ export function useAuth() {
 }
 
 export default AuthContext;
+
+
+
+
+
+
+
 
 
 
