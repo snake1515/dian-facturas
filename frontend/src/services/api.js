@@ -62,7 +62,23 @@ export const obtenerConfig = () => api.get('/configuracion');
 export const guardarConfig = (data) => api.put('/configuracion', data);
 export const reiniciarCron = () => api.post('/configuracion/restart-cron');
 
+// Documentos Soporte
+export const procesarDocumentosSoporte = (pdfs, excelFile, contrasena) => {
+  const formData = new FormData();
+  pdfs.forEach((f) => formData.append('pdfs', f));
+  formData.append('excel', excelFile);
+  formData.append('contrasena', contrasena);
+  return api.post('/documentos-soporte/procesar', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    responseType: 'blob',
+  });
+};
+
 export default api;
+
+
+
+
 
 
 
