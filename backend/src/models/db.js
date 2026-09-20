@@ -696,7 +696,7 @@ const initDB = async () => {
 
     // Migraciones de roles — queries separadas para que los UPDATE surtan efecto antes del constraint
     // Migrar roles viejos si existen (sin tocar el constraint)
-    await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos')");
+    await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos', 'contable')");
 
     console.log('✅ Base de datos inicializada correctamente');
   } finally {
@@ -705,4 +705,6 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
 
