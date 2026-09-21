@@ -3347,6 +3347,20 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
   const auditoriaSobreasignacion = React.useMemo(() => {
     const resultados = [];
 
+    // Consolida por código las líneas de un documento (un mismo código puede
+    // venir repetido en varios lotes/filas) antes de comparar — si no, cada
+    // línea se compara contra el acumulado total y se subestima la
+    // capacidad real del documento, generando falsos positivos y además
+    // duplicando la misma alerta una vez por cada línea.
+    function totalesPorCodigo(items) {
+      const m = {};
+      (items || []).forEach(i => {
+        if (!m[i.codigo]) m[i.codigo] = { codigo: i.codigo, nombre: i.nombre, cantidad: 0 };
+        m[i.codigo].cantidad += Number(i.cantidad || 0);
+      });
+      return Object.values(m);
+    }
+
     // Lado devolución (IDP/ED): suma de TODO lo asignado alguna vez desde
     // esta devolución, por producto, contra lo que ese producto trae en total.
     (prestamos || []).filter(d => d.tipo === 'devolucion_ingreso' || d.tipo === 'devolucion_egreso').forEach(d => {
@@ -3355,14 +3369,14 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
         const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
         items.forEach(it => { asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad); });
       });
-      (d.items || []).forEach(item => {
+      totalesPorCodigo(d.items).forEach(item => {
         const asignado = asignadoPorCodigo[item.codigo] || 0;
-        const exceso = asignado - Number(item.cantidad);
+        const exceso = asignado - item.cantidad;
         if (exceso > 0) {
           resultados.push({
             lado: 'Devolución', documento: d.documento_contable, clinica: d.clinica_nombre,
             codigo: item.codigo, nombre: item.nombre,
-            total: Number(item.cantidad), asignado, exceso,
+            total: item.cantidad, asignado, exceso,
           });
         }
       });
@@ -3377,14 +3391,14 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
         const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
         items.forEach(it => { devueltoPorCodigo[it.codigo] = (devueltoPorCodigo[it.codigo] || 0) + Number(it.cantidad); });
       });
-      (p.items || []).forEach(item => {
+      totalesPorCodigo(p.items).forEach(item => {
         const devuelto = devueltoPorCodigo[item.codigo] || 0;
-        const exceso = devuelto - Number(item.cantidad);
+        const exceso = devuelto - item.cantidad;
         if (exceso > 0) {
           resultados.push({
             lado: 'Préstamo', documento: p.documento_contable, clinica: p.clinica_nombre,
             codigo: item.codigo, nombre: item.nombre,
-            total: Number(item.cantidad), asignado: devuelto, exceso,
+            total: item.cantidad, asignado: devuelto, exceso,
           });
         }
       });
@@ -6998,6 +7012,12 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
 
 
 
