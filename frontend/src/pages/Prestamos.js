@@ -2659,9 +2659,21 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     // ya repartido antes, y todos terminan marcados con sobrante aunque en
     // realidad la devolución ya se haya repartido correctamente entre varios
     // préstamos sin sobrar nada de verdad.
+    //
+    // OJO: solo se evalúa como candidato a sobrante un producto que
+    // realmente pertenece (está pendiente) en alguno de los préstamos
+    // seleccionados en ESTA acción. Antes se recorrían TODOS los productos
+    // de la devolución sin filtrar: si la devolución traía otro producto que
+    // no tenía nada que ver con el préstamo elegido (por ejemplo, cruzando
+    // IPE435↔ED230 donde ED230 también devuelve sodio cloruro, que no le
+    // pertenece a IPE435), ese producto quedaba marcado como "sobrante"
+    // (excedente sin destino) aunque en realidad solo estaba esperando un
+    // cruce futuro con OTRO préstamo distinto. Eso lo sacaba, en la
+    // práctica, de circulación por error.
     const sobranteDetalle = [];
     selDevoluciones.forEach(d => {
       (d.items || []).forEach(item => {
+        if (!codigosPendientesSeleccionados.has(item.codigo)) return; // no le pertenece a ningún préstamo de esta acción: se deja pendiente, no es sobrante
         const asignadoAntes = cruces
           .filter(c => c.devolucion_id === d.id)
           .flatMap(c => c.items_cruzados || [])
@@ -6903,4 +6915,5 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
 
