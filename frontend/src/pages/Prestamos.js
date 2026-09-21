@@ -3393,6 +3393,43 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
     return resultados.sort((a, b) => b.exceso - a.exceso);
   }, [prestamos, cruces]);
   const [verAuditoria, setVerAuditoria] = React.useState(false);
+  const [previewCorreccion, setPreviewCorreccion] = React.useState(null);
+  const [cargandoPreview, setCargandoPreview] = React.useState(false);
+  const [aplicandoCorreccion, setAplicandoCorreccion] = React.useState(false);
+
+  async function verVistaPreviaCorreccion() {
+    setCargandoPreview(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/correccion-sobreasignacion/preview');
+      setPreviewCorreccion(r);
+    } catch (e) {
+      alert('Error calculando la vista previa: ' + e.message);
+    }
+    setCargandoPreview(false);
+  }
+
+  async function aplicarCorreccionSobreasignacion() {
+    if (!previewCorreccion) return;
+    if (!window.confirm(
+      `Esto va a recortar ${previewCorreccion.lineas_a_recortar} línea(s) en ${previewCorreccion.filas_afectadas} cruce(s), ` +
+      `quitando en total ${previewCorreccion.total_exceso_unidades} unidad(es) que estaban sumadas de más. ` +
+      `Se conservan los cruces más antiguos y se recorta lo que sobrepase el total real de cada documento. Esta acción escribe en la base de datos. ¿Continuar?`
+    )) return;
+    setAplicandoCorreccion(true);
+    try {
+      const r = await apiFetch('/prestamos/cruces/correccion-sobreasignacion/aplicar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmar: true }),
+      });
+      alert(`Corregidos ${r.cruces_corregidos} cruce(s) en ${r.documentos_recalculados} documento(s). Total de unidades recortadas: ${r.total_exceso_corregido}.`);
+      setPreviewCorreccion(null);
+      onRefresh();
+    } catch (e) {
+      alert('Error aplicando la corrección: ' + e.message);
+    }
+    setAplicandoCorreccion(false);
+  }
 
   return (
     <div>
@@ -3486,6 +3523,52 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
               <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 8 }}>
                 Esto es solo diagnóstico: no corrige nada automáticamente. Revisa cada caso en el historial de abajo (busca el documento) y corrige a mano el cruce que corresponda — normalmente reviertiendo el cruce mal registrado y volviéndolo a hacer con la cantidad correcta.
               </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+                <button onClick={verVistaPreviaCorreccion} disabled={cargandoPreview}
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid var(--t-accent)', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--t-accent)' }}>
+                  {cargandoPreview ? 'Calculando…' : '👁 Ver vista previa de corrección automática (FIFO por fecha)'}
+                </button>
+                {previewCorreccion && (
+                  <button onClick={aplicarCorreccionSobreasignacion} disabled={aplicandoCorreccion || previewCorreccion.lineas_a_recortar === 0}
+                    style={{ padding: '5px 12px', fontSize: 11, border: '1px solid #ef4444', borderRadius: 6, cursor: 'pointer', background: '#ef4444', color: '#fff', fontWeight: 700 }}>
+                    {aplicandoCorreccion ? 'Aplicando…' : `✅ Aplicar corrección (recortar ${previewCorreccion.total_exceso_unidades} uds en ${previewCorreccion.lineas_a_recortar} línea(s))`}
+                  </button>
+                )}
+              </div>
+              {previewCorreccion && (
+                <div style={{ marginBottom: 10, background: 'rgba(0,0,0,0.15)', borderRadius: 6, padding: 10, maxHeight: 260, overflowY: 'auto' }}>
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                    Vista previa — {previewCorreccion.lineas_a_recortar} línea(s) en {previewCorreccion.filas_afectadas} cruce(s) se recortarían. Nada se ha guardado todavía.
+                  </div>
+                  {previewCorreccion.lineas_a_recortar === 0 ? (
+                    <div style={{ fontSize: 12, color: '#22c55e' }}>No hay nada que corregir según el criterio FIFO. ✓</div>
+                  ) : (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                      <thead>
+                        <tr>
+                          {['Cruce', 'Préstamo', 'Devolución', 'Código', 'Producto', 'Cantidad actual', 'Quedará en', 'Se recorta'].map(h => (
+                            <th key={h} style={{ textAlign: 'left', padding: '3px 6px', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewCorreccion.correcciones.map((c, i) => (
+                          <tr key={i} style={{ borderBottom: '1px solid var(--t-border)' }}>
+                            <td style={{ padding: '3px 6px' }}>#{c.cruce_id}</td>
+                            <td style={{ padding: '3px 6px' }}>{c.prestamo_doc}</td>
+                            <td style={{ padding: '3px 6px' }}>{c.devolucion_doc}</td>
+                            <td style={{ padding: '3px 6px', fontFamily: 'monospace' }}>{c.codigo}</td>
+                            <td style={{ padding: '3px 6px' }}>{c.nombre}</td>
+                            <td style={{ padding: '3px 6px', textAlign: 'right' }}>{c.cantidad_original}</td>
+                            <td style={{ padding: '3px 6px', textAlign: 'right', color: '#22c55e' }}>{c.cantidad_nueva}</td>
+                            <td style={{ padding: '3px 6px', textAlign: 'right', color: '#ef4444', fontWeight: 700 }}>-{c.exceso}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr>
@@ -6915,5 +6998,8 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
 
 
