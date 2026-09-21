@@ -1285,6 +1285,40 @@ router.post('/cruces', async (req, res) => {
         return res.status(400).json({ error: 'Ningún par válido para cruzar' });
       }
 
+      // Validación final: por cada documento (préstamo o devolución) tocado
+      // en esta transacción, la suma de items_cruzados de TODOS sus cruces
+      // — los que ya existían más los que se acaban de crear/actualizar —
+      // no puede superar la cantidad real de cada producto en el documento.
+      // Se hace al final, sobre lo ya guardado en esta misma transacción,
+      // para cubrir tanto un mismo par vuelto a cruzar (que se fusiona
+      // sumando arriba) como un documento repartido entre varios pares
+      // dentro de un mismo multicruce. Antes no existía ningún tope acá —
+      // solo en el frontend, que se puede saltar llamando la API directo —
+      // y eso permitió que un mismo par re-cruzado varias veces fuera
+      // sumando cantidades por encima de lo que el documento real tiene.
+      const idsAValidar = Array.from(new Set(cruceRows.flatMap(c => [c.prestamo_id, c.devolucion_id])));
+      const { rows: docsAValidar } = await client.query(
+        `SELECT id, documento_contable, items FROM prestamos WHERE id = ANY($1::int[])`, [idsAValidar]
+      );
+      for (const doc of docsAValidar) {
+        const { rows: crucesDoc } = await client.query(
+          `SELECT items_cruzados FROM prestamo_cruces WHERE prestamo_id = $1 OR devolucion_id = $1`, [doc.id]
+        );
+        const asignadoPorCodigo = {};
+        crucesDoc.forEach(c => (c.items_cruzados || []).forEach(it => {
+          asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
+        }));
+        for (const item of (doc.items || [])) {
+          const asignado = asignadoPorCodigo[item.codigo] || 0;
+          if (asignado > Number(item.cantidad) + 0.001) {
+            throw new Error(
+              `No se puede registrar: ${doc.documento_contable} quedaría con ${asignado} unidades cruzadas de ` +
+              `"${item.nombre}" (código ${item.codigo}), pero el documento solo tiene ${item.cantidad}.`
+            );
+          }
+        }
+      }
+
       // Recalcular estado de cada documento único involucrado (en ambas direcciones)
       const idsUnicos = Array.from(new Set(cruceRows.flatMap(c => [c.prestamo_id, c.devolucion_id])));
       const estados = {};
@@ -1345,6 +1379,42 @@ router.patch('/cruces/:id', authMiddleware, adminOnly, async (req, res) => {
     if (!actual) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Cruce no encontrado' }); }
 
     const nuevosItems = items_cruzados !== undefined ? items_cruzados : actual.items_cruzados;
+
+    // Misma validación que en POST /cruces: la corrección manual tampoco
+    // puede dejar un documento con más unidades cruzadas (sumando TODOS sus
+    // cruces, no solo este) de las que realmente tiene. Como este endpoint
+    // es justo el que se usa para corregir a mano los casos que marca la
+    // auditoría de sobreasignación, este candado evita "corregir" dejándolo
+    // igual de mal o peor.
+    if (items_cruzados !== undefined) {
+      const { rows: docs } = await client.query(
+        `SELECT id, documento_contable, items FROM prestamos WHERE id = ANY($1::int[])`,
+        [[actual.prestamo_id, actual.devolucion_id]]
+      );
+      for (const doc of docs) {
+        const { rows: crucesDoc } = await client.query(
+          `SELECT id, items_cruzados FROM prestamo_cruces WHERE prestamo_id = $1 OR devolucion_id = $1`, [doc.id]
+        );
+        const asignadoPorCodigo = {};
+        crucesDoc.forEach(c => {
+          const items = c.id === actual.id ? nuevosItems : c.items_cruzados; // este cruce ya con el valor propuesto
+          (items || []).forEach(it => {
+            asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
+          });
+        });
+        for (const item of (doc.items || [])) {
+          const asignado = asignadoPorCodigo[item.codigo] || 0;
+          if (asignado > Number(item.cantidad) + 0.001) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error: `${doc.documento_contable} quedaría con ${asignado} unidades cruzadas de "${item.nombre}" ` +
+                     `(código ${item.codigo}), pero el documento solo tiene ${item.cantidad}.`
+            });
+          }
+        }
+      }
+    }
+
     const { rows } = await client.query(
       'UPDATE prestamo_cruces SET tipo_cruce = $1, observaciones = $2, items_cruzados = $3 WHERE id = $4 RETURNING *',
       [tipo_cruce || actual.tipo_cruce, observaciones !== undefined ? observaciones : actual.observaciones,
@@ -1556,8 +1626,131 @@ router.post('/cruce-grupos/recalcular-sobrantes', authMiddleware, adminOnly, asy
   } finally { client.release(); }
 });
 
-// Reparar cruces antiguos: a los que no tienen grupo (creados antes del sistema de
-// consecutivo + PDF) les asigna número, recalcula su estado y genera su PDF.
+// ── Corrección de sobreasignación histórica (FIFO por fecha) ────────────────
+// Recorre TODOS los cruces (prestamo_cruces) en orden cronológico de
+// creación y, para cada producto de cada cruce, lo topa contra lo que
+// todavía le cabe tanto al préstamo como a la devolución de ese par —
+// llevando un acumulado por documento+código a medida que avanza. Los
+// cruces más antiguos se quedan con su cantidad completa (hasta donde
+// alcance el documento); lo que un cruce más nuevo pide por encima de lo
+// que ya queda disponible se recorta. Es una función pura de cálculo (no
+// escribe nada); la usan tanto el preview como el endpoint que aplica.
+async function calcularCorreccionSobreasignacion(client) {
+  const { rows: docs } = await client.query(`SELECT id, documento_contable, items FROM prestamos`);
+  const docsPorId = {};
+  docs.forEach(d => { docsPorId[d.id] = d; });
+  function capDe(docId, codigo) {
+    const doc = docsPorId[docId];
+    if (!doc) return null;
+    const item = (doc.items || []).find(i => i.codigo === codigo);
+    return item ? Number(item.cantidad) : null;
+  }
+
+  const { rows: filas } = await client.query(
+    `SELECT id, prestamo_id, devolucion_id, items_cruzados, created_at
+     FROM prestamo_cruces ORDER BY created_at ASC, id ASC`
+  );
+
+  const usadoPrestamo = {};   // { [prestamoId]: { [codigo]: cantidadUsada } }
+  const usadoDevolucion = {}; // { [devolucionId]: { [codigo]: cantidadUsada } }
+  const correcciones = [];    // filas que sí requieren recorte
+  const itemsNuevosPorCruce = {}; // { [cruceId]: [{codigo,nombre,cantidad,precio_unitario}] }
+
+  for (const fila of filas) {
+    const items = fila.items_cruzados || [];
+    if (items.length === 0) continue;
+    const nuevosItems = [];
+    let cambio = false;
+
+    for (const it of items) {
+      const codigo = it.codigo;
+      const cantidad = Number(it.cantidad) || 0;
+      if (cantidad <= 0) continue;
+
+      if (!usadoPrestamo[fila.prestamo_id]) usadoPrestamo[fila.prestamo_id] = {};
+      if (!usadoDevolucion[fila.devolucion_id]) usadoDevolucion[fila.devolucion_id] = {};
+
+      const capP = capDe(fila.prestamo_id, codigo);
+      const capD = capDe(fila.devolucion_id, codigo);
+      const usadoP = usadoPrestamo[fila.prestamo_id][codigo] || 0;
+      const usadoD = usadoDevolucion[fila.devolucion_id][codigo] || 0;
+      const remainingP = capP === null ? Infinity : Math.max(0, capP - usadoP);
+      const remainingD = capD === null ? Infinity : Math.max(0, capD - usadoD);
+      const keep = Math.min(cantidad, remainingP, remainingD);
+      const exceso = cantidad - keep;
+
+      usadoPrestamo[fila.prestamo_id][codigo] = usadoP + keep;
+      usadoDevolucion[fila.devolucion_id][codigo] = usadoD + keep;
+
+      if (keep > 0) nuevosItems.push({ ...it, cantidad: keep });
+
+      if (exceso > 0.001) {
+        cambio = true;
+        correcciones.push({
+          cruce_id: fila.id,
+          prestamo_id: fila.prestamo_id, prestamo_doc: docsPorId[fila.prestamo_id]?.documento_contable || String(fila.prestamo_id),
+          devolucion_id: fila.devolucion_id, devolucion_doc: docsPorId[fila.devolucion_id]?.documento_contable || String(fila.devolucion_id),
+          codigo, nombre: it.nombre,
+          cantidad_original: cantidad, cantidad_nueva: keep, exceso,
+        });
+      }
+    }
+    if (cambio) itemsNuevosPorCruce[fila.id] = nuevosItems;
+  }
+
+  return { correcciones, itemsNuevosPorCruce };
+}
+
+// Vista previa: calcula qué se recortaría, sin escribir nada.
+router.get('/cruces/correccion-sobreasignacion/preview', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { correcciones } = await calcularCorreccionSobreasignacion(pool);
+    const filasAfectadas = new Set(correcciones.map(c => c.cruce_id)).size;
+    const totalExceso = correcciones.reduce((s, c) => s + c.exceso, 0);
+    res.json({ filas_afectadas: filasAfectadas, lineas_a_recortar: correcciones.length, total_exceso_unidades: totalExceso, correcciones });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Aplica la corrección calculada por calcularCorreccionSobreasignacion.
+// Requiere { confirmar: true } explícito en el body — es una corrección
+// masiva de datos ya guardados y no se dispara por accidente.
+router.post('/cruces/correccion-sobreasignacion/aplicar', authMiddleware, adminOnly, async (req, res) => {
+  if (req.body?.confirmar !== true) {
+    return res.status(400).json({ error: 'Falta confirmar: true en el body — esta acción corrige en masa datos ya guardados.' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { correcciones, itemsNuevosPorCruce } = await calcularCorreccionSobreasignacion(client);
+
+    const idsCruce = Object.keys(itemsNuevosPorCruce);
+    for (const cruceId of idsCruce) {
+      const nuevosItems = itemsNuevosPorCruce[cruceId];
+      await client.query(
+        'UPDATE prestamo_cruces SET items_cruzados = $1 WHERE id = $2',
+        [nuevosItems.length > 0 ? JSON.stringify(nuevosItems) : null, cruceId]
+      );
+    }
+
+    // Recalcular estado de todos los documentos tocados por algún recorte.
+    const idsDocumentos = Array.from(new Set(correcciones.flatMap(c => [c.prestamo_id, c.devolucion_id])));
+    for (const id of idsDocumentos) await recalcularEstadoDocumento(client, id);
+
+    await client.query('COMMIT');
+    res.json({
+      ok: true,
+      cruces_corregidos: idsCruce.length,
+      documentos_recalculados: idsDocumentos.length,
+      total_exceso_corregido: correcciones.reduce((s, c) => s + c.exceso, 0),
+      correcciones,
+    });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+
 router.post('/cruces/backfill', async (req, res) => {
   try {
     const { rows: sinGrupo } = await pool.query(
@@ -1847,131 +2040,3 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
