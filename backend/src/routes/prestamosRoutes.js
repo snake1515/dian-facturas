@@ -1639,11 +1639,17 @@ async function calcularCorreccionSobreasignacion(client) {
   const { rows: docs } = await client.query(`SELECT id, documento_contable, items FROM prestamos`);
   const docsPorId = {};
   docs.forEach(d => { docsPorId[d.id] = d; });
+  // OJO: un documento puede traer el mismo código en más de una línea (por
+  // ejemplo, dos lotes distintos del mismo producto importados desde Excel
+  // sin consolidar) — hay que sumar TODAS las líneas de ese código, no solo
+  // quedarse con la primera que aparezca, o se subestima la capacidad real
+  // del documento y se generan falsos positivos de sobreasignación.
   function capDe(docId, codigo) {
     const doc = docsPorId[docId];
     if (!doc) return null;
-    const item = (doc.items || []).find(i => i.codigo === codigo);
-    return item ? Number(item.cantidad) : null;
+    const items = (doc.items || []).filter(i => i.codigo === codigo);
+    if (items.length === 0) return null;
+    return items.reduce((s, i) => s + Number(i.cantidad || 0), 0);
   }
 
   const { rows: filas } = await client.query(
