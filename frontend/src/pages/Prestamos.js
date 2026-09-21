@@ -2385,10 +2385,26 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
         const codigosPendientesUnico = selPrestamos.length === 1
           ? new Set(itemsPendientesDe(selPrestamos[0], devoluciones, cruces).map(i => i.codigo))
           : null;
+        const pendientePrestamoUnico = selPrestamos.length === 1
+          ? Object.fromEntries(itemsPendientesDe(selPrestamos[0], devoluciones, cruces).map(i => [i.codigo, i.pendiente]))
+          : null;
         const nuevas = [];
         selDevoluciones.forEach(d => {
+          // Lo que de verdad sigue disponible en ESTA devolución para cada
+          // producto — descontando lo que ya se le asignó en cruces
+          // anteriores (histórico). Nunca la cantidad total del documento:
+          // un IDP/ED puede ya estar parcial o totalmente comprometido con
+          // otro préstamo, y precargar el total lleva a asignar de más
+          // (duplicidad) sin que nada lo impida.
+          const disponibleDevolPorCodigo = Object.fromEntries(
+            itemsPendientesDeDevolucion(d, cruces).map(i => [i.codigo, i.pendiente])
+          );
           (d.items || []).forEach(item => {
             const perteneceUnico = codigosPendientesUnico && codigosPendientesUnico.has(item.codigo);
+            const disponibleDevol = disponibleDevolPorCodigo[item.codigo] ?? 0;
+            const disponible = perteneceUnico
+              ? Math.min(disponibleDevol, pendientePrestamoUnico[item.codigo] ?? 0)
+              : 0;
             nuevas.push({
               id: `${d.id}_${item.codigo}`,
               devolucion_id: d.id,
@@ -2396,9 +2412,9 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               codigo: item.codigo,
               nombre: item.nombre,
               precio_unitario: item.precio_unitario,
-              cantidad_item: Number(item.cantidad),
+              cantidad_item: disponibleDevol, // lo que de verdad hay disponible para asignar, no el total del documento
               prestamo_id: perteneceUnico ? selPrestamos[0].id : '',
-              cantidad: perteneceUnico ? Number(item.cantidad) : 0,
+              cantidad: disponible,
             });
           });
         });
@@ -2414,10 +2430,13 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       // a mano.
       if (selPrestamos.length === 1) {
         const unico = selPrestamos[0].id;
-        const codigosPendientes = new Set(itemsPendientesDe(selPrestamos[0], devoluciones, cruces).map(i => i.codigo));
-        return prev.map(f => (f.prestamo_id || !codigosPendientes.has(f.codigo))
-          ? f
-          : { ...f, prestamo_id: unico, cantidad: f.cantidad || f.cantidad_item });
+        const pendientePrestamo = Object.fromEntries(itemsPendientesDe(selPrestamos[0], devoluciones, cruces).map(i => [i.codigo, i.pendiente]));
+        const codigosPendientes = new Set(Object.keys(pendientePrestamo));
+        return prev.map(f => {
+          if (f.prestamo_id || !codigosPendientes.has(f.codigo)) return f;
+          const disponible = Math.min(f.cantidad_item, pendientePrestamo[f.codigo] ?? 0);
+          return { ...f, prestamo_id: unico, cantidad: f.cantidad || disponible };
+        });
       }
       return prev;
     });
@@ -2583,6 +2602,34 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   async function cruzar() {
     if (selPrestamos.length === 0 || selDevoluciones.length === 0) {
       setError('Selecciona al menos un préstamo y una devolución'); return;
+    }
+
+    // Candado final: por cada préstamo involucrado, la suma de lo que se le
+    // está asignando ahora (para cada código) no puede superar lo que ese
+    // préstamo todavía tiene pendiente de ese producto. Sin este chequeo, un
+    // valor precargado o editado a mano por encima de lo real (por ejemplo,
+    // el total de una devolución que ya estaba parcialmente comprometida con
+    // otro préstamo) se registraba igual, generando unidades "de más" que no
+    // quedaban ni pendientes ni marcadas como sobrante — se perdían del
+    // sistema. Esto bloquea el registro ANTES de tocar el backend.
+    const excesos = [];
+    selPrestamos.forEach(p => {
+      const pendientePorCodigo = Object.fromEntries(itemsPendientesDe(p, devoluciones, cruces).map(i => [i.codigo, i.pendiente]));
+      const asignadoPorCodigo = {};
+      filasAsignacion
+        .filter(f => Number(f.prestamo_id) === p.id && (Number(f.cantidad) || 0) > 0)
+        .forEach(f => { asignadoPorCodigo[f.codigo] = (asignadoPorCodigo[f.codigo] || 0) + Number(f.cantidad); });
+      Object.entries(asignadoPorCodigo).forEach(([codigo, cant]) => {
+        const disponible = pendientePorCodigo[codigo] || 0;
+        if (cant > disponible) {
+          const nombre = filasAsignacion.find(f => f.codigo === codigo)?.nombre || codigo;
+          excesos.push(`${p.documento_contable} — ${nombre}: intentas asignar ${cant} uds pero solo tiene ${disponible} pendiente(s)`);
+        }
+      });
+    });
+    if (excesos.length > 0) {
+      setError('No se puede registrar, hay cantidades por encima de lo pendiente: ' + excesos.join(' · '));
+      return;
     }
 
     // Agrupar filas válidas (con préstamo destino y cantidad > 0) en pares
@@ -2947,22 +2994,33 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               préstamo elegido no hace falta el desplegable (es implícito), y
               basta con ajustar la cantidad si el pago es parcial. */}
           <div style={{ marginBottom: 12, maxHeight: 320, overflowY: 'auto' }}>
-            {selDevoluciones.map(d => (
+            {selDevoluciones.map(d => {
+              // Disponible real por producto en esta devolución (total menos
+              // lo ya asignado en cruces anteriores) — la misma cuenta que ya
+              // usa "Pendientes de cierre", para que el tope y la advertencia
+              // de sobrante de esta pantalla no contradigan el resto del sistema.
+              const disponibleDevolPorCodigo = Object.fromEntries(
+                itemsPendientesDeDevolucion(d, cruces).map(i => [i.codigo, i.pendiente])
+              );
+              return (
               <div key={d.id} style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-accent)', marginBottom: 6 }}>
                   {d.documento_contable} devuelve:
                 </div>
                 {(d.items || []).map(item => {
+                  const disponible = disponibleDevolPorCodigo[item.codigo] ?? 0;
                   const filasItem = filasAsignacion.filter(f => f.devolucion_id === d.id && f.codigo === item.codigo);
                   const asignado = filasItem.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
-                  const sobra = Number(item.cantidad) - asignado;
+                  const sobra = disponible - asignado;
                   const noPerteneceASeleccion = selPrestamos.length > 0 && !codigosPendientesSeleccionados.has(item.codigo);
                   return (
                     <div key={item.codigo} style={{ marginBottom: 8, padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 6, border: noPerteneceASeleccion ? '1px solid #ef4444' : 'none' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 6 }}>
                         <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)', minWidth: 90 }}>{item.codigo}</span>
                         <span style={{ flex: 1, color: 'var(--t-text-primary)' }}>{item.nombre}</span>
-                        <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>total: {item.cantidad}</span>
+                        <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>
+                          disponible: {disponible}{disponible !== Number(item.cantidad) ? ` de ${item.cantidad}` : ''}
+                        </span>
                       </div>
                       {noPerteneceASeleccion && (
                         <div style={{ fontSize: 11, color: '#ef4444', marginBottom: 6 }}>
@@ -2979,7 +3037,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                               {selPrestamos.map(p => <option key={p.id} value={p.id}>{p.documento_contable}</option>)}
                             </select>
                           )}
-                          <input type="number" min={0} max={item.cantidad} value={fila.cantidad}
+                          <input type="number" min={0} max={disponible} value={fila.cantidad}
                             onChange={e => actualizarFila(fila.id, 'cantidad', Number(e.target.value))}
                             style={{ width: 64, padding: '4px 6px', fontSize: 11, borderRadius: 5, border: '1px solid var(--t-border)', background: 'var(--t-bg-card)', color: 'var(--t-text-primary)' }} />
                           <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>uds</span>
@@ -3004,7 +3062,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                   );
                 })}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* PDF soporte adicional — solo aplica en cruce simple 1 a 1; en
@@ -3264,6 +3323,65 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
   }, [cruces]);
   const [verSobrantes, setVerSobrantes] = React.useState(false);
 
+  // ── Auditoría de sobreasignación ──────────────────────────────────────
+  // Solo lectura: no corrige nada, solo detecta. Compara, para cada
+  // documento y producto, cuánto se le ha asignado alguna vez en cruces
+  // (items_cruzados, el dato real guardado) contra la cantidad total del
+  // documento. Si lo asignado supera el total, esas unidades de más quedaron
+  // "duplicadas" en algún cruce ya registrado — huella del bug de
+  // sobreasignación que existía antes de este fix. Como el bug ya está
+  // corregido en el código (ver itemsPendientesDe/itemsPendientesDeDevolucion),
+  // esto solo puede encontrar cruces que ya se guardaron mal en el pasado.
+  const auditoriaSobreasignacion = React.useMemo(() => {
+    const resultados = [];
+
+    // Lado devolución (IDP/ED): suma de TODO lo asignado alguna vez desde
+    // esta devolución, por producto, contra lo que ese producto trae en total.
+    (prestamos || []).filter(d => d.tipo === 'devolucion_ingreso' || d.tipo === 'devolucion_egreso').forEach(d => {
+      const asignadoPorCodigo = {};
+      (cruces || []).filter(c => c.devolucion_id === d.id).forEach(c => {
+        const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+        items.forEach(it => { asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad); });
+      });
+      (d.items || []).forEach(item => {
+        const asignado = asignadoPorCodigo[item.codigo] || 0;
+        const exceso = asignado - Number(item.cantidad);
+        if (exceso > 0) {
+          resultados.push({
+            lado: 'Devolución', documento: d.documento_contable, clinica: d.clinica_nombre,
+            codigo: item.codigo, nombre: item.nombre,
+            total: Number(item.cantidad), asignado, exceso,
+          });
+        }
+      });
+    });
+
+    // Lado préstamo (EPO/IPE): suma de TODO lo que el sistema le atribuye
+    // como devuelto (vía items_cruzados de cada cruce donde este préstamo es
+    // el destino) contra lo que realmente se prestó.
+    (prestamos || []).filter(p => p.tipo === 'egreso' || p.tipo === 'ingreso').forEach(p => {
+      const devueltoPorCodigo = {};
+      (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
+        const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+        items.forEach(it => { devueltoPorCodigo[it.codigo] = (devueltoPorCodigo[it.codigo] || 0) + Number(it.cantidad); });
+      });
+      (p.items || []).forEach(item => {
+        const devuelto = devueltoPorCodigo[item.codigo] || 0;
+        const exceso = devuelto - Number(item.cantidad);
+        if (exceso > 0) {
+          resultados.push({
+            lado: 'Préstamo', documento: p.documento_contable, clinica: p.clinica_nombre,
+            codigo: item.codigo, nombre: item.nombre,
+            total: Number(item.cantidad), asignado: devuelto, exceso,
+          });
+        }
+      });
+    });
+
+    return resultados.sort((a, b) => b.exceso - a.exceso);
+  }, [prestamos, cruces]);
+  const [verAuditoria, setVerAuditoria] = React.useState(false);
+
   return (
     <div>
     {cruces.length > 0 && (
@@ -3309,6 +3427,13 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
                   {recalculandoSobrantes ? 'Recalculando…' : '🔁 Recalcular sobrantes'}
                 </button>
               )}
+              {isAdmin && auditoriaSobreasignacion.length > 0 && (
+                <button onClick={() => setVerAuditoria(v => !v)}
+                  title="Detecta documentos donde, sumando todos sus cruces registrados, se asignó más cantidad de la que el documento realmente tiene. Solo detecta, no corrige nada."
+                  style={{ padding: '5px 12px', fontSize: 11, border: '1px solid #ef4444', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#ef4444', fontWeight: 600 }}>
+                  🔍 Auditoría de sobreasignación ({auditoriaSobreasignacion.length})
+                </button>
+              )}
               {cruces.some(c => !c.grupo_numero) && (
                 <button onClick={repararCrucesAntiguos} disabled={reparando}
                   title="Asigna consecutivo, recalcula el estado y genera el PDF de los cruces creados antes de esta función"
@@ -3339,6 +3464,39 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
                   ))}
                 </div>
               ))}
+            </div>
+          )}
+          {verAuditoria && auditoriaSobreasignacion.length > 0 && (
+            <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid #ef4444', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#ef4444', marginBottom: 4 }}>
+                🔍 Documentos con sobreasignación — sumando sus cruces registrados, se asignó más de lo que el documento realmente tiene
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 8 }}>
+                Esto es solo diagnóstico: no corrige nada automáticamente. Revisa cada caso en el historial de abajo (busca el documento) y corrige a mano el cruce que corresponda — normalmente reviertiendo el cruce mal registrado y volviéndolo a hacer con la cantidad correcta.
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    {['Lado', 'Documento', 'Clínica', 'Código', 'Producto', 'Total del doc.', 'Asignado', 'Exceso'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--t-text-muted)', fontWeight: 600, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditoriaSobreasignacion.map((r, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--t-border)' }}>
+                      <td style={{ padding: '4px 8px' }}>{r.lado}</td>
+                      <td style={{ padding: '4px 8px', fontWeight: 600 }}>{r.documento}</td>
+                      <td style={{ padding: '4px 8px', color: 'var(--t-text-muted)' }}>{r.clinica}</td>
+                      <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontSize: 11 }}>{r.codigo}</td>
+                      <td style={{ padding: '4px 8px' }}>{r.nombre}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right' }}>{r.total}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right' }}>{r.asignado}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', color: '#ef4444', fontWeight: 700 }}>+{r.exceso}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
           <input value={filtroCruces} onChange={e => setFiltroCruces(e.target.value)}
@@ -6086,23 +6244,30 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
 // ─── Reporte detallado de pendientes por devolver (por producto y clínica) ─────
 
 function itemsPendientesDe(p, devoluciones, cruces = []) {
-  // Junta devoluciones por dos vías: el flujo directo (d.prestamo_id) y el
-  // flujo de multicruce (prestamo_cruces), deduplicando por id de devolución
-  // para no contar dos veces si una devolución aparece en ambas fuentes.
-  const devMap = {};
-  devoluciones.filter(d => d.prestamo_id === p.id).forEach(d => {
-    devMap[d.id] = d.items || [];
-  });
-  (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
-    devMap[c.devolucion_id] = c.devolucion_items || [];
-  });
-
   const devueltoPorCodigo = {};
-  Object.values(devMap).forEach(items => {
-    (items || []).forEach(i => {
+
+  // Vía directa (tabla legada prestamo_devoluciones) — ahí sí aplica sumar
+  // el ítem completo, porque esa vía no reparte una misma devolución entre
+  // varios préstamos.
+  devoluciones.filter(d => d.prestamo_id === p.id).forEach(d => {
+    (d.items || []).forEach(i => {
       devueltoPorCodigo[i.codigo] = (devueltoPorCodigo[i.codigo] || 0) + Number(i.cantidad);
     });
   });
+
+  // Vía multicruce: usar items_cruzados (lo REALMENTE asignado a este
+  // préstamo en ese par específico), nunca devolucion_items — ese campo es
+  // solo el detalle informativo de TODO el documento de la devolución, sin
+  // importar cuánto de eso se le repartió a este préstamo en particular. Si
+  // el cruce es viejo y no tiene items_cruzados, se cae a devolucion_items
+  // (aproximación razonable solo para cruces 1 a 1, donde ambos coinciden).
+  (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
+    const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+    items.forEach(it => {
+      devueltoPorCodigo[it.codigo] = (devueltoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
+    });
+  });
+
   return (p.items || []).map(i => {
     const devuelto = devueltoPorCodigo[i.codigo] || 0;
     const pendiente = Math.max(0, Number(i.cantidad) - devuelto);
@@ -6738,3 +6903,4 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
