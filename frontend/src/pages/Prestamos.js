@@ -1127,7 +1127,7 @@ function DetallePrestamoModal({ prestamo, devoluciones, cruces = [], prestamos =
             // todos los cruces de esa devolución, sin importar con cuál
             // préstamo se estuviera cruzando en cada caso).
             let productosCruzados;
-            if (c.items_cruzados && c.items_cruzados.length > 0) {
+            if (c.items_cruzados !== null && c.items_cruzados !== undefined) {
               productosCruzados = c.items_cruzados;
             } else {
               const prestamoDoc = esDevolucion ? prestamos.find(p => p.id === c.prestamo_id) : prestamo;
@@ -2530,7 +2530,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   // un cruce viejo sin eso, cae de vuelta a los ítems crudos de la
   // devolución como mejor aproximación disponible.
   function resumenProductosCruzados(c) {
-    const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+    const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
     if (items.length === 0) return null;
     const MAX = 2;
     const texto = items.slice(0, MAX).map(it => `${it.nombre} (${it.cantidad})`).join(', ');
@@ -3256,7 +3256,7 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
     // topado por lo que el préstamo realmente tiene de ese código — así el
     // admin puede corregirlo aquí mismo y de paso queda guardado el dato
     // exacto para adelante.
-    if (c.items_cruzados && c.items_cruzados.length > 0) {
+    if (c.items_cruzados !== null && c.items_cruzados !== undefined) {
       setEditItems(c.items_cruzados.map(it => ({ ...it })));
     } else {
       const cantidadesPrestamo = {};
@@ -3366,7 +3366,7 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
     (prestamos || []).filter(d => d.tipo === 'devolucion_ingreso' || d.tipo === 'devolucion_egreso').forEach(d => {
       const asignadoPorCodigo = {};
       (cruces || []).filter(c => c.devolucion_id === d.id).forEach(c => {
-        const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+        const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
         items.forEach(it => { asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad); });
       });
       totalesPorCodigo(d.items).forEach(item => {
@@ -3388,7 +3388,7 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
     (prestamos || []).filter(p => p.tipo === 'egreso' || p.tipo === 'ingreso').forEach(p => {
       const devueltoPorCodigo = {};
       (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
-        const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+        const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
         items.forEach(it => { devueltoPorCodigo[it.codigo] = (devueltoPorCodigo[it.codigo] || 0) + Number(it.cantidad); });
       });
       totalesPorCodigo(p.items).forEach(item => {
@@ -6371,7 +6371,7 @@ function itemsPendientesDe(p, devoluciones, cruces = []) {
   // el cruce es viejo y no tiene items_cruzados, se cae a devolucion_items
   // (aproximación razonable solo para cruces 1 a 1, donde ambos coinciden).
   (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
-    const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+    const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
     items.forEach(it => {
       devueltoPorCodigo[it.codigo] = (devueltoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
     });
@@ -6398,7 +6398,7 @@ function itemsPendientesDeDevolucion(d, cruces = []) {
     // viejo y no lo tiene, caer a devolucion_items. Sin este fallback, los
     // cruces antiguos se contaban como "nada asignado" y el documento
     // aparecía como pendiente aunque ya estuviera cerrado.
-    const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+    const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
     items.forEach(it => {
       asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
     });
@@ -6441,7 +6441,7 @@ function itemsSobranteDeDevolucion(d, cruces = []) {
 
   const asignadoPorCodigo = {};
   cs.filter(c => c.devolucion_id === d.id).forEach(c => {
-    const items = (c.items_cruzados && c.items_cruzados.length > 0) ? c.items_cruzados : (c.devolucion_items || []);
+    const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
     items.forEach(it => {
       asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
     });
@@ -7012,6 +7012,18 @@ function Modal({ onClose, titulo, children, maxWidth = 760 }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
