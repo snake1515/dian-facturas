@@ -1653,7 +1653,7 @@ async function calcularCorreccionSobreasignacion(client) {
   }
 
   const { rows: filas } = await client.query(
-    `SELECT id, prestamo_id, devolucion_id, items_cruzados, created_at
+    `SELECT id, prestamo_id, devolucion_id, items_cruzados, devolucion_items, created_at
      FROM prestamo_cruces ORDER BY created_at ASC, id ASC`
   );
 
@@ -1663,7 +1663,13 @@ async function calcularCorreccionSobreasignacion(client) {
   const itemsNuevosPorCruce = {}; // { [cruceId]: [{codigo,nombre,cantidad,precio_unitario}] }
 
   for (const fila of filas) {
-    const items = fila.items_cruzados || [];
+    // Igual que en el resto del archivo (itemsPendientesDe,
+    // itemsPendientesDeDevolucion, etc.): si el cruce es viejo y no tiene
+    // items_cruzados poblado, caer a devolucion_items. Sin este respaldo,
+    // los cruces antiguos se ignoraban por completo en el cálculo — daba
+    // la falsa impresión de que no había nada que corregir, cuando
+    // justamente ahí es donde estaba la sobreasignación real.
+    const items = (fila.items_cruzados && fila.items_cruzados.length > 0) ? fila.items_cruzados : (fila.devolucion_items || []);
     if (items.length === 0) continue;
     const nuevosItems = [];
     let cambio = false;
@@ -2046,3 +2052,4 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
