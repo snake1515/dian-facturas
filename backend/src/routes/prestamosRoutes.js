@@ -1699,8 +1699,16 @@ async function calcularCorreccionSobreasignacion(client) {
       const capD = capDe(fila.devolucion_id, codigo);
       const usadoP = usadoPrestamo[fila.prestamo_id][codigo] || 0;
       const usadoD = usadoDevolucion[fila.devolucion_id][codigo] || 0;
-      const remainingP = capP === null ? Infinity : Math.max(0, capP - usadoP);
-      const remainingD = capD === null ? Infinity : Math.max(0, capD - usadoD);
+      // capP/capD === null significa que ese documento NO TIENE ese código
+      // entre sus propios productos — es decir, ese préstamo nunca prestó
+      // ese producto, o esa devolución nunca lo devolvió. Antes esto se
+      // trataba como "sin límite" (Infinity), lo que dejaba que un préstamo
+      // se quedara con parte de un producto que ni siquiera le pertenece,
+      // con tal de que hubiera stock disponible del lado de la devolución.
+      // Debe ser tope CERO: un préstamo solo puede recibir productos que él
+      // mismo prestó.
+      const remainingP = capP === null ? 0 : Math.max(0, capP - usadoP);
+      const remainingD = capD === null ? 0 : Math.max(0, capD - usadoD);
       const keep = Math.min(cantidad, remainingP, remainingD);
       const exceso = cantidad - keep;
 
@@ -2072,6 +2080,11 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
 
 
 
