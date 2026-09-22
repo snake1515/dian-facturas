@@ -1418,7 +1418,12 @@ router.patch('/cruces/:id', authMiddleware, adminOnly, async (req, res) => {
     const { rows } = await client.query(
       'UPDATE prestamo_cruces SET tipo_cruce = $1, observaciones = $2, items_cruzados = $3 WHERE id = $4 RETURNING *',
       [tipo_cruce || actual.tipo_cruce, observaciones !== undefined ? observaciones : actual.observaciones,
-       nuevosItems ? JSON.stringify(nuevosItems) : null, req.params.id]
+       // Si se envió explícitamente un array vacío (admin corrigiendo a
+       // mano un cruce mal registrado hasta dejarlo en cero), se guarda tal
+       // cual — nunca como NULL, que en todo el resto del sistema significa
+       // "cruce viejo sin dato, usa el total del documento" y resucitaría
+       // el valor que se acaba de corregir.
+       nuevosItems !== null && nuevosItems !== undefined ? JSON.stringify(nuevosItems) : null, req.params.id]
     );
 
     // Si se editaron las cantidades, el saldo pendiente de AMBOS documentos
@@ -1671,7 +1676,13 @@ async function calcularCorreccionSobreasignacion(client) {
     // cálculo — daba la falsa impresión de que no había nada que corregir,
     // cuando justamente ahí es donde estaba la sobreasignación real.
     const devolucionItems = docsPorId[fila.devolucion_id]?.items || [];
-    const items = (fila.items_cruzados && fila.items_cruzados.length > 0) ? fila.items_cruzados : devolucionItems;
+    // OJO: se distingue entre NULL (cruce viejo, nunca se guardó nada -> cae
+    // al total del documento como respaldo) y un array vacío [] explícito
+    // (esta fila ya fue corregida a cero a propósito -> se respeta tal
+    // cual, no se vuelve a rellenar con el total). Antes se usaba
+    // "items_cruzados && length > 0", que trataba ambos casos igual y
+    // deshacía cualquier corrección que dejara una fila en cero.
+    const items = (fila.items_cruzados !== null && fila.items_cruzados !== undefined) ? fila.items_cruzados : devolucionItems;
     if (items.length === 0) continue;
     const nuevosItems = [];
     let cambio = false;
@@ -1742,7 +1753,14 @@ router.post('/cruces/correccion-sobreasignacion/aplicar', authMiddleware, adminO
       const nuevosItems = itemsNuevosPorCruce[cruceId];
       await client.query(
         'UPDATE prestamo_cruces SET items_cruzados = $1 WHERE id = $2',
-        [nuevosItems.length > 0 ? JSON.stringify(nuevosItems) : null, cruceId]
+        // Nunca NULL aquí: si la fila quedó en cero, se guarda un array
+        // vacío explícito, no NULL. NULL significa "cruce viejo sin dato,
+        // usa el total del documento como respaldo" en todo el resto del
+        // sistema — si una fila recortada a cero se guardara como NULL,
+        // el siguiente cálculo (o cualquier otra pantalla) la interpretaría
+        // de nuevo como "sin dato" y resucitaría el valor crudo original,
+        // deshaciendo la corrección que se acaba de aplicar.
+        [JSON.stringify(nuevosItems), cruceId]
       );
     }
 
@@ -2054,5 +2072,8 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+
+
 
 
