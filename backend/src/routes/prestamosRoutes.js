@@ -1653,7 +1653,7 @@ async function calcularCorreccionSobreasignacion(client) {
   }
 
   const { rows: filas } = await client.query(
-    `SELECT id, prestamo_id, devolucion_id, items_cruzados, devolucion_items, created_at
+    `SELECT id, prestamo_id, devolucion_id, items_cruzados, created_at
      FROM prestamo_cruces ORDER BY created_at ASC, id ASC`
   );
 
@@ -1665,11 +1665,13 @@ async function calcularCorreccionSobreasignacion(client) {
   for (const fila of filas) {
     // Igual que en el resto del archivo (itemsPendientesDe,
     // itemsPendientesDeDevolucion, etc.): si el cruce es viejo y no tiene
-    // items_cruzados poblado, caer a devolucion_items. Sin este respaldo,
-    // los cruces antiguos se ignoraban por completo en el cálculo — daba
-    // la falsa impresión de que no había nada que corregir, cuando
-    // justamente ahí es donde estaba la sobreasignación real.
-    const items = (fila.items_cruzados && fila.items_cruzados.length > 0) ? fila.items_cruzados : (fila.devolucion_items || []);
+    // items_cruzados poblado, caer a los items completos de la devolución
+    // (ya los tenemos en docsPorId, no hace falta un JOIN aparte). Sin este
+    // respaldo, los cruces antiguos se ignoraban por completo en el
+    // cálculo — daba la falsa impresión de que no había nada que corregir,
+    // cuando justamente ahí es donde estaba la sobreasignación real.
+    const devolucionItems = docsPorId[fila.devolucion_id]?.items || [];
+    const items = (fila.items_cruzados && fila.items_cruzados.length > 0) ? fila.items_cruzados : devolucionItems;
     if (items.length === 0) continue;
     const nuevosItems = [];
     let cambio = false;
@@ -2052,4 +2054,5 @@ router.delete('/soportes-pendientes/:id', async (req, res) => {
 });
 
 module.exports = router;
+
 
