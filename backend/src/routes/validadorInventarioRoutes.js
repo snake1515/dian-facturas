@@ -1677,6 +1677,24 @@ router.post('/listas-conteo/:id/cruces', authMiddleware, async (req, res) => {
     const destino = itemsRows.find(i => String(i.id) === String(item_destino_id));
     const tipo = origen.codigo === destino.codigo ? 'lote' : 'referencia';
 
+    // No dejar mover más unidades de las que el origen realmente tiene
+    // disponibles: lo contado (definitivo) menos lo que ya se haya sacado por
+    // cruces anteriores (ajuste_cruce, que para el origen ya es negativo).
+    const definitivoOrigen = conteoDefinitivo(origen);
+    if (definitivoOrigen === null) {
+      await client.query('ROLLBACK'); client.release();
+      return res.status(400).json({ error: 'El ítem origen todavía no tiene un conteo físico registrado (Conteo 1). Cuéntalo antes de moverle unidades a otro ítem.' });
+    }
+    const disponibleOrigen = definitivoOrigen + Number(origen.ajuste_cruce || 0);
+    if (cant > disponibleOrigen) {
+      await client.query('ROLLBACK'); client.release();
+      return res.status(400).json({
+        error: `Solo hay ${disponibleOrigen} unidad(es) disponibles en el ítem origen (contadas: ${definitivoOrigen}` +
+               (origen.ajuste_cruce ? `, ya movidas por otro cruce: ${-origen.ajuste_cruce}` : '') +
+               `). No se pueden mover ${cant}.`
+      });
+    }
+
     await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce - $1 WHERE id = $2`, [cant, origen.id]);
     await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce + $1 WHERE id = $2`, [cant, destino.id]);
 
@@ -1896,6 +1914,25 @@ router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
