@@ -2142,9 +2142,21 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                       {fmtFechaCorta(item.fecha_vencimiento)}<BadgeVencimiento fecha={item.fecha_vencimiento} />
                     </td>
                     <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{fmtNum2(item.existencia_siis)}</td>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
+                      {fmtNum2(item.existencia_siis)}
+                      {rep && rep.ajuste_cruce ? (
+                        <div style={{ fontSize: 10, color: rep.ajuste_cruce > 0 ? '#4ade80' : '#f87171', whiteSpace: 'nowrap' }} title="Ajuste por cambio de lote / referencia cruzada registrado en esta lista">
+                          🔀 {rep.ajuste_cruce > 0 ? '+' : ''}{fmtNum2(rep.ajuste_cruce)}
+                        </div>
+                      ) : null}
+                    </td>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
                       {rep && rep.existencia_siis_actual !== null ? fmtNum2(rep.existencia_siis_actual) : <span style={{ color: 'var(--t-text-muted)' }}>—</span>}
+                      {rep && rep.ajuste_cruce ? (
+                        <div style={{ fontSize: 10, color: rep.ajuste_cruce > 0 ? '#4ade80' : '#f87171', whiteSpace: 'nowrap' }} title="Ajuste por cambio de lote / referencia cruzada registrado en esta lista">
+                          🔀 {rep.ajuste_cruce > 0 ? '+' : ''}{fmtNum2(rep.ajuste_cruce)}
+                        </div>
+                      ) : null}
                     </td>
                     <td style={{ padding: '6px 8px' }}>{campoInput('conteo_1', item.conteo_1)}</td>
                     <td style={{ padding: '6px 8px' }}>
@@ -2996,6 +3008,17 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
+
+
+
+
+
+
+
 
 
 
