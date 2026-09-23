@@ -1279,6 +1279,9 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   const [cerrando, setCerrando] = useState(false);
   const [descargando, setDescargando] = useState('');
   const [modoEscaneo, setModoEscaneo] = useState(false);
+  // ── Buscador dentro del detalle de una lista ──
+  const [busquedaLista, setBusquedaLista] = useState('');
+  const [soloNoCuadra, setSoloNoCuadra] = useState(false);
   const [textoEscaneado, setTextoEscaneado] = useState('');
   const [filaResaltada, setFilaResaltada] = useState(null);
   const [historialConcatAbierto, setHistorialConcatAbierto] = useState(null);
@@ -1441,6 +1444,8 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   async function abrirLista(id) {
     setLoading(true);
     setReporte(null);
+    setBusquedaLista('');
+    setSoloNoCuadra(false);
     setCruces([]);
     setReporteFinal(null);
     setMostrarReporteFinal(false);
@@ -1630,8 +1635,19 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
     if (!item) { setFilaResaltada('no-encontrado'); setTimeout(() => setFilaResaltada(null), 1500); return; }
     setFilaResaltada(item.id);
     const campo = (item.conteo_1 === null || item.conteo_1 === undefined) ? 'conteo_1' : 'conteo_2';
-    const ref = conteoInputRefs.current[`${item.id}_${campo}`];
-    if (ref) { ref.focus(); ref.select(); }
+    const enfocar = () => {
+      const ref = conteoInputRefs.current[`${item.id}_${campo}`];
+      if (ref) { ref.focus(); ref.select(); }
+    };
+    // Si hay un filtro activo, la fila escaneada podría estar oculta: se limpia
+    // el filtro y se espera al siguiente render para poder enfocar el input.
+    if (busquedaLista || soloNoCuadra) {
+      setBusquedaLista('');
+      setSoloNoCuadra(false);
+      setTimeout(enfocar, 80);
+    } else {
+      enfocar();
+    }
   }
 
   async function cerrarLista() {
@@ -1871,6 +1887,33 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   if (vistaInterna === 'detalle' && listaActual) {
     const l = listaActual;
     const abierta = l.estado === 'abierta';
+
+    // ── Buscador multi-campo + filtro "solo lo que no cuadra" ─────────────
+    // Varios términos se separan con coma, punto y coma o salto de línea
+    // (basta con que coincida UNO). Dentro de un término, las palabras
+    // separadas por espacio deben aparecer TODAS (ej. "guante 7" → nombre
+    // que contenga guante y 7). Busca en código, nombre y lote, sin
+    // distinguir mayúsculas ni tildes.
+    const normalizarBusqueda = (v) => String(v ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const terminosBusqueda = busquedaLista
+      .split(/[,;\n]+/)
+      .map(t => normalizarBusqueda(t).trim())
+      .filter(Boolean)
+      .map(t => t.split(/\s+/));
+    const repPorId = new Map((reporte?.items || []).map(r => [r.id, r]));
+    const itemsVisibles = l.items.filter(it => {
+      if (terminosBusqueda.length > 0) {
+        const pajar = normalizarBusqueda(`${it.codigo} ${it.nombre} ${it.lote}`);
+        if (!terminosBusqueda.some(palabras => palabras.every(w => pajar.includes(w)))) return false;
+      }
+      if (soloNoCuadra) {
+        const dif = repPorId.get(it.id)?.diferencia_cantidad_actual;
+        if (dif === null || dif === undefined || Number(dif) === 0) return false;
+      }
+      return true;
+    });
+    const hayFiltroLista = terminosBusqueda.length > 0 || soloNoCuadra;
+
     return (
       <div>
         <button onClick={() => { setVistaInterna('listado'); cargarListas(); }} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13, marginBottom: 14 }}>← Volver a listas</button>
@@ -2051,6 +2094,41 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
           </>
         )}
 
+        <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            type="text"
+            value={busquedaLista}
+            onChange={(e) => setBusquedaLista(e.target.value)}
+            placeholder="Buscar por código, nombre o lote… (varios: sepáralos con coma)"
+            style={{ ...inputStyle, flex: 1, minWidth: 260 }}
+          />
+          {busquedaLista && (
+            <button
+              onClick={() => setBusquedaLista('')}
+              title="Limpiar búsqueda"
+              style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer' }}
+            >
+              ✕ Limpiar
+            </button>
+          )}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input
+              type="checkbox"
+              checked={soloNoCuadra}
+              onChange={(e) => {
+                const marcado = e.target.checked;
+                setSoloNoCuadra(marcado);
+                // La diferencia sale del reporte; si aún no se ha cargado, se pide.
+                if (marcado && !reporte) cargarReporte(l.id);
+              }}
+            />
+            ⚠️ Solo lo que no cuadra
+          </label>
+          <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+            Mostrando <strong>{itemsVisibles.length}</strong> de {l.items.length}
+          </span>
+        </div>
+
         <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
@@ -2061,8 +2139,8 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
               </tr>
             </thead>
             <tbody>
-              {l.items.map(item => {
-                const rep = reporte?.items.find(r => r.id === item.id);
+              {itemsVisibles.map(item => {
+                const rep = repPorId.get(item.id);
                 const campoInput = (campo, valorGuardado, guardadoPor) => {
                   const key = `${item.id}_${campo}`;
                   const yaTieneValor = valorGuardado !== null && valorGuardado !== undefined;
@@ -2211,6 +2289,17 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                   </tr>
                 );
               })}
+              {itemsVisibles.length === 0 && (
+                <tr>
+                  <td colSpan={16} style={{ padding: 28, textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 13 }}>
+                    {soloNoCuadra && !reporte
+                      ? 'Calculando diferencias…'
+                      : hayFiltroLista
+                        ? 'Ningún ítem coincide con la búsqueda o el filtro.'
+                        : 'Esta lista no tiene ítems.'}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -3008,6 +3097,39 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
