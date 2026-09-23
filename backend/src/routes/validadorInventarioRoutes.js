@@ -65,6 +65,15 @@ router.post('/importar', authMiddleware, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Claves que YA existían en esta bodega antes de esta carga — lo que no
+    // esté aquí pero sí en clavesCargadas es "nuevo" (para la alerta de abajo).
+    const { rows: existentesRows } = await client.query(
+      `SELECT (codigo || '|' || lote || '|' || fecha_vencimiento) AS clave FROM validador_inventario WHERE bodega = $1`,
+      [bod]
+    );
+    const clavesExistentes = new Set(existentesRows.map(r => r.clave));
+
     for (const it of items) {
       if (!it.codigo) continue;
       await client.query(
@@ -116,16 +125,31 @@ router.post('/importar', authMiddleware, async (req, res) => {
       [bod]
     );
 
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error al importar validador de inventario:', err);
-    return res.status(500).json({ error: 'Error interno del servidor' });
-  } finally {
-    client.release();
-  }
+    // Ítems (código+lote+fecha) que son NUEVOS en esta carga — no estaban
+    // antes en esta bodega — para avisar cuáles llegan sin cuenta contable o
+    // sin grupo de conteo asignado y así no se cuelen sin clasificar.
+    const clavesNuevas = clavesCargadas.filter(c => !clavesExistentes.has(c));
+    let nuevosSinClasificar = { total_nuevos: clavesNuevas.length, sin_cuenta: [], sin_grupo_conteo: [] };
+    if (clavesNuevas.length > 0) {
+      const { rows: nuevosRows } = await client.query(
+        `SELECT DISTINCT vi.codigo, ti.cuenta, cc.grupo
+         FROM validador_inventario vi
+         LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+         LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+         WHERE vi.bodega = $1 AND (vi.codigo || '|' || vi.lote || '|' || vi.fecha_vencimiento) = ANY($2::text[])`,
+        [bod, clavesNuevas]
+      );
+      const sinCuenta = new Set(), sinGrupo = new Set();
+      for (const r of nuevosRows) {
+        if (!r.cuenta) sinCuenta.add(r.codigo);
+        if (!r.grupo) sinGrupo.add(r.codigo);
+      }
+      nuevosSinClasificar.sin_cuenta = [...sinCuenta];
+      nuevosSinClasificar.sin_grupo_conteo = [...sinGrupo];
+    }
 
-  try {
+    await client.query('COMMIT');
+
     const { rows } = await pool.query(
       `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion,
               cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo
@@ -137,10 +161,13 @@ router.post('/importar', authMiddleware, async (req, res) => {
        ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`,
       [bod]
     );
-    res.json(rows);
+    res.json({ items: rows, nuevos_sin_clasificar: nuevosSinClasificar });
   } catch (err) {
-    console.error('Error al recargar validador de inventario:', err);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    await client.query('ROLLBACK');
+    console.error('Error al importar validador de inventario:', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
   }
 });
 
@@ -1869,6 +1896,25 @@ router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
