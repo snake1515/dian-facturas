@@ -1487,6 +1487,22 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
     setAgregandoItem(false);
   }
 
+  // ── Eliminar un producto agregado a mano (solo lista abierta, editor/admin) ─
+  async function eliminarItemAgregado(item) {
+    const tieneCruce = cruces.some(c => c.item_origen_id === item.id || c.item_destino_id === item.id);
+    const msg = `¿Eliminar el producto agregado "${item.codigo} — ${item.nombre}" (lote ${item.lote || 's/lote'}) de esta lista?` +
+      (tieneCruce ? '\n\nParticipa en un cambio de lote / referencia cruzada: ese cruce también se eliminará y se revertirá el ajuste en la otra fila.' : '');
+    if (!window.confirm(msg)) return;
+    try {
+      await api.delete(`/validador-inventario/listas-conteo/${listaActual.id}/items/${item.id}`);
+      setListaActual(prev => ({ ...prev, items: prev.items.filter(i => i.id !== item.id) }));
+      await cargarReporte(listaActual.id);
+      await cargarCruces(listaActual.id);
+    } catch (e) {
+      alert('Error eliminando el producto: ' + (e.response?.data?.error || e.message));
+    }
+  }
+
   // ── Cambio de lote / referencia cruzada — neutraliza ambas diferencias ─────
   async function registrarCruce() {
     if (!formCruce.item_origen_id || !formCruce.item_destino_id) { alert('Elige el ítem origen y el destino'); return; }
@@ -1667,20 +1683,31 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   async function descargarArchivo(tipo) {
     setDescargando(tipo);
     try {
-      const url = tipo === 'plantilla'
-        ? `/validador-inventario/listas-conteo/${listaActual.id}/plantilla`
-        : `/validador-inventario/listas-conteo/${listaActual.id}/reporte-excel`;
+      const id = listaActual.id;
+      const rutas = {
+        plantilla: [`/validador-inventario/listas-conteo/${id}/plantilla`, `lista_conteo_${id}.xlsx`],
+        plantilla2: [`/validador-inventario/listas-conteo/${id}/plantilla-segundo-conteo`, `segundo_conteo_${id}.xlsx`],
+        reporte: [`/validador-inventario/listas-conteo/${id}/reporte-excel`, `reporte_diferencias_${id}.xlsx`],
+      };
+      const [url, nombreArchivo] = rutas[tipo];
       const res = await api.get(url, { responseType: 'blob' });
       const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
       a.href = blobUrl;
-      a.download = tipo === 'plantilla' ? `lista_conteo_${listaActual.id}.xlsx` : `reporte_diferencias_${listaActual.id}.xlsx`;
+      a.download = nombreArchivo;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(blobUrl);
     } catch (e) {
-      alert('Error descargando el archivo: ' + (e.response?.data?.error || e.message));
+      // Con responseType 'blob' el error del servidor llega como Blob: se lee su JSON.
+      let msg = e.message;
+      if (e.response?.data instanceof Blob) {
+        try { msg = JSON.parse(await e.response.data.text()).error || msg; } catch (_) { /* se deja e.message */ }
+      } else if (e.response?.data?.error) {
+        msg = e.response.data.error;
+      }
+      alert('Error descargando el archivo: ' + msg);
     }
     setDescargando('');
   }
@@ -1933,6 +1960,16 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
             <button onClick={() => descargarArchivo('plantilla')} disabled={!!descargando} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
               📥 {descargando === 'plantilla' ? 'Generando…' : 'Plantilla Excel'}
             </button>
+            {abierta && (
+              <button
+                onClick={() => descargarArchivo('plantilla2')}
+                disabled={!!descargando}
+                title="Planilla para imprimir con solo los ítems que hoy no cuadran, con casilla de Conteo 2"
+                style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}
+              >
+                🖨️ {descargando === 'plantilla2' ? 'Generando…' : 'Planilla 2.º conteo (solo diferencias)'}
+              </button>
+            )}
             <button onClick={() => cargarReporte(l.id)} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
               📊 Ver reporte de diferencias
             </button>
@@ -2129,6 +2166,9 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
           </span>
         </div>
 
+        <style>{`
+          .fila-lista-conteo:hover { background: rgba(250, 204, 21, 0.28) !important; }
+        `}</style>
         <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
@@ -2176,10 +2216,19 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                   );
                 };
                 return (
-                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : (item.origen === 'agregado' ? 'rgba(56,189,248,0.06)' : undefined), transition: 'background 0.3s' }}>
+                  <tr key={item.id} className="fila-lista-conteo" style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : (item.origen === 'agregado' ? 'rgba(56,189,248,0.06)' : undefined), transition: 'background 0.3s' }}>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>
                       {item.codigo}
                       {item.origen === 'agregado' && <div style={{ fontSize: 9, color: '#38bdf8', fontWeight: 600 }}>➕ Agregado</div>}
+                      {item.origen === 'agregado' && abierta && isEditor && (
+                        <button
+                          onClick={() => eliminarItemAgregado(item)}
+                          title="Eliminar este producto agregado manualmente"
+                          style={{ marginTop: 3, background: '#3a1d1d', border: '1px solid #5c2626', borderRadius: 4, padding: '1px 6px', fontSize: 10, color: '#f87171', cursor: 'pointer' }}
+                        >
+                          🗑️ Eliminar
+                        </button>
+                      )}
                     </td>
                     <td style={{ padding: '6px 8px', maxWidth: 220 }}>{item.nombre}</td>
                     <td style={{ padding: '6px 8px' }}>
@@ -2390,9 +2439,9 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                   </div>
 
                   {[
-                    ['Sobrantes', reporteFinal.sobrantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia']],
-                    ['Faltantes', reporteFinal.faltantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia']],
-                    ['Productos/lotes agregados en bodega', reporteFinal.agregados, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia']],
+                    ['Sobrantes', reporteFinal.sobrantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
+                    ['Faltantes', reporteFinal.faltantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
+                    ['Productos/lotes agregados en bodega', reporteFinal.agregados, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
                   ].map(([titulo, filas, cols]) => (
                     <div key={titulo} style={{ marginBottom: 16 }}>
                       <h4 style={{ fontSize: 14, marginBottom: 6 }}>{titulo} ({filas.length})</h4>
@@ -2408,6 +2457,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.definitivo}</td>
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.existencia_siis_actual}</td>
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee', fontWeight: 700 }}>{f.diferencia_cantidad_actual > 0 ? '+' : ''}{f.diferencia_cantidad_actual}</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.motivo_diferencia || '—'}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -3097,6 +3147,72 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
