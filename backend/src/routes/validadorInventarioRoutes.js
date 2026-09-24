@@ -1019,22 +1019,29 @@ function calcularDetalleReporte(lista, items) {
     const definitivo = conteoDefinitivo(it);
     if (definitivo !== null) contados++;
 
-    const existenciaActual = lista.estado === 'cerrada'
-      ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
-      : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null);
+    // Un producto agregado a mano NO existe en SIIS: su existencia (inicial y
+    // actual) es siempre 0 y no se mueve, aunque después se cargue un Excel de
+    // SIIS que ya lo incluya o la lista se cierre. Así todo lo contado aparece
+    // como sobrante hasta que se ajuste en SIIS.
+    const esAgregado = it.origen === 'agregado';
+    const existenciaInicial = esAgregado ? 0 : Number(it.existencia_siis);
+
+    const existenciaActual = esAgregado
+      ? 0
+      : (lista.estado === 'cerrada'
+        ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
+        : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null));
 
     // Un ítem agregado a mano no existe en el inventario, así que el cruce en
     // vivo no devuelve nada: su existencia esperada es la del snapshot (0),
     // no "desconocida" — si no, nunca mostraría el sobrante.
-    const existenciaActualEfectiva = (existenciaActual === null && it.origen === 'agregado')
-      ? Number(it.existencia_siis)
-      : existenciaActual;
+    const existenciaActualEfectiva = existenciaActual;
 
     // Ajuste por cambios de lote / referencias cruzadas: lo que el sistema
     // tenía en otra fila pero físicamente está en esta (o viceversa). Se suma
     // a la existencia esperada para que ambas filas del cruce se neutralicen.
     const ajuste = Number(it.ajuste_cruce || 0);
-    const esperadoInicial = Number(it.existencia_siis) + ajuste;
+    const esperadoInicial = existenciaInicial + ajuste;
     const esperadoActual = existenciaActualEfectiva === null ? null : existenciaActualEfectiva + ajuste;
 
     const diferenciaInicial = definitivo === null ? null : Number((definitivo - esperadoInicial).toFixed(3));
@@ -1051,7 +1058,7 @@ function calcularDetalleReporte(lista, items) {
     return {
       id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, presentacion: it.presentacion, cuenta: it.cuenta,
       grupo_conteo: it.grupo_conteo, subgrupo_conteo: it.subgrupo_conteo,
-      existencia_siis_inicial: Number(it.existencia_siis),
+      existencia_siis_inicial: existenciaInicial,
       existencia_siis_actual: existenciaActualEfectiva,
       conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
       conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null,
@@ -1137,8 +1144,14 @@ router.post('/listas-conteo/:id/cerrar', authMiddleware, editorOrAdmin, async (r
        SET existencia_siis_cierre = vi.existencia_sistema
        FROM validador_inventario vi
        WHERE li.lista_id = $1
+         AND COALESCE(li.origen, 'snapshot') <> 'agregado'
          AND vi.bodega = $2 AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento`,
       [req.params.id, lista.bodega]
+    );
+    // Los productos agregados a mano nunca existen en SIIS: se congelan en 0.
+    await client.query(
+      `UPDATE listas_conteo_items SET existencia_siis_cierre = 0 WHERE lista_id = $1 AND origen = 'agregado'`,
+      [req.params.id]
     );
 
     const { rows } = await client.query(
@@ -1235,6 +1248,86 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
     res.end();
   } catch (err) {
     console.error('Error al generar plantilla de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/plantilla-segundo-conteo ─
+// Igual a la planilla de conteo, pero SOLO con los ítems que hoy no cuadran
+// (diferencia actual distinta de cero, la misma que muestra el filtro "Solo lo
+// que no cuadra") y únicamente con la casilla de Conteo 2 (sin Conteo 1, para
+// que el recuento sea a ciegas) más una casilla de observaciones. Lista para
+// imprimir en horizontal, con el encabezado repetido en cada hoja.
+router.get('/listas-conteo/:id/plantilla-segundo-conteo', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const lista = listaRows[0];
+
+    const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
+    const { items: detalle } = calcularDetalleReporte(lista, itemsRaw);
+    const idsConDiferencia = new Set(
+      detalle.filter(d => d.diferencia_cantidad_actual !== null && d.diferencia_cantidad_actual !== 0).map(d => d.id)
+    );
+    const items = itemsRaw.filter(it => idsConDiferencia.has(it.id));
+    if (!items.length) {
+      return res.status(400).json({ error: 'No hay ítems con diferencia: nada que recontar' });
+    }
+
+    const cmp = (a, b) => String(a || '').localeCompare(String(b || ''), 'es');
+    items.sort(lista.tipo === 'grupo_conteo'
+      ? (a, b) => cmp(a.nombre, b.nombre)
+      : (a, b) => ((a.presentacion == null) - (b.presentacion == null)) || cmp(a.presentacion, b.presentacion) || cmp(a.nombre, b.nombre));
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Segundo conteo');
+    ws.columns = [
+      { width: 16 }, { width: 40 }, { width: 14 }, { width: 14 }, { width: 20 }, { width: 16 }, { width: 16 }, { width: 12 }, { width: 14 }, { width: 34 },
+    ];
+    ws.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '5:5' };
+
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}${lista.subcriterio ? ' / ' + lista.subcriterio : ''}`;
+    ws.mergeCells('A1:J1');
+    ws.getCell('A1').value = `SEGUNDO CONTEO — Lista #${lista.id} — ${tituloCriterio}`;
+    ws.getCell('A1').font = { bold: true, size: 14 };
+
+    ws.getCell('A2').value = 'Bodega:';        ws.getCell('B2').value = lista.bodega;
+    ws.getCell('C2').value = 'Fecha:';         ws.getCell('D2').value = new Date().toLocaleDateString('es-CO');
+    ws.getCell('E2').value = 'Ítems a recontar:'; ws.getCell('F2').value = items.length;
+    ws.getCell('A3').value = 'Conteo 2 por:';  ws.getCell('B3').value = lista.conteo2_nombre || '_______________';
+    ['A2', 'C2', 'E2', 'A3'].forEach(c => { ws.getCell(c).font = { bold: true }; });
+
+    const filaEncabezado = 5;
+    ws.getRow(filaEncabezado).values = ['Código', 'Nombre', 'Lote', 'Fecha Venc.', 'Presentación', 'Grupo', 'Subgrupo', 'SIIS', 'Conteo 2', 'Observaciones'];
+    ws.getRow(filaEncabezado).font = { bold: true };
+    ws.getRow(filaEncabezado).eachCell(c => {
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+      c.border = { bottom: { style: 'thin' } };
+    });
+
+    const borde = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    let fila = filaEncabezado + 1;
+    for (const it of items) {
+      const esAgregado = it.origen === 'agregado';
+      const r = ws.getRow(fila);
+      r.values = [
+        it.codigo, it.nombre, it.lote || '', it.fecha_vencimiento || '', it.presentacion || '',
+        it.grupo_conteo || '', it.subgrupo_conteo || '',
+        esAgregado ? 0 : Number(it.existencia_siis), null, null,
+      ];
+      r.height = 26;
+      r.alignment = { vertical: 'middle', wrapText: true };
+      r.getCell(9).border = borde;   // casilla para anotar el Conteo 2
+      r.getCell(10).border = borde;  // casilla de observaciones
+      fila++;
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="segundo_conteo_${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al generar planilla de segundo conteo:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -1441,16 +1534,18 @@ router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
     );
     const historial = rows.map(it => {
       const definitivo = conteoDefinitivo(it);
-      const existenciaActual = it.estado === 'cerrada'
-        ? (it.existencia_siis_cierre !== null ? Number(it.existencia_siis_cierre) : null)
-        : null;
+      const existenciaActual = it.origen === 'agregado'
+        ? 0
+        : (it.estado === 'cerrada'
+          ? (it.existencia_siis_cierre !== null ? Number(it.existencia_siis_cierre) : null)
+          : null);
       const diferencia = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
       return {
         lista_id: it.lista_id, tipo: it.tipo, criterio: it.criterio, estado: it.estado,
         creado_en: it.conteo_creado_en, cerrado_en: it.conteo_cerrado_en,
         conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
         conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null,
-        existencia_siis_inicial: Number(it.existencia_siis), existencia_siis_actual: existenciaActual,
+        existencia_siis_inicial: it.origen === 'agregado' ? 0 : Number(it.existencia_siis), existencia_siis_actual: existenciaActual,
         diferencia, motivo_diferencia: it.motivo_diferencia || '',
       };
     });
@@ -1628,6 +1723,55 @@ router.post('/listas-conteo/:id/items', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('Error al agregar ítem a la lista de conteo:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── DELETE /api/validador-inventario/listas-conteo/:id/items/:itemId ─────────
+// Elimina un producto/lote agregado a mano (origen = 'agregado') de una lista
+// ABIERTA. Los ítems del snapshot no se pueden borrar. Si el ítem participa en
+// cambios de lote / referencias cruzadas, primero se revierte el ajuste que
+// dejaron en la fila contraparte y luego el ítem se borra (sus cruces se van
+// en cascada), para que la otra fila no quede con un ajuste huérfano.
+router.delete('/listas-conteo/:id/items/:itemId', authMiddleware, editorOrAdmin, async (req, res) => {
+  const lista = await listaAbiertaOError(req.params.id, res);
+  if (!lista) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT * FROM listas_conteo_items WHERE id = $1 AND lista_id = $2 FOR UPDATE`,
+      [req.params.itemId, lista.id]
+    );
+    if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ítem no encontrado' }); }
+    const item = rows[0];
+    if (item.origen !== 'agregado') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Solo se pueden eliminar los productos agregados manualmente' });
+    }
+
+    const { rows: cruces } = await client.query(
+      `SELECT * FROM listas_conteo_cruces WHERE lista_id = $1 AND (item_origen_id = $2 OR item_destino_id = $2)`,
+      [lista.id, item.id]
+    );
+    for (const c of cruces) {
+      if (Number(c.item_origen_id) === Number(item.id)) {
+        // El ítem era el origen: la contraparte (destino) había recibido +cantidad.
+        await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce - $1 WHERE id = $2`, [c.cantidad, c.item_destino_id]);
+      } else {
+        // El ítem era el destino: la contraparte (origen) había recibido -cantidad.
+        await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce + $1 WHERE id = $2`, [c.cantidad, c.item_origen_id]);
+      }
+    }
+
+    await client.query(`DELETE FROM listas_conteo_items WHERE id = $1`, [item.id]);
+    await client.query('COMMIT');
+    res.json({ ok: true, id: item.id, cruces_revertidos: cruces.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al eliminar ítem agregado:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
   }
 });
 
@@ -1914,6 +2058,63 @@ router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
