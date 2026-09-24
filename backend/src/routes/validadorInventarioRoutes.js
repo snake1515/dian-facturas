@@ -1,2514 +1,757 @@
-import React, { useState, useEffect, useCallback, useRef, useContext } from 'react';
-import * as XLSX from 'xlsx';
-import api from '../services/api';
-import AuthContext from '../context/AuthContext';
+// backend/src/routes/validadorInventarioRoutes.js
+// PostgreSQL — mismo patrón que las demás rutas del proyecto
 
-// ── Bodegas conocidas (mismo listado que usa Préstamos) ───────────────────────
-const BODEGAS = [
-  { codigo: 'ST', nombre: 'SERVICIO TRANSFUSIONAL' },
-  { codigo: '99', nombre: 'OXIGENO UCI' },
-  { codigo: 'AF', nombre: 'ACTIVOS FIJOS' },
-  { codigo: 'AG', nombre: 'ALMACÉN GENERAL' },
-  { codigo: 'AP', nombre: 'FARMACIA AA' },
-  { codigo: 'BN', nombre: 'NEFROLOGÍA' },
-  { codigo: 'BO', nombre: 'BODEGA OBRA SANTANDER' },
-  { codigo: 'LB', nombre: 'LABORATORIO' },
-  { codigo: 'BV', nombre: 'BODEGA OBRA BOLÍVAR' },
-  { codigo: 'CU', nombre: 'CUARENTENA' },
-  { codigo: 'EF', nombre: 'SERVICIO DIAGNÓSTICO' },
-  { codigo: 'FP', nombre: 'FARMACIA UCIS' },
-  { codigo: 'NP', nombre: 'CME (CENTRAL DE MEZCLAS DE EGRESO)' },
-  { codigo: 'RV', nombre: 'REMISIONES VARIAS' },
-  { codigo: 'SO', nombre: 'SERVICIO AMBULATORIO' },
-  { codigo: 'UP', nombre: 'MANTENIMIENTO' },
-];
+const express = require('express');
+const router = express.Router();
+const ExcelJS = require('exceljs');
+const { pool } = require('../models/db');
+const { authMiddleware, adminOnly, editorOrAdmin } = require('../middleware/auth');
 
-// ── Parseo de números en formato colombiano (punto = miles, coma = decimal) ──
-function parseNumCO(v) {
-  if (v === null || v === undefined || v === '') return 0;
-  const s = String(v).trim();
-  if (s.includes(',')) return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0;
-  const partes = s.split('.');
-  if (partes.length > 1 && partes[partes.length - 1].length === 3) {
-    return parseFloat(s.replace(/\./g, '')) || 0;
-  }
-  return parseFloat(s) || 0;
+// ── Trunca strings de forma segura para respetar los límites varchar de la BD ─
+function truncar(valor, max) {
+  const s = String(valor || '').trim();
+  return s.length > max ? s.substring(0, max) : s;
 }
 
-// Normaliza un código de artículo leído desde Excel: cuando Excel guarda la
-// columna "codigo" como NÚMERO (en vez de texto), cualquier código que en el
-// sistema real empieza en 0 pierde ese cero al abrirse (ej. "0801010024" se
-// lee como 801010024, de 9 dígitos en vez de 10). Como el cruce con el
-// inventario es por código exacto, esto deja el ítem sin grupo/presentación/
-// clasificación asignada aunque el Excel esté "bien" a simple vista.
-// Solo se rellena si son puros dígitos y quedaron en 9 (nunca se toca un
-// código alfanumérico, como los de Papelería, ni uno que ya tiene 10).
-function normalizarCodigo(v) {
-  const s = String(v ?? '').trim();
-  return /^\d{9}$/.test(s) ? '0' + s : s;
+// ── Registra un cambio de clasificación en el historial de auditoría ─────────
+async function registrarHistorialTipo(dbClient, concat, anterior, nuevoContable, nuevoCuenta, origen, userId) {
+  await dbClient.query(
+    `INSERT INTO tipos_inventario_historial (concat, contable_anterior, cuenta_anterior, contable_nuevo, cuenta_nuevo, origen, cambiado_por)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [concat, anterior?.contable || null, anterior?.cuenta || null, nuevoContable, nuevoCuenta, origen, userId]
+  );
 }
 
-function fmtFechaCorta(f) {
-  if (!f) return '—';
-  return String(f).substring(0, 10);
-}
-
-// Limita a máximo 2 decimales y quita ceros sobrantes (Postgres NUMERIC(14,3)
-// devuelve valores como "46.000"; esto los deja en "46" o "11.5")
-function fmtNum2(v) {
-  if (v === null || v === undefined || v === '') return '';
-  const n = Number(v);
-  if (isNaN(n)) return '';
-  return String(Number(n.toFixed(2)));
-}
-
-// Fecha + hora en horario de Colombia (America/Bogota), sin importar en qué
-// zona horaria esté el navegador de quien esté viendo la pantalla
-function fmtFechaHoraCO(f) {
-  if (!f) return '—';
-  const d = new Date(f);
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleString('es-CO', {
-    timeZone: 'America/Bogota',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
-}
-
-// Detecta si el sistema actualizó la existencia DESPUÉS de que el ítem ya
-// había sido contado (por una carga de Excel posterior al conteo)
-function fueActualizadoDespuesDeContar(it) {
-  return !!(it.contado && it.actualizado_en && it.contado_en && new Date(it.actualizado_en) > new Date(it.contado_en));
-}
-
-// Clasificación de la diferencia: 'real' o 'actualizacion'. Prioriza SIEMPRE
-// la elección manual guardada en tipo_diferencia (persiste entre cargas de
-// Excel); si aún no se ha clasificado, usa la detección automática por fecha
-// solo como sugerencia inicial hasta que el usuario la confirme o la cambie.
-function getTipoDiferencia(it) {
-  const tieneDiferencia = it.contado && Number(it.cantidad_fisica) !== Number(it.existencia_sistema);
-  if (!tieneDiferencia) return null;
-  if (it.tipo_diferencia === 'real' || it.tipo_diferencia === 'actualizacion') return it.tipo_diferencia;
-  return fueActualizadoDespuesDeContar(it) ? 'actualizacion' : 'real';
-}
-
-export default function ValidadorInventario() {
-  const { puede, isEditor, isAdmin } = useContext(AuthContext);
-  const puedeEditarContado = isEditor || isAdmin; // solo editor/admin modifican cantidades ya guardadas
-  const [bodega, setBodega] = useState('BV');
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [importando, setImportando] = useState(false);
-  const [alertaNuevosSinClasificar, setAlertaNuevosSinClasificar] = useState(null);
-  const [pendientesSiis, setPendientesSiis] = useState([]);
-  const [busqueda, setBusqueda] = useState('');
-  const [filtro, setFiltro] = useState('todos');
-  const [sortCol, setSortCol] = useState(null);   // 'costo_unitario' | 'costo_total' | null
-  const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
-  const [editValues, setEditValues] = useState({});
-  const [guardandoId, setGuardandoId] = useState(null);
-  const [editSobrante, setEditSobrante] = useState({});
-  const [guardandoSobranteId, setGuardandoSobranteId] = useState(null);
-  const [editNotas, setEditNotas] = useState({});
-  const [guardandoNotasId, setGuardandoNotasId] = useState(null);
-  const [editPresentacion, setEditPresentacion] = useState({});
-  const [guardandoPresentacionId, setGuardandoPresentacionId] = useState(null);
-  const [importandoPresentaciones, setImportandoPresentaciones] = useState(false);
-  const fileInputPresentacionesRef = useRef(null);
-  const [editCuenta, setEditCuenta] = useState({});
-  const [guardandoCuentaId, setGuardandoCuentaId] = useState(null);
-  const [importandoTipos, setImportandoTipos] = useState(false);
-  const fileInputTiposRef = useRef(null);
-  const [editGrupoConteo, setEditGrupoConteo] = useState({}); // itemId -> {grupo, subgrupo}
-  const [guardandoGrupoConteoId, setGuardandoGrupoConteoId] = useState(null);
-  const [importandoGrupoConteo, setImportandoGrupoConteo] = useState(false);
-  const fileInputGrupoConteoRef = useRef(null);
-  const [vista, setVista] = useState('inventario'); // 'inventario' | 'listas' | 'datos'
-  const [error, setError] = useState('');
-  const fileInputRef = useRef(null);
-
-  // Opciones para los desplegables de Cuenta / Grupo Conteo / Subgrupo /
-  // Presentación: se cargan una sola vez (son globales, no dependen de la
-  // bodega) y sirven tanto para artículos ya clasificados como nuevos —
-  // el campo sigue siendo editable a mano si el valor no existe todavía.
-  const [opcionesCuentas, setOpcionesCuentas] = useState([]);
-  const [opcionesGrupos, setOpcionesGrupos] = useState([]);
-  const [mapaSubgrupos, setMapaSubgrupos] = useState({}); // grupo -> [subgrupos]
-  const [opcionesPresentaciones, setOpcionesPresentaciones] = useState([]);
-
-  useEffect(() => {
-    api.get('/validador-inventario/opciones-cuentas').then(res => setOpcionesCuentas(res.data || [])).catch(() => {});
-    api.get('/validador-inventario/opciones-presentaciones').then(res => setOpcionesPresentaciones(res.data || [])).catch(() => {});
-    api.get('/validador-inventario/opciones-grupos-conteo').then(res => {
-      const pares = res.data || [];
-      const grupos = [...new Set(pares.map(p => p.grupo))].sort();
-      const mapa = {};
-      for (const p of pares) {
-        if (!p.subgrupo) continue;
-        if (!mapa[p.grupo]) mapa[p.grupo] = [];
-        if (!mapa[p.grupo].includes(p.subgrupo)) mapa[p.grupo].push(p.subgrupo);
-      }
-      setOpcionesGrupos(grupos);
-      setMapaSubgrupos(mapa);
-    }).catch(() => {});
-  }, []);
-
-  // Subgrupo siempre debe mostrar algo desplegable: si la fila ya tiene un
-  // grupo (comparando sin importar mayúsculas/minúsculas), sugiere solo los
-  // subgrupos de ESE grupo; si todavía no hay grupo elegido (item nuevo, sin
-  // clasificar), sugiere TODOS los subgrupos conocidos como punto de partida.
-  const todosLosSubgrupos = () => {
-    const set = new Set();
-    Object.values(mapaSubgrupos).forEach(arr => arr.forEach(s => set.add(s)));
-    return [...set].sort();
-  };
-  const subgruposDe = (grupo) => {
-    if (grupo) {
-      const key = Object.keys(mapaSubgrupos).find(k => k.toLowerCase() === grupo.trim().toLowerCase());
-      if (key) return mapaSubgrupos[key];
-    }
-    return todosLosSubgrupos();
-  };
-
-  const cargar = useCallback(async (bod) => {
-    setLoading(true);
-    try {
-      const res = await api.get('/validador-inventario', { params: { bodega: bod } });
-      setItems(res.data || []);
-    } catch (e) {
-      console.error('Error cargando validador de inventario:', e);
-      setError('No se pudo cargar el inventario guardado');
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { cargar(bodega); }, [bodega, cargar]);
-
-  // Productos/lotes agregados a mano en algún conteo que todavía no aparecen
-  // en el Excel de SIIS de esta bodega.
-  useEffect(() => {
-    api.get('/validador-inventario/pendientes-inclusion-siis', { params: { bodega } })
-      .then(res => setPendientesSiis(res.data || []))
-      .catch(() => setPendientesSiis([]));
-  }, [bodega, items]);
-
-  // ── Cargar / actualizar Excel del sistema (SIIS) ────────────────────────────
-  function handleArchivo(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    setError('');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: 'array', raw: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
-
-        // Detectar bodega desde la cabecera del reporte (ej. "Bodega :  BV")
-        let bodDetectada = bodega;
-        const textoCabecera = String(data[0]?.[1] || '');
-        const match = textoCabecera.match(/Bodega\s*:\s*([A-Za-z0-9]{2})/i);
-        if (match) bodDetectada = match[1].toUpperCase();
-
-        // Encontrar fila de encabezados (CODIGO, NOMBRE, ...)
-        const idxHeader = data.findIndex(r => String(r[0]).trim().toUpperCase() === 'CODIGO');
-        if (idxHeader === -1) {
-          setError('No se encontró la columna CODIGO en el archivo. ¿Es el reporte correcto?');
-          return;
-        }
-
-        const filas = data.slice(idxHeader + 1);
-        const nuevosItems = [];
-        let filasCorregidas = 0;
-
-        // Detecta cuando la celda "nombre" trae pegado un fragmento de HTML roto
-        // del reporte SIIS (ej. "...12”\n🔩/td>2045-06-11"). Cuando esto pasa, la
-        // celda de fecha real "desaparece" de la fila y todas las columnas
-        // siguientes (lote, existencia, costos) se corren una posición.
-        const FRAGMENTO_ROTO_RE = /\/t[dr]>\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\s*$/i;
-
-        for (const r of filas) {
-          const codigo = normalizarCodigo(r[0]);
-          if (!codigo || codigo.toUpperCase().startsWith('TOTAL')) continue;
-
-          let nombreRaw = String(r[1] || '');
-          let fecha_vencimiento, lote, existencia_sistema, costo_unitario, costo_total;
-
-          const roto = nombreRaw.match(FRAGMENTO_ROTO_RE);
-          if (roto) {
-            // Se recupera la fecha real desde dentro del nombre y se corrige
-            // el corrimiento: lo que venía en r[2]/r[3]/r[4]/r[5] en realidad
-            // corresponde a lote/existencia/costo_unitario/costo_total.
-            fecha_vencimiento = roto[1];
-            nombreRaw = nombreRaw.slice(0, roto.index);
-            lote = String(r[2] || '').trim();
-            existencia_sistema = parseNumCO(r[3]);
-            costo_unitario = parseNumCO(r[4]);
-            costo_total = parseNumCO(r[5]);
-            filasCorregidas++;
-          } else {
-            fecha_vencimiento = String(r[2] || '').trim();
-            lote = String(r[3] || '').trim();
-            existencia_sistema = parseNumCO(r[4]);
-            costo_unitario = parseNumCO(r[5]);
-            costo_total = parseNumCO(r[6]);
-          }
-
-          // Limpieza general: quita tags HTML sueltos y saltos de línea que a
-          // veces vienen pegados en la celda de nombre, sin importar si hubo
-          // corrimiento de columnas o no
-          const nombre = nombreRaw
-            .replace(/<[^>]*>/g, ' ')
-            .replace(/\/t[dr]>/gi, ' ')
-            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, ' ')
-            .replace(/[\r\n]+/g, ' ')
-            .replace(/\s{2,}/g, ' ')
-            .trim();
-
-          nuevosItems.push({ codigo, nombre, fecha_vencimiento, lote, existencia_sistema, costo_unitario, costo_total });
-        }
-
-        if (nuevosItems.length === 0) {
-          setError('El archivo no tiene filas de inventario válidas');
-          return;
-        }
-
-        if (filasCorregidas > 0) {
-          console.warn(`Validador Inventario: se corrigieron ${filasCorregidas} fila(s) con corrimiento de columnas por HTML roto en el reporte SIIS.`);
-        }
-
-        setImportando(true);
-        const res = await api.post('/validador-inventario/importar', { bodega: bodDetectada, items: nuevosItems });
-        setBodega(bodDetectada);
-        setItems(res.data?.items || []);
-        const alerta = res.data?.nuevos_sin_clasificar;
-        if (alerta && (alerta.sin_cuenta.length > 0 || alerta.sin_grupo_conteo.length > 0)) {
-          setAlertaNuevosSinClasificar(alerta);
-        } else {
-          setAlertaNuevosSinClasificar(null);
-        }
-        if (filasCorregidas > 0) {
-          setError(`⚠️ Se corrigieron automáticamente ${filasCorregidas} fila(s) del Excel que tenían la fecha de vencimiento pegada al nombre (fragmento HTML roto del reporte SIIS). Revisa esos ítems para confirmar que quedaron bien.`);
-        }
-      } catch (err) {
-        console.error(err);
-        setError('Error procesando el archivo: ' + err.message);
-      } finally {
-        setImportando(false);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-
-  // ── Cargar Excel de Presentaciones (archivo APARTE, solo admin) ────────────
-  // Detecta la columna de código y de presentación por nombre de encabezado
-  // (sin importar el orden), para no depender de un layout fijo de columnas.
-  function handleArchivoPresentaciones(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    setError('');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: 'array', raw: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
-
-        // Buscar la fila de encabezados: una celda que empiece por "CODIGO"
-        // y otra que empiece por "PRESENTACI", en cualquier columna/orden.
-        let idxHeader = -1, colCodigo = -1, colPresentacion = -1;
-        for (let i = 0; i < data.length; i++) {
-          const fila = data[i].map(c => String(c).trim().toUpperCase());
-          const cCod = fila.findIndex(c => c.startsWith('CODIGO'));
-          const cPre = fila.findIndex(c => c.startsWith('PRESENTACI'));
-          if (cCod !== -1 && cPre !== -1) {
-            idxHeader = i; colCodigo = cCod; colPresentacion = cPre;
-            break;
-          }
-        }
-        if (idxHeader === -1) {
-          setError('No se encontraron las columnas CODIGO y PRESENTACION en el archivo.');
-          return;
-        }
-
-        const items = data.slice(idxHeader + 1)
-          .map(r => ({
-            codigo: normalizarCodigo(r[colCodigo]),
-            presentacion: String(r[colPresentacion] || '').trim(),
-          }))
-          .filter(it => it.codigo);
-
-        if (items.length === 0) {
-          setError('El archivo de presentaciones no tiene filas válidas');
-          return;
-        }
-
-        setImportandoPresentaciones(true);
-        await api.post('/validador-inventario/presentaciones/importar', { items });
-        await cargar(bodega);
-      } catch (err) {
-        console.error(err);
-        setError('Error procesando el archivo de presentaciones: ' + (err.response?.data?.error || err.message));
-      } finally {
-        setImportandoPresentaciones(false);
-        if (fileInputPresentacionesRef.current) fileInputPresentacionesRef.current.value = '';
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-
-  // ── Cargar Excel de Grupos de Inventario / Cuentas Contables (editor/admin) ─
-  // Detecta las columnas CONCAT, CONTABLE y CUENTA por nombre de encabezado.
-  function handleArchivoTipos(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    setError('');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: 'array', raw: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
-
-        let idxHeader = -1, colConcat = -1, colContable = -1, colCuenta = -1;
-        for (let i = 0; i < data.length; i++) {
-          const fila = data[i].map(c => String(c).trim().toUpperCase());
-          const cCon = fila.findIndex(c => c.startsWith('CONCAT'));
-          const cCta = fila.findIndex(c => c.startsWith('CONTABLE'));
-          const cNom = fila.findIndex(c => c.startsWith('CUENTA'));
-          if (cCon !== -1 && cCta !== -1 && cNom !== -1) {
-            idxHeader = i; colConcat = cCon; colContable = cCta; colCuenta = cNom;
-            break;
-          }
-        }
-        if (idxHeader === -1) {
-          setError('No se encontraron las columnas CONCAT, CONTABLE y CUENTA en el archivo.');
-          return;
-        }
-
-        const items = data.slice(idxHeader + 1)
-          .map(r => ({
-            concat: String(r[colConcat] || '').trim(),
-            contable: String(r[colContable] || '').trim(),
-            cuenta: String(r[colCuenta] || '').trim(),
-          }))
-          .filter(it => it.concat);
-
-        if (items.length === 0) {
-          setError('El archivo de grupos de inventario no tiene filas válidas');
-          return;
-        }
-
-        setImportandoTipos(true);
-        await api.post('/validador-inventario/tipos-inventario/importar', { items });
-        await cargar(bodega);
-      } catch (err) {
-        console.error(err);
-        setError('Error procesando el archivo de grupos de inventario: ' + (err.response?.data?.error || err.message));
-      } finally {
-        setImportandoTipos(false);
-        if (fileInputTiposRef.current) fileInputTiposRef.current.value = '';
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-
-  // ── Cargar Excel único de Grupos de Conteo (grupo + subgrupo, editor/admin) ─
-  // Un solo archivo/botón, con columnas CODIGO, GRUPO y SUBGRUPO (el nombre
-  // puede traer espacios o guion: "SUB-GRUPO", "sub grupo", etc.)
-  function handleArchivoGrupoConteo(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    setError('');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: 'array', raw: true });
-        // Usa específicamente la hoja "Clasificacion" (sin importar mayúsculas/acentos);
-        // si el archivo no trae una hoja con ese nombre, usa la primera como respaldo.
-        const nombreHoja = wb.SheetNames.find(n => n.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === 'clasificacion');
-        const ws = wb.Sheets[nombreHoja || wb.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
-
-        let idxHeader = -1, colCodigo = -1, colGrupo = -1, colSubgrupo = -1;
-        for (let i = 0; i < data.length; i++) {
-          const fila = data[i].map(c => String(c).trim().toUpperCase().replace(/[^A-Z]/g, ''));
-          const cCod = fila.findIndex(c => c.startsWith('CODIGO'));
-          const cGru = fila.findIndex(c => c === 'GRUPO');
-          const cSub = fila.findIndex(c => c === 'SUBGRUPO');
-          if (cCod !== -1 && cGru !== -1) {
-            idxHeader = i; colCodigo = cCod; colGrupo = cGru; colSubgrupo = cSub;
-            break;
-          }
-        }
-        if (idxHeader === -1) {
-          setError('No se encontraron las columnas CODIGO y GRUPO en el archivo (SUBGRUPO es opcional).');
-          return;
-        }
-
-        const items = data.slice(idxHeader + 1)
-          .map(r => ({
-            codigo: normalizarCodigo(r[colCodigo]),
-            grupo: String(r[colGrupo] || '').trim(),
-            subgrupo: colSubgrupo !== -1 ? String(r[colSubgrupo] || '').trim() : '',
-          }))
-          .filter(it => it.codigo && it.grupo);
-
-        if (items.length === 0) {
-          setError('El archivo de grupos de conteo no tiene filas válidas');
-          return;
-        }
-
-        setImportandoGrupoConteo(true);
-        await api.post('/validador-inventario/clasificacion-conteo/importar', { items });
-        await cargar(bodega);
-      } catch (err) {
-        console.error(err);
-        setError('Error procesando el archivo de grupos de conteo: ' + (err.response?.data?.error || err.message));
-      } finally {
-        setImportandoGrupoConteo(false);
-        if (fileInputGrupoConteoRef.current) fileInputGrupoConteoRef.current.value = '';
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-
-  async function guardarConteo(item) {
-    const valor = editValues[item.id];
-    if (valor === undefined || valor === '') return;
-    setGuardandoId(item.id);
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}`, { cantidad_fisica: parseNumCO(valor) });
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-      setEditValues(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando el conteo: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoId(null);
-  }
-
-  // ── Guardar sobrante en libro (registro MANUAL, no calculado) ──────────────
-  // Sobrantes antiguos que vienen de antes de que existiera el control de
-  // inventario físico — no se calculan automáticamente porque las diferencias
-  // reales suelen deberse a errores en salidas de consumo, no a un sobrante real.
-  async function guardarSobrante(item) {
-    const valor = editSobrante[item.id];
-    if (valor === undefined || valor === '') return;
-    setGuardandoSobranteId(item.id);
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}/sobrante`, { sobrante_libro: parseNumCO(valor) });
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-      setEditSobrante(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando el sobrante en libro: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoSobranteId(null);
-  }
-
-  // ── Guardar notas (texto libre MANUAL de observaciones por ítem) ───────────
-  async function guardarNotas(item) {
-    const valor = editNotas[item.id];
-    if (valor === undefined) return;
-    setGuardandoNotasId(item.id);
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}/notas`, { notas: valor });
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-      setEditNotas(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando la nota: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoNotasId(null);
-  }
-
-  // ── Guardar presentación (solo admin) ───────────────────────────────────────
-  // Es por CÓDIGO, no por fila — así que al guardar se actualiza en todas las
-  // filas visibles que compartan ese mismo código (otros lotes/bodegas).
-  async function guardarPresentacion(item) {
-    const valor = editPresentacion[item.id];
-    if (valor === undefined) return;
-    setGuardandoPresentacionId(item.id);
-    try {
-      await api.patch(`/validador-inventario/presentaciones/${encodeURIComponent(item.codigo)}`, { presentacion: valor });
-      setItems(prev => prev.map(it => (it.codigo === item.codigo ? { ...it, presentacion: valor } : it)));
-      setEditPresentacion(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando la presentación: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoPresentacionId(null);
-  }
-
-  // ── Guardar cuenta/grupo de inventario (editor o admin) ─────────────────────
-  // Es por CONCAT (primeros 6 dígitos del código, o código alfa completo) —
-  // así que al guardar se actualiza en todas las filas que compartan ese
-  // mismo grupo, no solo la fila editada.
-  async function guardarCuenta(item) {
-    const valor = editCuenta[item.id];
-    if (valor === undefined) return;
-    setGuardandoCuentaId(item.id);
-    try {
-      await api.patch(`/validador-inventario/tipos-inventario/${encodeURIComponent(item.concat)}`, { contable: item.contable || '', cuenta: valor });
-      setItems(prev => prev.map(it => (it.concat === item.concat ? { ...it, cuenta: valor } : it)));
-      setEditCuenta(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando la cuenta/grupo: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoCuentaId(null);
-  }
-
-  // ── Guardar grupo/subgrupo de conteo (editor o admin) ───────────────────────
-  // Es por CÓDIGO completo — se guarda solo para ese artículo puntual.
-  async function guardarGrupoConteo(item) {
-    const valor = editGrupoConteo[item.id];
-    if (valor === undefined) return;
-    setGuardandoGrupoConteoId(item.id);
-    try {
-      await api.patch(`/validador-inventario/clasificacion-conteo/${encodeURIComponent(item.codigo)}`, { grupo: valor.grupo, subgrupo: valor.subgrupo });
-      setItems(prev => prev.map(it => (it.codigo === item.codigo ? { ...it, grupo_conteo: valor.grupo, subgrupo_conteo: valor.subgrupo } : it)));
-      setEditGrupoConteo(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando el grupo de conteo: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoGrupoConteoId(null);
-  }
-
-  // ── Clasificar manualmente la diferencia (real vs. por actualización) ──────
-  // Persistente: se guarda en tipo_diferencia y el /importar nunca la toca,
-  // así que sobrevive a nuevas cargas de Excel hasta que se cambie a mano.
-  async function clasificarDiferencia(item, tipo) {
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}/tipo-diferencia`, { tipo_diferencia: tipo });
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-    } catch (e) {
-      alert('Error guardando la clasificación: ' + (e.response?.data?.error || e.message));
-    }
-  }
-
-  async function deshacerConteo(item) {
-    if (!window.confirm(`¿Deshacer el conteo de "${item.nombre}"?`)) return;
-    try {
-      const res = await api.patch(`/validador-inventario/${item.id}/reset`);
-      setItems(prev => prev.map(it => (it.id === item.id ? res.data : it)));
-    } catch (e) {
-      alert('Error: ' + (e.response?.data?.error || e.message));
-    }
-  }
-
-  // ── Eliminar manualmente un item sin existencias ────────────────────────────
-  // Pide confirmar qué pasó con el producto antes de dejarlo borrar, así no se
-  // elimina por error algo que en realidad solo cambió de lote/fecha
-  async function eliminarItem(item) {
-    const motivo = window.prompt(
-      `"${item.nombre}" (código ${item.codigo}) no aparece en las últimas cargas del Excel.\n\n` +
-      `¿Qué sucedió con este producto? (ej. agotado, dado de baja, reemplazado por otro lote)\n` +
-      `Escribe el motivo para confirmar la eliminación, o cancela si no estás seguro:`
+// ── GET /api/validador-inventario?bodega=BV ──────────────────────────────────
+// Lista los items guardados de una bodega
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || 'BV').toUpperCase();
+    const { rows } = await pool.query(
+      `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+       WHERE vi.bodega = $1
+       ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`,
+      [bodega]
     );
-    if (motivo === null || motivo.trim() === '') return; // canceló o no escribió nada
-    if (!window.confirm(`¿Confirmas eliminar definitivamente "${item.nombre}"? Esta acción no se puede deshacer.`)) return;
-    try {
-      await api.delete(`/validador-inventario/${item.id}`);
-      setItems(prev => prev.filter(it => it.id !== item.id));
-    } catch (e) {
-      alert('Error eliminando el item: ' + (e.response?.data?.error || e.message));
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar validador de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/importar ───────────────────────────────────
+// Sube o actualiza el Excel del sistema (SIIS). UPSERT por (bodega, codigo, lote,
+// fecha_vencimiento): solo actualiza nombre y existencia_sistema — NUNCA toca
+// cantidad_fisica/contado, así no se pierde el avance de lo ya contado.
+router.post('/importar', authMiddleware, async (req, res) => {
+  const { bodega, items } = req.body;
+  if (!bodega || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'bodega e items son requeridos' });
+  }
+  const bod = String(bodega).toUpperCase();
+
+  // Ítems válidos (con código) tal como quedarán guardados, para luego saber
+  // cuáles NO vinieron en esta carga y marcarlos como sin_existencias
+  const clavesCargadas = items
+    .filter(it => it.codigo)
+    .map(it => `${truncar(it.codigo, 50)}|${truncar(it.lote, 100)}|${truncar(it.fecha_vencimiento, 20)}`);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Claves que YA existían en esta bodega antes de esta carga — lo que no
+    // esté aquí pero sí en clavesCargadas es "nuevo" (para la alerta de abajo).
+    const { rows: existentesRows } = await client.query(
+      `SELECT (codigo || '|' || lote || '|' || fecha_vencimiento) AS clave FROM validador_inventario WHERE bodega = $1`,
+      [bod]
+    );
+    const clavesExistentes = new Set(existentesRows.map(r => r.clave));
+
+    for (const it of items) {
+      if (!it.codigo) continue;
+      await client.query(
+        `INSERT INTO validador_inventario (bodega, codigo, nombre, lote, fecha_vencimiento, existencia_sistema, costo_unitario, costo_total, sin_existencias, sin_existencias_desde, ultima_carga)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, NULL, NOW())
+         ON CONFLICT (bodega, codigo, lote, fecha_vencimiento)
+         DO UPDATE SET
+           nombre                = EXCLUDED.nombre,
+           existencia_sistema    = EXCLUDED.existencia_sistema,
+           costo_unitario        = EXCLUDED.costo_unitario,
+           costo_total           = EXCLUDED.costo_total,
+           sin_existencias       = false,
+           sin_existencias_desde = NULL,
+           ultima_carga          = NOW(),
+           actualizado_en        = NOW()`,
+        [bod, truncar(it.codigo, 50), truncar(it.nombre, 300), truncar(it.lote, 100), truncar(it.fecha_vencimiento, 20), it.existencia_sistema || 0, it.costo_unitario || 0, it.costo_total || 0]
+      );
     }
-  }
 
-  // ── Ordenamiento por columna ─────────────────────────────────────────────────
-  function toggleSort(col) {
-    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortCol(col); setSortDir('desc'); }
-  }
-
-  // ── Formato moneda COP ────────────────────────────────────────────────────────
-  const fmtPesos = (n) => Number(n || 0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
-
-  // ── Filtros y ordenamiento ───────────────────────────────────────────────────
-  const itemsFiltrados = items.filter(it => {
-    if (busqueda) {
-      const q = busqueda.toUpperCase();
-      if (!it.codigo.toUpperCase().includes(q) && !it.nombre.toUpperCase().includes(q)) return false;
+    // Marca como sin_existencias los ítems de esta bodega que NO vinieron en
+    // el Excel recién cargado (no se borran, conservan su conteo/historial).
+    // sin_existencias_desde solo se fija si aún no tenía fecha, así conserva
+    // el momento exacto en que desapareció por primera vez.
+    if (clavesCargadas.length > 0) {
+      await client.query(
+        `UPDATE validador_inventario
+         SET sin_existencias = true,
+             sin_existencias_desde = COALESCE(sin_existencias_desde, NOW())
+         WHERE bodega = $1
+           AND (codigo || '|' || lote || '|' || fecha_vencimiento) <> ALL($2::text[])`,
+        [bod, clavesCargadas]
+      );
     }
-    if (filtro === 'contados' && !it.contado) return false;
-    if (filtro === 'pendientes' && it.contado) return false;
-    if (filtro === 'diferencias_reales' && getTipoDiferencia(it) !== 'real') return false;
-    if (filtro === 'diferencias_actualizacion' && getTipoDiferencia(it) !== 'actualizacion') return false;
-    if (filtro === 'sin_existencias' && !it.sin_existencias) return false;
-    if (filtro === 'sin_cuenta' && it.cuenta) return false;
-    if (filtro === 'sin_grupo_conteo' && it.grupo_conteo) return false;
-    return true;
-  });
 
-  // Totales de TODO lo sin clasificar en la bodega actual, sean nuevos o no —
-  // para el aviso rojo permanente (distinto del banner amarillo, que solo
-  // avisa de lo nuevo justo después de subir un Excel).
-  const totalSinCuenta = items.filter(it => !it.cuenta).length;
-  const totalSinGrupoConteo = items.filter(it => !it.grupo_conteo).length;
+    // Productos/lotes que se habían agregado a mano en alguna lista de conteo
+    // y que AHORA sí vienen en el Excel: el ajuste ya se reflejó en SIIS, así
+    // que dejan de aparecer como pendientes de inclusión.
+    await client.query(
+      `UPDATE listas_conteo_items li
+       SET incluido_en_siis = true
+       FROM listas_conteo lc
+       WHERE lc.id = li.lista_id AND lc.bodega = $1
+         AND li.origen = 'agregado' AND li.incluido_en_siis = false
+         AND EXISTS (
+           SELECT 1 FROM validador_inventario vi
+           WHERE vi.bodega = lc.bodega AND vi.codigo = li.codigo
+             AND COALESCE(vi.lote,'') = COALESCE(li.lote,'')
+         )`,
+      [bod]
+    );
 
-  if (sortCol) {
-    itemsFiltrados.sort((a, b) => {
-      const va = Number(a[sortCol] || 0);
-      const vb = Number(b[sortCol] || 0);
-      return sortDir === 'asc' ? va - vb : vb - va;
-    });
+    // Ítems (código+lote+fecha) que son NUEVOS en esta carga — no estaban
+    // antes en esta bodega — para avisar cuáles llegan sin cuenta contable o
+    // sin grupo de conteo asignado y así no se cuelen sin clasificar.
+    const clavesNuevas = clavesCargadas.filter(c => !clavesExistentes.has(c));
+    let nuevosSinClasificar = { total_nuevos: clavesNuevas.length, sin_cuenta: [], sin_grupo_conteo: [] };
+    if (clavesNuevas.length > 0) {
+      const { rows: nuevosRows } = await client.query(
+        `SELECT DISTINCT vi.codigo, ti.cuenta, cc.grupo
+         FROM validador_inventario vi
+         LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+         LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+         WHERE vi.bodega = $1 AND (vi.codigo || '|' || vi.lote || '|' || vi.fecha_vencimiento) = ANY($2::text[])`,
+        [bod, clavesNuevas]
+      );
+      const sinCuenta = new Set(), sinGrupo = new Set();
+      for (const r of nuevosRows) {
+        if (!r.cuenta) sinCuenta.add(r.codigo);
+        if (!r.grupo) sinGrupo.add(r.codigo);
+      }
+      nuevosSinClasificar.sin_cuenta = [...sinCuenta];
+      nuevosSinClasificar.sin_grupo_conteo = [...sinGrupo];
+    }
+
+    await client.query('COMMIT');
+
+    const { rows } = await pool.query(
+      `SELECT vi.*, ti.contable, ti.cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+       WHERE vi.bodega = $1
+       ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`,
+      [bod]
+    );
+    res.json({ items: rows, nuevos_sin_clasificar: nuevosSinClasificar });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al importar validador de inventario:', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
   }
+});
 
-  const totales = {
-    total: items.length,
-    contados: items.filter(it => it.contado).length,
-    pendientes: items.filter(it => !it.contado).length,
-    diferenciasReales: items.filter(it => getTipoDiferencia(it) === 'real').length,
-    diferenciasPorActualizacion: items.filter(it => getTipoDiferencia(it) === 'actualizacion').length,
-    sinExistencias: items.filter(it => it.sin_existencias).length,
-  };
-  const avance = totales.total > 0 ? Math.round((totales.contados / totales.total) * 100) : 0;
+// ── PATCH /api/validador-inventario/:id ───────────────────────────────────────
+// Guarda el conteo físico individual de un item (botón "Guardar" por fila)
+router.patch('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { cantidad_fisica } = req.body;
+    if (cantidad_fisica === undefined || cantidad_fisica === null || cantidad_fisica === '') {
+      return res.status(400).json({ error: 'cantidad_fisica requerida' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET cantidad_fisica = $1, contado = true, contado_por = $2, contado_en = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [cantidad_fisica, req.user.id, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  // Fecha de la última vez que se subió un Excel para esta bodega (la más reciente entre todos los ítems)
-  const ultimaCarga = items.reduce((max, it) => {
-    if (!it.ultima_carga) return max;
-    const f = new Date(it.ultima_carga);
-    return (!max || f > max) ? f : max;
-  }, null);
-  const ultimaCargaTexto = ultimaCarga
-    ? ultimaCarga.toLocaleString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-    : '—';
+// ── PATCH /api/validador-inventario/:id/reset ─────────────────────────────────
+// Deshace el conteo de un item (por si se marcó por error)
+router.patch('/:id/reset', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET cantidad_fisica = NULL, contado = false, contado_por = NULL, contado_en = NULL
+       WHERE id = $1
+       RETURNING *`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al reiniciar conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  const inputStyle = {
-    background: 'var(--t-bg-input)', border: '1px solid var(--t-border)', borderRadius: 6,
-    color: 'var(--t-text-primary)', padding: '6px 10px', fontSize: 13,
-  };
+// ── PATCH /api/validador-inventario/:id/sobrante ──────────────────────────────
+// Registro MANUAL (no calculado) del sobrante en libro: sobrantes antiguos
+// de antes de que existiera el control de inventario físico. Independiente
+// del conteo físico — se puede editar en cualquier momento.
+router.patch('/:id/sobrante', authMiddleware, async (req, res) => {
+  try {
+    const { sobrante_libro } = req.body;
+    if (sobrante_libro === undefined || sobrante_libro === null || sobrante_libro === '') {
+      return res.status(400).json({ error: 'sobrante_libro requerido' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET sobrante_libro = $1
+       WHERE id = $2
+       RETURNING *`,
+      [sobrante_libro, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar sobrante en libro:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  const card = (label, value, color) => (
-    <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px', flex: 1, minWidth: 120 }}>
-      <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
-      <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>{label}</div>
-    </div>
-  );
+// ── PATCH /api/validador-inventario/:id/tipo-diferencia ───────────────────────
+// Clasificación MANUAL de la diferencia: 'real' o 'actualizacion'. Persistente
+// a propósito: el UPSERT de /importar nunca toca esta columna, así que la
+// elección sobrevive a nuevas cargas de Excel hasta que se cambie a mano.
+router.patch('/:id/tipo-diferencia', authMiddleware, async (req, res) => {
+  try {
+    const { tipo_diferencia } = req.body;
+    if (![null, 'real', 'actualizacion'].includes(tipo_diferencia)) {
+      return res.status(400).json({ error: "tipo_diferencia debe ser 'real', 'actualizacion' o null" });
+    }
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET tipo_diferencia = $1
+       WHERE id = $2
+       RETURNING *`,
+      [tipo_diferencia, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar tipo de diferencia:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  return (
-    <div style={{ maxWidth: '100%', width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-      {/* Datalists compartidos: convierten los inputs de Cuenta/Grupo/Presentación
-          en "desplegables editables" — sugieren los valores ya existentes pero
-          permiten escribir uno nuevo si el artículo lo necesita. */}
-      <datalist id="dl-cuentas">{opcionesCuentas.map(c => <option key={c} value={c} />)}</datalist>
-      <datalist id="dl-grupos">{opcionesGrupos.map(g => <option key={g} value={g} />)}</datalist>
-      <datalist id="dl-presentaciones">{opcionesPresentaciones.map(p => <option key={p} value={p} />)}</datalist>
+// ── PATCH /api/validador-inventario/:id/notas ──────────────────────────────────
+// Texto libre MANUAL de observaciones por ítem. Persistente: el UPSERT de
+// /importar nunca la toca, así que sobrevive a nuevas cargas de Excel.
+router.patch('/:id/notas', authMiddleware, async (req, res) => {
+  try {
+    const { notas } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE validador_inventario
+       SET notas = $1
+       WHERE id = $2
+       RETURNING *`,
+      [notas ?? null, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Item no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar notas:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-      <div style={{ marginBottom: 18 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--t-text-primary)' }}>Validador de Inventarios</h1>
-        <p style={{ fontSize: 13, color: 'var(--t-text-muted)', marginTop: 2 }}>
-          Conteo físico de bodega contra el sistema — sube el Excel de SIIS cuando quieras actualizar existencias sin perder lo ya contado
-        </p>
-        <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4 }}>
-          Última carga de Excel para <strong>{bodega}</strong>: {ultimaCargaTexto}
-        </p>
-      </div>
+// ── DELETE /api/validador-inventario/:id ──────────────────────────────────────
+// Elimina manualmente un item, solo permitido si está marcado sin_existencias
+// (evita borrar por error ítems que sí siguen activos en el sistema)
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `DELETE FROM validador_inventario
+       WHERE id = $1 AND sin_existencias = true
+       RETURNING id`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(400).json({ error: 'Solo se pueden eliminar ítems marcados como sin existencias' });
+    }
+    res.json({ ok: true, id: rows[0].id });
+  } catch (err) {
+    console.error('Error al eliminar item del validador de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16, borderBottom: '1px solid var(--t-border)' }}>
-        {[
-          { key: 'inventario', label: 'Inventario' },
-          { key: 'listas', label: 'Listas de Conteo' },
-          { key: 'datos', label: 'Datos' },
-        ].map(t => (
-          <button
-            key={t.key}
-            onClick={() => setVista(t.key)}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '8px 14px', fontSize: 13, fontWeight: 600,
-              color: vista === t.key ? 'var(--t-accent)' : 'var(--t-text-muted)',
-              borderBottom: vista === t.key ? '2px solid var(--t-accent)' : '2px solid transparent',
-              marginBottom: -1,
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+// ── POST /api/validador-inventario/presentaciones/importar ────────────────────
+// Carga masiva desde un Excel APARTE (no el de SIIS): { items: [{codigo, presentacion}] }.
+// Solo admin. Es un UPSERT por código, independiente de bodega/lote — no toca
+// nada de validador_inventario, así que se puede recargar en cualquier momento
+// sin afectar el conteo físico en curso.
+router.post('/presentaciones/importar', authMiddleware, adminOnly, async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items es requerido' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let actualizados = 0;
+    for (const it of items) {
+      const codigo = truncar(it.codigo, 50);
+      if (!codigo) continue;
+      await client.query(
+        `INSERT INTO presentaciones_inventario (codigo, presentacion, actualizado_por, actualizado_en)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (codigo) DO UPDATE SET
+           presentacion    = EXCLUDED.presentacion,
+           actualizado_por = EXCLUDED.actualizado_por,
+           actualizado_en  = NOW()`,
+        [codigo, truncar(it.presentacion, 200), req.user.id]
+      );
+      actualizados++;
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, actualizados });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al importar presentaciones:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
 
-      {vista === 'listas' ? (
-        <ListasConteo bodega={bodega} BODEGAS={BODEGAS} isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} fmtPesos={fmtPesos} />
-      ) : vista === 'datos' ? (
-        <DatosMaestros isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} />
-      ) : (
-      <>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={bodega} onChange={(e) => setBodega(e.target.value)} style={inputStyle}>
-          {BODEGAS.map(b => <option key={b.codigo} value={b.codigo}>{b.codigo} — {b.nombre}</option>)}
-        </select>
+// ── PATCH /api/validador-inventario/presentaciones/:codigo ────────────────────
+// Edición manual de la presentación de un código puntual. Solo admin.
+router.patch('/presentaciones/:codigo', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { presentacion } = req.body;
+    if (presentacion === undefined) {
+      return res.status(400).json({ error: 'presentacion requerida' });
+    }
+    const codigo = truncar(req.params.codigo, 50);
+    const { rows } = await pool.query(
+      `INSERT INTO presentaciones_inventario (codigo, presentacion, actualizado_por, actualizado_en)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (codigo) DO UPDATE SET
+         presentacion    = EXCLUDED.presentacion,
+         actualizado_por = EXCLUDED.actualizado_por,
+         actualizado_en  = NOW()
+       RETURNING *`,
+      [codigo, truncar(presentacion, 200), req.user.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar presentación:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-        <input ref={fileInputRef} type="file" accept=".xls,.xlsx" onChange={handleArchivo} style={{ display: 'none' }} id="input-excel-validador" />
-        <label htmlFor="input-excel-validador" style={{
-          background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6,
-          padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-        }}>
-          📤 {importando ? 'Procesando…' : 'Cargar / Actualizar Excel'}
-        </label>
+// ── POST /api/validador-inventario/tipos-inventario/importar ──────────────────
+// Carga masiva de la tabla de clasificación (CONCAT -> cuenta contable) desde
+// un Excel APARTE: { items: [{concat, contable, cuenta}] }. Editor o admin.
+router.post('/tipos-inventario/importar', authMiddleware, editorOrAdmin, async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items es requerido' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let actualizados = 0;
+    for (const it of items) {
+      const concat = truncar(it.concat, 6).toUpperCase();
+      if (!concat) continue;
+      const contableNuevo = truncar(it.contable, 30);
+      const cuentaNuevo = truncar(it.cuenta, 100);
+      const { rows: anteriorRows } = await client.query(`SELECT contable, cuenta FROM tipos_inventario WHERE concat = $1`, [concat]);
+      const anterior = anteriorRows[0] || null;
+      if (!anterior || anterior.contable !== contableNuevo || anterior.cuenta !== cuentaNuevo) {
+        await registrarHistorialTipo(client, concat, anterior, contableNuevo, cuentaNuevo, 'excel', req.user.id);
+      }
+      await client.query(
+        `INSERT INTO tipos_inventario (concat, contable, cuenta)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (concat) DO UPDATE SET
+           contable = EXCLUDED.contable,
+           cuenta   = EXCLUDED.cuenta`,
+        [concat, contableNuevo, cuentaNuevo]
+      );
+      actualizados++;
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, actualizados });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al importar tipos de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
 
-        {isAdmin && (
-          <>
-            <input ref={fileInputPresentacionesRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoPresentaciones} style={{ display: 'none' }} id="input-excel-presentaciones" />
-            <label htmlFor="input-excel-presentaciones" title="Excel aparte con columnas CODIGO y PRESENTACION" style={{
-              background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
-              padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              📤 {importandoPresentaciones ? 'Procesando…' : 'Cargar Presentaciones (Excel)'}
-            </label>
-          </>
-        )}
+// ── PATCH /api/validador-inventario/tipos-inventario/:concat ──────────────────
+// Edición manual puntual de una clasificación (crea si no existía). Editor o admin.
+router.patch('/tipos-inventario/:concat', authMiddleware, editorOrAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { contable, cuenta } = req.body;
+    if (!cuenta) { client.release(); return res.status(400).json({ error: 'cuenta requerida' }); }
+    const concat = truncar(req.params.concat, 6).toUpperCase();
+    const contableNuevo = truncar(contable, 30);
+    const cuentaNuevo = truncar(cuenta, 100);
 
-        {isEditor && (
-          <>
-            <input ref={fileInputTiposRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoTipos} style={{ display: 'none' }} id="input-excel-tipos" />
-            <label htmlFor="input-excel-tipos" title="Excel aparte con columnas CONCAT, CONTABLE y CUENTA" style={{
-              background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
-              padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              📤 {importandoTipos ? 'Procesando…' : 'Cargar Grupos/Cuentas (Excel)'}
-            </label>
-          </>
-        )}
+    await client.query('BEGIN');
+    const { rows: anteriorRows } = await client.query(`SELECT contable, cuenta FROM tipos_inventario WHERE concat = $1`, [concat]);
+    const anterior = anteriorRows[0] || null;
+    if (!anterior || anterior.contable !== contableNuevo || anterior.cuenta !== cuentaNuevo) {
+      await registrarHistorialTipo(client, concat, anterior, contableNuevo, cuentaNuevo, 'manual', req.user.id);
+    }
+    const { rows } = await client.query(
+      `INSERT INTO tipos_inventario (concat, contable, cuenta)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (concat) DO UPDATE SET
+         contable = EXCLUDED.contable,
+         cuenta   = EXCLUDED.cuenta
+       RETURNING *`,
+      [concat, contableNuevo, cuentaNuevo]
+    );
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al guardar tipo de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
 
-        {isEditor && (
-          <>
-            <input ref={fileInputGrupoConteoRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoGrupoConteo} style={{ display: 'none' }} id="input-excel-grupo-conteo" />
-            <label htmlFor="input-excel-grupo-conteo" title="Un solo Excel con columnas CODIGO, GRUPO y SUBGRUPO (para las Listas de Conteo)" style={{
-              background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
-              padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              📤 {importandoGrupoConteo ? 'Procesando…' : 'Cargar Grupos de Conteo (Excel)'}
-            </label>
-          </>
-        )}
+// ── GET /api/validador-inventario/opciones-cuentas ────────────────────────────
+// Lista de nombres de cuenta contable ya usados (para el desplegable de
+// "Cuenta" en cada artículo, sea nuevo o existente).
+router.get('/opciones-cuentas', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT cuenta FROM tipos_inventario WHERE cuenta <> '' ORDER BY cuenta ASC`
+    );
+    res.json(rows.map(r => r.cuenta));
+  } catch (err) {
+    console.error('Error al listar opciones de cuentas:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-        <input
-          type="text" placeholder="Buscar código o nombre…" value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          style={{ ...inputStyle, flex: 1, minWidth: 200 }}
-        />
+// ── GET /api/validador-inventario/opciones-grupos-conteo ──────────────────────
+// Todos los pares grupo/subgrupo ya usados (para el desplegable de "Grupo
+// Conteo" y "Subgrupo" en cada artículo, sea nuevo o existente).
+router.get('/opciones-grupos-conteo', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT grupo, subgrupo FROM clasificacion_conteo
+       WHERE grupo IS NOT NULL AND grupo <> ''
+       ORDER BY grupo ASC, subgrupo ASC NULLS FIRST`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar opciones de grupos de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-        <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={inputStyle}>
-          <option value="todos">Todos</option>
-          <option value="contados">✅ Contados</option>
-          <option value="pendientes">⏳ Pendientes</option>
-          <option value="diferencias_reales">⚠️ Diferencias reales</option>
-          <option value="diferencias_actualizacion">🔄 Por actualización</option>
-          <option value="sin_existencias">🚫 Sin existencias</option>
-          <option value="sin_cuenta">⚠️ Sin cuenta contable</option>
-          <option value="sin_grupo_conteo">⚠️ Sin grupo de conteo</option>
-        </select>
-      </div>
+// ── GET /api/validador-inventario/opciones-presentaciones ────────────────────
+// Lista de presentaciones ya usadas (para el desplegable de "Presentación").
+router.get('/opciones-presentaciones', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT presentacion FROM presentaciones_inventario WHERE presentacion <> '' ORDER BY presentacion ASC`
+    );
+    res.json(rows.map(r => r.presentacion));
+  } catch (err) {
+    console.error('Error al listar opciones de presentaciones:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-      {error && (
-        <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
-          {error}
-        </div>
-      )}
+// ── GET /api/validador-inventario/tipos-inventario?buscar= ───────────────────
+// Lista TODAS las clasificaciones de cuenta contable (concat -> contable/
+// cuenta), para la pestaña de datos maestros: ver, buscar, editar o agregar
+// una a la vez sin depender de subir el Excel completo de nuevo.
+router.get('/tipos-inventario', authMiddleware, async (req, res) => {
+  try {
+    const buscar = (req.query.buscar || '').trim();
+    const params = [];
+    let where = '';
+    if (buscar) {
+      params.push(`%${buscar.toUpperCase()}%`);
+      where = `WHERE UPPER(concat) LIKE $1 OR UPPER(contable) LIKE $1 OR UPPER(cuenta) LIKE $1`;
+    }
+    const { rows } = await pool.query(`SELECT * FROM tipos_inventario ${where} ORDER BY concat ASC`, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar tipos de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-      {(totalSinCuenta > 0 || totalSinGrupoConteo > 0) && (
-        <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <span>
-            🔴 En <strong>{bodega}</strong> hay <strong>{totalSinCuenta}</strong> ítem(s) sin cuenta contable y{' '}
-            <strong>{totalSinGrupoConteo}</strong> sin grupo de conteo (sean nuevos o no). Revísalos y clasifícalos.
-          </span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {totalSinCuenta > 0 && (
-              <button onClick={() => setFiltro('sin_cuenta')} style={{ background: '#5c2626', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Ver sin cuenta ({totalSinCuenta})
-              </button>
-            )}
-            {totalSinGrupoConteo > 0 && (
-              <button onClick={() => setFiltro('sin_grupo_conteo')} style={{ background: '#5c2626', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Ver sin grupo ({totalSinGrupoConteo})
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+// ── DELETE /api/validador-inventario/tipos-inventario/:concat ────────────────
+// Elimina una clasificación de cuenta contable. Solo admin.
+router.delete('/tipos-inventario/:concat', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const concat = truncar(req.params.concat, 6).toUpperCase();
+    const { rows } = await pool.query(`DELETE FROM tipos_inventario WHERE concat = $1 RETURNING concat`, [concat]);
+    if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error al eliminar tipo de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-      {pendientesSiis.length > 0 && (
-        <div style={{ background: '#0f2a3a', color: '#38bdf8', border: '1px solid #0f5c7a', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
-          📦 Hay <strong>{pendientesSiis.length}</strong> producto(s)/lote(s) agregado(s) a mano en un conteo (bodega {bodega}) que aún no aparecen en el Excel de SIIS que subes:{' '}
-          {pendientesSiis.slice(0, 5).map(p => `${p.codigo} (${p.lote || 's/lote'})`).join(', ')}
-          {pendientesSiis.length > 5 ? ` y ${pendientesSiis.length - 5} más` : ''}. Cuando SIIS los incluya, esta lista se limpia sola.
-        </div>
-      )}
-
-      {alertaNuevosSinClasificar && (
-        <div style={{ background: '#3a2f0f', color: '#fbbf24', border: '1px solid #7a5c0f', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <span>
-            ⚠️ Entraron <strong>{alertaNuevosSinClasificar.total_nuevos}</strong> producto(s) nuevo(s) con esta carga —{' '}
-            <strong>{alertaNuevosSinClasificar.sin_cuenta.length}</strong> sin cuenta contable y{' '}
-            <strong>{alertaNuevosSinClasificar.sin_grupo_conteo.length}</strong> sin grupo de conteo. Clasifícalos para que queden agrupados correctamente.
-          </span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {alertaNuevosSinClasificar.sin_cuenta.length > 0 && (
-              <button onClick={() => setFiltro('sin_cuenta')} style={{ background: '#7a5c0f', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Ver sin cuenta
-              </button>
-            )}
-            {alertaNuevosSinClasificar.sin_grupo_conteo.length > 0 && (
-              <button onClick={() => setFiltro('sin_grupo_conteo')} style={{ background: '#7a5c0f', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Ver sin grupo
-              </button>
-            )}
-            <button onClick={() => setAlertaNuevosSinClasificar(null)} title="Cerrar aviso" style={{ background: 'none', border: 'none', color: '#fbbf24', cursor: 'pointer', fontSize: 14 }}>✕</button>
-          </div>
-        </div>
-      )}
-
-      {/* Resumen */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
-        {card('Total ítems', totales.total, 'var(--t-text-primary)')}
-        {card('Contados', totales.contados, '#4ade80')}
-        {card('Pendientes', totales.pendientes, '#fbbf24')}
-        {card('⚠️ Diferencias reales', totales.diferenciasReales, '#f87171')}
-        {card('🔄 Por actualización', totales.diferenciasPorActualizacion, '#38bdf8')}
-        {card('Sin existencias', totales.sinExistencias, '#94a3b8')}
-        {card('% Avance', `${avance}%`, 'var(--t-accent)')}
-      </div>
-
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 60, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
-      ) : items.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 60, color: 'var(--t-text-muted)', fontSize: 13 }}>
-          No hay inventario cargado para la bodega <strong>{bodega}</strong>. Usa "Cargar / Actualizar Excel" para empezar.
-        </div>
-      ) : (
-        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto', width: '100%', maxWidth: '100%' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {[
-                  { key: null,            label: 'Código' },
-                  { key: null,            label: 'Nombre' },
-                  { key: null,            label: 'Cuenta' },
-                  { key: null,            label: 'Grupo Conteo' },
-                  { key: null,            label: 'Subgrupo' },
-                  { key: null,            label: 'Presentación' },
-                  { key: null,            label: 'Lote' },
-                  { key: null,            label: 'Fecha Venc.' },
-                  { key: null,            label: 'Existencia' },
-                  { key: 'costo_unitario', label: 'Costo Unit.' },
-                  { key: 'costo_total',    label: 'Costo Total' },
-                  { key: null,            label: 'Cant. Física' },
-                  { key: null,            label: 'Diferencia' },
-                  { key: null,            label: 'Notas' },
-                  { key: null,            label: 'Sobrante en libro' },
-                  { key: null,            label: 'Estado' },
-                  { key: null,            label: '' },
-                ].map(({ key, label }) => (
-                  <th
-                    key={label}
-                    onClick={key ? () => toggleSort(key) : undefined}
-                    style={{
-                      padding: '8px 8px', textAlign: 'left', color: key ? 'var(--t-accent)' : 'var(--t-text-muted)',
-                      fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)',
-                      cursor: key ? 'pointer' : 'default', userSelect: 'none',
-                    }}
-                  >
-                    {label}
-                    {key && sortCol === key && (
-                      <span style={{ marginLeft: 4 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
-                    )}
-                    {key && sortCol !== key && <span style={{ marginLeft: 4, opacity: 0.3 }}>⇅</span>}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {itemsFiltrados.map(item => {
-                const enEdicion = editValues[item.id] !== undefined;
-                const yaContado = item.contado;
-                // Si ya fue contado, solo editor/admin pueden modificar
-                const puedeEditar = !yaContado || puedeEditarContado;
-                const valorActual = enEdicion ? editValues[item.id] : fmtNum2(item.cantidad_fisica);
-                const diferencia = yaContado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
-                // Clasificación de la diferencia: prioriza SIEMPRE la elección
-                // manual guardada (persiste entre cargas de Excel); si aún no
-                // se ha clasificado, usa la detección automática por fecha
-                // solo como sugerencia inicial.
-                const tipoDif = getTipoDiferencia(item);
-                return (
-                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', opacity: item.sin_existencias ? 0.6 : 1 }}>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-primary)', maxWidth: 240 }}>{item.nombre}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isEditor ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="text"
-                            list="dl-cuentas"
-                            value={editCuenta[item.id] !== undefined ? editCuenta[item.id] : (item.cuenta || '')}
-                            onChange={(e) => setEditCuenta(prev => ({ ...prev, [item.id]: e.target.value }))}
-                            placeholder={item.cuenta ? '' : `Sin clasificar (${item.concat})`}
-                            title={`Grupo de inventario: ${item.concat}. Cuenta contable derivada del código.`}
-                            style={{ ...inputStyle, width: 130, fontSize: 12 }}
-                          />
-                          <button
-                            onClick={() => guardarCuenta(item)}
-                            disabled={editCuenta[item.id] === undefined || guardandoCuentaId === item.id}
-                            title="Guardar cuenta/grupo"
-                            style={{
-                              background: editCuenta[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                              color: editCuenta[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                              border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                              cursor: editCuenta[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                            }}
-                          >
-                            {guardandoCuentaId === item.id ? '…' : '💾'}
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ color: item.cuenta ? 'var(--t-text-secondary)' : '#fbbf24' }}>{item.cuenta || '⚠️ Sin clasificar'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isEditor ? (
-                        <input
-                          type="text"
-                          list="dl-grupos"
-                          value={editGrupoConteo[item.id]?.grupo !== undefined ? editGrupoConteo[item.id].grupo : (item.grupo_conteo || '')}
-                          onChange={(e) => setEditGrupoConteo(prev => ({ ...prev, [item.id]: { grupo: e.target.value, subgrupo: prev[item.id]?.subgrupo !== undefined ? prev[item.id].subgrupo : (item.subgrupo_conteo || '') } }))}
-                          placeholder={item.grupo_conteo ? '' : 'Sin grupo'}
-                          style={{ ...inputStyle, width: 110, fontSize: 12, ...(item.grupo_conteo ? {} : { borderColor: '#fbbf24' }) }}
-                        />
-                      ) : (
-                        <span style={{ color: item.grupo_conteo ? 'var(--t-text-secondary)' : '#fbbf24' }}>{item.grupo_conteo || '⚠️ Sin grupo'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isEditor ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="text"
-                            list={`dl-subgrupos-${item.id}`}
-                            value={editGrupoConteo[item.id]?.subgrupo !== undefined ? editGrupoConteo[item.id].subgrupo : (item.subgrupo_conteo || '')}
-                            onChange={(e) => setEditGrupoConteo(prev => ({ ...prev, [item.id]: { grupo: prev[item.id]?.grupo !== undefined ? prev[item.id].grupo : (item.grupo_conteo || ''), subgrupo: e.target.value } }))}
-                            placeholder="—"
-                            style={{ ...inputStyle, width: 110, fontSize: 12 }}
-                          />
-                          <datalist id={`dl-subgrupos-${item.id}`}>
-                            {subgruposDe(editGrupoConteo[item.id]?.grupo !== undefined ? editGrupoConteo[item.id].grupo : item.grupo_conteo).map(s => <option key={s} value={s} />)}
-                          </datalist>
-                          <button
-                            onClick={() => guardarGrupoConteo({ ...item, grupo: editGrupoConteo[item.id]?.grupo ?? item.grupo_conteo, subgrupo: editGrupoConteo[item.id]?.subgrupo ?? item.subgrupo_conteo })}
-                            disabled={editGrupoConteo[item.id] === undefined || guardandoGrupoConteoId === item.id}
-                            title="Guardar grupo y subgrupo de conteo"
-                            style={{
-                              background: editGrupoConteo[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                              color: editGrupoConteo[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                              border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                              cursor: editGrupoConteo[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                            }}
-                          >
-                            {guardandoGrupoConteoId === item.id ? '…' : '💾'}
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ color: 'var(--t-text-secondary)' }}>{item.subgrupo_conteo || '—'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isAdmin ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="text"
-                            list="dl-presentaciones"
-                            value={editPresentacion[item.id] !== undefined ? editPresentacion[item.id] : (item.presentacion || '')}
-                            onChange={(e) => setEditPresentacion(prev => ({ ...prev, [item.id]: e.target.value }))}
-                            placeholder="—"
-                            title="Presentación del artículo (ej. Caja x100). Se guarda por código, no por lote."
-                            style={{ ...inputStyle, width: 110, fontSize: 12 }}
-                          />
-                          <button
-                            onClick={() => guardarPresentacion(item)}
-                            disabled={editPresentacion[item.id] === undefined || guardandoPresentacionId === item.id}
-                            title="Guardar presentación"
-                            style={{
-                              background: editPresentacion[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                              color: editPresentacion[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                              border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                              cursor: editPresentacion[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                            }}
-                          >
-                            {guardandoPresentacionId === item.id ? '…' : '💾'}
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ color: 'var(--t-text-secondary)' }}>{item.presentacion || '—'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtFechaCorta(item.fecha_vencimiento)}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{Number(item.existencia_sistema).toLocaleString('es-CO')}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_total)}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {puedeEditar ? (
-                        <input
-                          type="number" value={valorActual}
-                          onChange={(e) => setEditValues(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          style={{
-                            ...inputStyle,
-                            width: 90,
-                            fontFamily: 'monospace',
-                            ...(yaContado ? { background: '#132018', borderColor: '#2f6d3f', color: '#4ade80' } : {}),
-                          }}
-                        />
-                      ) : (
-                        <span title="Solo editor/admin pueden modificar cantidades ya contadas"
-                          style={{ color: yaContado ? '#4ade80' : 'var(--t-text-muted)', fontFamily: 'monospace' }}>
-                          {item.cantidad_fisica !== null && item.cantidad_fisica !== undefined ? fmtNum2(item.cantidad_fisica) : '—'} 🔒
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {diferencia === null ? (
-                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
-                      ) : diferencia === 0 ? (
-                        <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
-                      ) : (
-                        <div>
-                          <div style={{ marginBottom: 3, color: tipoDif === 'actualizacion' ? '#38bdf8' : '#f87171', fontWeight: 600 }}>
-                            {tipoDif === 'actualizacion' ? '🔄' : '⚠️'} {diferencia > 0 ? `+${fmtNum2(diferencia)}` : fmtNum2(diferencia)}
-                          </div>
-                          <div style={{ display: 'flex', gap: 3 }}>
-                            <button
-                              onClick={() => clasificarDiferencia(item, 'real')}
-                              title="Marcar como diferencia real (error de conteo/consumo)"
-                              style={{
-                                background: tipoDif === 'real' ? '#3a1d1d' : 'var(--t-bg-sidebar)',
-                                border: tipoDif === 'real' ? '1px solid #f87171' : '1px solid var(--t-border)',
-                                color: tipoDif === 'real' ? '#f87171' : 'var(--t-text-muted)',
-                                borderRadius: 4, padding: '2px 5px', fontSize: 10, cursor: 'pointer', fontWeight: tipoDif === 'real' ? 700 : 400,
-                              }}
-                            >
-                              ⚠️ Real
-                            </button>
-                            <button
-                              onClick={() => clasificarDiferencia(item, 'actualizacion')}
-                              title="Marcar como diferencia por actualización posterior del sistema"
-                              style={{
-                                background: tipoDif === 'actualizacion' ? '#132433' : 'var(--t-bg-sidebar)',
-                                border: tipoDif === 'actualizacion' ? '1px solid #38bdf8' : '1px solid var(--t-border)',
-                                color: tipoDif === 'actualizacion' ? '#38bdf8' : 'var(--t-text-muted)',
-                                borderRadius: 4, padding: '2px 5px', fontSize: 10, cursor: 'pointer', fontWeight: tipoDif === 'actualizacion' ? 700 : 400,
-                              }}
-                            >
-                              🔄 Actual.
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <input
-                          type="text"
-                          value={editNotas[item.id] !== undefined ? editNotas[item.id] : (item.notas || '')}
-                          onChange={(e) => setEditNotas(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          title="Observaciones (texto libre, no se borra al subir un Excel nuevo)"
-                          style={{ ...inputStyle, width: 130, fontSize: 12 }}
-                        />
-                        <button
-                          onClick={() => guardarNotas(item)}
-                          disabled={editNotas[item.id] === undefined || guardandoNotasId === item.id}
-                          title="Guardar nota"
-                          style={{
-                            background: editNotas[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: editNotas[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                            cursor: editNotas[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                          }}
-                        >
-                          {guardandoNotasId === item.id ? '…' : '💾'}
-                        </button>
-                      </div>
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <input
-                          type="number"
-                          value={editSobrante[item.id] !== undefined ? editSobrante[item.id] : fmtNum2(item.sobrante_libro)}
-                          onChange={(e) => setEditSobrante(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          title="Registro manual: sobrante antiguo de antes del control de inventario (no se calcula solo)"
-                          style={{ ...inputStyle, width: 80, fontFamily: 'monospace' }}
-                        />
-                        <button
-                          onClick={() => guardarSobrante(item)}
-                          disabled={editSobrante[item.id] === undefined || guardandoSobranteId === item.id}
-                          title="Guardar sobrante en libro"
-                          style={{
-                            background: editSobrante[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: editSobrante[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                            cursor: editSobrante[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                          }}
-                        >
-                          {guardandoSobranteId === item.id ? '…' : '💾'}
-                        </button>
-                      </div>
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {item.sin_existencias && (
-                        <div style={{ marginBottom: 2 }}>
-                          <span style={{ background: '#2a2a35', color: '#94a3b8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-block' }}>
-                            🚫 Sin existencias
-                          </span>
-                          {item.sin_existencias_desde && (
-                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2 }}>
-                              desde {fmtFechaCorta(item.sin_existencias_desde)}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {yaContado ? (
-                        <div>
-                          <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
-                          {item.contado_en && (
-                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2, whiteSpace: 'nowrap' }}>
-                              {fmtFechaHoraCO(item.contado_en)}
-                            </div>
-                          )}
-                          <div style={{ fontSize: 10, color: 'var(--t-text-secondary)', marginTop: 1 }}>
-                            Cant: <strong>{fmtNum2(item.cantidad_fisica)}</strong>
-                          </div>
-                        </div>
-                      ) : (
-                        <span style={{ background: 'var(--t-bg-sidebar)', color: '#fbbf24', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>⏳ Pendiente</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      {puedeEditar && (
-                        <button
-                          onClick={() => guardarConteo(item)}
-                          disabled={!enEdicion || guardandoId === item.id}
-                          title="Guardar conteo"
-                          style={{
-                            background: enEdicion ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: enEdicion ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12, fontWeight: 500,
-                            cursor: enEdicion ? 'pointer' : 'not-allowed', marginRight: 4, minWidth: 30,
-                          }}
-                        >
-                          {guardandoId === item.id ? '…' : '💾'}
-                        </button>
-                      )}
-                      {yaContado && puedeEditarContado && (
-                        <button
-                          onClick={() => deshacerConteo(item)}
-                          title="Deshacer conteo"
-                          style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer', marginRight: 4 }}
-                        >
-                          ↺
-                        </button>
-                      )}
-                      {item.sin_existencias && puedeEditarContado && (
-                        <button
-                          onClick={() => eliminarItem(item)}
-                          title="Eliminar definitivamente (solo disponible para ítems sin existencias)"
-                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}
-                        >
-                          🗑️
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      </>
-      )}
-    </div>
-  );
-}
+// ── GET /api/validador-inventario/tipos-inventario/:concat/historial ─────────
+// Historial de reclasificaciones de un grupo (quién cambió qué y cuándo).
+router.get('/tipos-inventario/:concat/historial', authMiddleware, async (req, res) => {
+  try {
+    const concat = truncar(req.params.concat, 6).toUpperCase();
+    const { rows } = await pool.query(
+      `SELECT h.*, u.nombre AS cambiado_por_nombre
+       FROM tipos_inventario_historial h
+       LEFT JOIN usuarios u ON u.id = h.cambiado_por
+       WHERE h.concat = $1
+       ORDER BY h.cambiado_en DESC`,
+      [concat]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al obtener historial de tipo de inventario:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
 // ════════════════════════════════════════════════════════════════════════════
-// LISTAS DE CONTEO — sub-pestaña dentro de Validador de Inventarios
+// GRUPOS DE CONTEO — clasificación por código completo (grupo + subgrupo),
+// adicional a la cuenta contable. Un solo Excel, un solo botón de carga.
 // ════════════════════════════════════════════════════════════════════════════
 
-const LABEL_TIPO_LISTA = {
+// ── POST /api/validador-inventario/clasificacion-conteo/importar ────────────
+// Body: { items: [{codigo, grupo, subgrupo}] }. Editor o admin.
+router.post('/clasificacion-conteo/importar', authMiddleware, editorOrAdmin, async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items es requerido' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let actualizados = 0;
+    for (const it of items) {
+      const codigo = truncar(it.codigo, 50);
+      if (!codigo) continue;
+      await client.query(
+        `INSERT INTO clasificacion_conteo (codigo, grupo, subgrupo, actualizado_por, actualizado_en)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (codigo) DO UPDATE SET
+           grupo = EXCLUDED.grupo, subgrupo = EXCLUDED.subgrupo,
+           actualizado_por = EXCLUDED.actualizado_por, actualizado_en = NOW()`,
+        [codigo, truncar(it.grupo, 100), truncar(it.subgrupo, 100), req.user.id]
+      );
+      actualizados++;
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, actualizados });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al importar clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── PATCH /api/validador-inventario/clasificacion-conteo/:codigo ────────────
+// Edición manual puntual (crea si no existía). Editor o admin.
+router.patch('/clasificacion-conteo/:codigo', authMiddleware, editorOrAdmin, async (req, res) => {
+  try {
+    const { grupo, subgrupo } = req.body;
+    if (!grupo) return res.status(400).json({ error: 'grupo requerido' });
+    const codigo = truncar(req.params.codigo, 50);
+    const { rows } = await pool.query(
+      `INSERT INTO clasificacion_conteo (codigo, grupo, subgrupo, actualizado_por, actualizado_en)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (codigo) DO UPDATE SET
+         grupo = EXCLUDED.grupo, subgrupo = EXCLUDED.subgrupo,
+         actualizado_por = EXCLUDED.actualizado_por, actualizado_en = NOW()
+       RETURNING *`,
+      [codigo, truncar(grupo, 100), truncar(subgrupo, 100), req.user.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/clasificacion-conteo/opciones?bodega=&grupo= ─
+// Sin 'grupo': lista de grupos disponibles en esa bodega (con conteo de ítems).
+// Con 'grupo': lista de subgrupos dentro de ese grupo (incluye "SIN SUBGRUPO").
+router.get('/clasificacion-conteo/opciones', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const grupo = req.query.grupo;
+
+    if (!grupo) {
+      const { rows } = await pool.query(
+        `SELECT cc.grupo AS valor, COUNT(*)::int AS items
+         FROM validador_inventario vi
+         JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+         WHERE vi.bodega = $1 AND cc.grupo IS NOT NULL AND cc.grupo <> ''
+         GROUP BY cc.grupo ORDER BY cc.grupo`,
+        [bodega]
+      );
+      return res.json(rows);
+    }
+
+    const { rows } = await pool.query(
+      `SELECT COALESCE(NULLIF(cc.subgrupo, ''), 'SIN SUBGRUPO') AS valor, COUNT(*)::int AS items
+       FROM validador_inventario vi
+       JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+       WHERE vi.bodega = $1 AND cc.grupo = $2
+       GROUP BY 1 ORDER BY 1`,
+      [bodega, grupo]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar opciones de grupo de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/clasificacion-conteo/limpiar-duplicados ───
+// Borra las filas "huérfanas" de 9 dígitos que quedaron de antes del fix del
+// cero inicial, SOLO cuando ya existe la versión correcta de 10 dígitos (para
+// no arriesgar ningún dato real). Solo admin.
+router.post('/clasificacion-conteo/limpiar-duplicados', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      DELETE FROM clasificacion_conteo cc9
+      WHERE cc9.codigo ~ '^[0-9]{9}$'
+        AND EXISTS (SELECT 1 FROM clasificacion_conteo cc10 WHERE cc10.codigo = '0' || cc9.codigo)
+      RETURNING cc9.codigo
+    `);
+    res.json({ ok: true, eliminados: rows.length, codigos: rows.map(r => r.codigo) });
+  } catch (err) {
+    console.error('Error al limpiar duplicados de clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/clasificacion-conteo?buscar= ───────────────
+// Lista TODOS los códigos con su grupo/subgrupo de conteo asignado (con el
+// nombre del artículo si existe en algún inventario), para la pestaña de
+// datos maestros: ver, buscar, editar o agregar uno a la vez.
+router.get('/clasificacion-conteo', authMiddleware, async (req, res) => {
+  try {
+    const buscar = (req.query.buscar || '').trim();
+    const params = [];
+    let where = '';
+    if (buscar) {
+      params.push(`%${buscar.toUpperCase()}%`);
+      where = `WHERE UPPER(cc.codigo) LIKE $1 OR UPPER(COALESCE(cc.grupo,'')) LIKE $1
+                     OR UPPER(COALESCE(cc.subgrupo,'')) LIKE $1 OR UPPER(COALESCE(vi.nombre,'')) LIKE $1`;
+    }
+    const { rows } = await pool.query(
+      `SELECT cc.codigo, cc.grupo, cc.subgrupo, cc.actualizado_en, vi.nombre
+       FROM clasificacion_conteo cc
+       LEFT JOIN LATERAL (
+         SELECT nombre FROM validador_inventario v WHERE v.codigo = cc.codigo LIMIT 1
+       ) vi ON true
+       ${where}
+       ORDER BY cc.grupo NULLS LAST, cc.subgrupo NULLS LAST, cc.codigo ASC`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── DELETE /api/validador-inventario/clasificacion-conteo/:codigo ────────────
+// Elimina la asignación de grupo/subgrupo de un código. Solo admin.
+router.delete('/clasificacion-conteo/:codigo', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const codigo = truncar(req.params.codigo, 50);
+    const { rows } = await pool.query(`DELETE FROM clasificacion_conteo WHERE codigo = $1 RETURNING codigo`, [codigo]);
+    if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error al eliminar clasificación de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// presentación). Los ítems se "congelan" (snapshot) al crear la lista.
+// ════════════════════════════════════════════════════════════════════════════
+
+const TIPOS_LISTA = ['general', 'cuenta_contable', 'grupo_inventario', 'presentacion', 'grupo_conteo'];
+
+const LABEL_TIPO = {
   general: 'Conteo general',
-  cuenta_contable: 'Por cuenta contable',
-  grupo_inventario: 'Por grupo de inventario',
-  presentacion: 'Por presentación',
-  grupo_conteo: 'Por grupo de conteo',
+  cuenta_contable: 'Conteo por cuenta contable',
+  grupo_inventario: 'Conteo por grupo de inventario',
+  presentacion: 'Conteo por presentación',
+  grupo_conteo: 'Conteo por grupo de conteo',
 };
 
-function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
-  const [vistaInterna, setVistaInterna] = useState('listado'); // 'listado' | 'crear' | 'detalle'
-  const [listas, setListas] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  const [formTipo, setFormTipo] = useState('general');
-  const [formCriterio, setFormCriterio] = useState('');
-  const [formSubcriterio, setFormSubcriterio] = useState('');
-  const [formSubclasificar, setFormSubclasificar] = useState(false);
-  const [formConteo1Nombre, setFormConteo1Nombre] = useState('');
-  const [formConteo2Nombre, setFormConteo2Nombre] = useState('');
-  const [opciones, setOpciones] = useState([]);
-  const [opcionesSubgrupo, setOpcionesSubgrupo] = useState([]);
-  const [creando, setCreando] = useState(false);
-  // ── Multi-selección de grupos/subgrupos de conteo (solo tipo 'grupo_conteo') ──
-  // gruposSel: [{ grupo, subgrupo: string|null }] — puede mezclar grupos
-  // completos y subgrupos puntuales de distintos grupos.
-  const [gruposSel, setGruposSel] = useState([]);
-  const [subgruposPorGrupo, setSubgruposPorGrupo] = useState({}); // grupo -> [{valor, items}]
-  const [gruposExpandidos, setGruposExpandidos] = useState({});
-  const [generarPorSeparado, setGenerarPorSeparado] = useState(true);
-  const [progresoLote, setProgresoLote] = useState(null); // { hecho, total } mientras crea varias listas
-
-  const [listaActual, setListaActual] = useState(null); // { ...lista, items }
-  const [reporte, setReporte] = useState(null);
-  const [editConteo, setEditConteo] = useState({}); // `${itemId}_${campo}` -> valor
-  const [guardandoConteoKey, setGuardandoConteoKey] = useState(null);
-  const [editCuentaItem, setEditCuentaItem] = useState({}); // itemId -> valor
-  const [guardandoCuentaItemId, setGuardandoCuentaItemId] = useState(null);
-  const [cerrando, setCerrando] = useState(false);
-  const [descargando, setDescargando] = useState('');
-  const [modoEscaneo, setModoEscaneo] = useState(false);
-  // ── Buscador dentro del detalle de una lista ──
-  const [busquedaLista, setBusquedaLista] = useState('');
-  const [soloNoCuadra, setSoloNoCuadra] = useState(false);
-  const [textoEscaneado, setTextoEscaneado] = useState('');
-  const [filaResaltada, setFilaResaltada] = useState(null);
-  const [historialConcatAbierto, setHistorialConcatAbierto] = useState(null);
-  const [historialTipoData, setHistorialTipoData] = useState([]);
-  const [cargandoHistorialTipo, setCargandoHistorialTipo] = useState(false);
-  const [editMotivo, setEditMotivo] = useState({});
-  const [guardandoMotivoId, setGuardandoMotivoId] = useState(null);
-  const inputEscaneoRef = useRef(null);
-  const conteoInputRefs = useRef({});
-
-  // ── Agregar producto/lote encontrado en bodega, cruces (cambio de lote /
-  // referencia cruzada) y reporte final consolidado ─────────────────────────
-  const [mostrarFormAgregar, setMostrarFormAgregar] = useState(false);
-  const [formAgregar, setFormAgregar] = useState({ codigo: '', nombre: '', lote: '', fecha_vencimiento: '', costo_unitario: '', conteo_1: '' });
-  const [agregandoItem, setAgregandoItem] = useState(false);
-  const [mostrarFormCruce, setMostrarFormCruce] = useState(false);
-  const [formCruce, setFormCruce] = useState({ item_origen_id: '', item_destino_id: '', cantidad: '', motivo: '' });
-  const [registrandoCruce, setRegistrandoCruce] = useState(false);
-  const [cruces, setCruces] = useState([]);
-  const [mostrarReporteFinal, setMostrarReporteFinal] = useState(false);
-  const [reporteFinal, setReporteFinal] = useState(null);
-  const [cargandoReporteFinal, setCargandoReporteFinal] = useState(false);
-  const [descargandoReporteFinal, setDescargandoReporteFinal] = useState(false);
-
-
-  const cargarListas = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/validador-inventario/listas-conteo', { params: { bodega } });
-      setListas(res.data || []);
-    } catch (e) {
-      setError('No se pudieron cargar las listas de conteo');
-    }
-    setLoading(false);
-  }, [bodega]);
-
-  useEffect(() => { cargarListas(); }, [cargarListas]);
-
-  useEffect(() => {
-    if (formTipo === 'general') { setOpciones([]); setFormCriterio(''); return; }
-    setFormCriterio(''); setFormSubcriterio(''); setOpcionesSubgrupo([]);
-    setGruposSel([]); setGruposExpandidos({}); setSubgruposPorGrupo({});
-    if (formTipo === 'grupo_conteo') {
-      api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega } })
-        .then(res => setOpciones(res.data || []))
-        .catch(() => setOpciones([]));
-      return;
-    }
-    api.get('/validador-inventario/listas-conteo/opciones', { params: { bodega, tipo: formTipo } })
-      .then(res => setOpciones(res.data || []))
-      .catch(() => setOpciones([]));
-  }, [formTipo, bodega]);
-
-  // Expande/colapsa un grupo en el checklist de "grupo_conteo" y carga sus
-  // subgrupos (con conteo de ítems) la primera vez que se abre.
-  async function toggleExpandirGrupo(grupo) {
-    setGruposExpandidos(prev => ({ ...prev, [grupo]: !prev[grupo] }));
-    if (!subgruposPorGrupo[grupo]) {
-      try {
-        const res = await api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega, grupo } });
-        setSubgruposPorGrupo(prev => ({ ...prev, [grupo]: res.data || [] }));
-      } catch (e) {
-        setSubgruposPorGrupo(prev => ({ ...prev, [grupo]: [] }));
-      }
-    }
-  }
-
-  function grupoSelKey(g) { return `${g.grupo}|${g.subgrupo || ''}`; }
-  function grupoEstaMarcado(grupo, subgrupo) {
-    const key = `${grupo}|${subgrupo || ''}`;
-    return gruposSel.some(g => grupoSelKey(g) === key);
-  }
-  function toggleGrupoSel(grupo, subgrupo) {
-    const key = `${grupo}|${subgrupo || ''}`;
-    setGruposSel(prev => {
-      const yaEsta = prev.some(g => grupoSelKey(g) === key);
-      if (yaEsta) return prev.filter(g => grupoSelKey(g) !== key);
-      // Marcar el grupo completo quita los subgrupos sueltos ya marcados de
-      // ese mismo grupo (quedarían redundantes), y viceversa.
-      let base = prev;
-      if (!subgrupo) base = prev.filter(g => g.grupo !== grupo);
-      else base = prev.filter(g => !(g.grupo === grupo && !g.subgrupo));
-      return [...base, { grupo, subgrupo: subgrupo || null }];
-    });
-  }
-
-  async function crearLista() {
-    const esMultiGrupo = formTipo === 'grupo_conteo' && gruposSel.length > 0;
-    if (formTipo !== 'general' && !esMultiGrupo && !formCriterio) {
-      setError('Elige al menos un criterio para este tipo de conteo');
-      return;
-    }
-    setError('');
-
-    // Modo lote: una lista independiente por cada grupo/subgrupo marcado —
-    // así no hay que crearlas una por una a mano.
-    if (esMultiGrupo && gruposSel.length > 1 && generarPorSeparado) {
-      setCreando(true);
-      setProgresoLote({ hecho: 0, total: gruposSel.length });
-      let ultimoId = null;
-      const errores = [];
-      for (let i = 0; i < gruposSel.length; i++) {
-        const g = gruposSel[i];
-        try {
-          const res = await api.post('/validador-inventario/listas-conteo', {
-            bodega, tipo: 'grupo_conteo', criterio: g.grupo, subcriterio: g.subgrupo || null,
-            subclasificar_presentacion: formSubclasificar, conteo1_nombre: formConteo1Nombre, conteo2_nombre: formConteo2Nombre,
-          });
-          ultimoId = res.data.id;
-        } catch (e) {
-          errores.push(`${g.subgrupo ? `${g.grupo} > ${g.subgrupo}` : g.grupo}: ${e.response?.data?.error || e.message}`);
-        }
-        setProgresoLote({ hecho: i + 1, total: gruposSel.length });
-      }
-      setProgresoLote(null);
-      await cargarListas();
-      if (errores.length > 0) {
-        setError(`Se crearon ${gruposSel.length - errores.length} de ${gruposSel.length} listas. Fallaron: ` + errores.join(' · '));
-        setVistaInterna('listado');
-      } else if (ultimoId) {
-        await abrirLista(ultimoId);
-      }
-      setFormTipo('general'); setFormCriterio(''); setFormSubcriterio(''); setFormSubclasificar(false);
-      setFormConteo1Nombre(''); setFormConteo2Nombre(''); setGruposSel([]); setGenerarPorSeparado(true);
-      setCreando(false);
-      return;
-    }
-
-    setCreando(true);
-    try {
-      const body = {
-        bodega, tipo: formTipo,
-        criterio: formTipo === 'general' ? null : (esMultiGrupo ? null : formCriterio),
-        subcriterio: formTipo === 'grupo_conteo' && !esMultiGrupo ? (formSubcriterio || null) : null,
-        subclasificar_presentacion: formSubclasificar, conteo1_nombre: formConteo1Nombre, conteo2_nombre: formConteo2Nombre,
-      };
-      if (esMultiGrupo) body.criteriosGrupo = gruposSel; // combina todos los marcados en UNA sola lista
-      const res = await api.post('/validador-inventario/listas-conteo', body);
-      await cargarListas();
-      await abrirLista(res.data.id);
-      setFormTipo('general'); setFormCriterio(''); setFormSubcriterio(''); setFormSubclasificar(false);
-      setFormConteo1Nombre(''); setFormConteo2Nombre(''); setGruposSel([]); setGenerarPorSeparado(true);
-    } catch (e) {
-      setError('Error creando la lista: ' + (e.response?.data?.error || e.message));
-    }
-    setCreando(false);
-  }
-
-  async function eliminarLista(l) {
-    const etiqueta = `#${l.id} — ${LABEL_TIPO_LISTA[l.tipo]}${l.criterio ? ': ' + l.criterio : ''}`;
-    if (!window.confirm(`¿Eliminar definitivamente la lista ${etiqueta}? Se perderán todos sus conteos e ítems. Esta acción no se puede deshacer.`)) return;
-    try {
-      await api.delete(`/validador-inventario/listas-conteo/${l.id}`);
-      await cargarListas();
-    } catch (e) {
-      setError('No se pudo eliminar la lista: ' + (e.response?.data?.error || e.message));
-    }
-  }
-
-  async function abrirLista(id) {
-    setLoading(true);
-    setReporte(null);
-    setBusquedaLista('');
-    setSoloNoCuadra(false);
-    setCruces([]);
-    setReporteFinal(null);
-    setMostrarReporteFinal(false);
-    try {
-      const res = await api.get(`/validador-inventario/listas-conteo/${id}`);
-      setListaActual(res.data);
-      setVistaInterna('detalle');
-      cargarCruces(id);
-    } catch (e) {
-      setError('No se pudo abrir la lista');
-    }
-    setLoading(false);
-  }
-
-  async function cargarCruces(listaId) {
-    try {
-      const res = await api.get(`/validador-inventario/listas-conteo/${listaId}/cruces`);
-      setCruces(res.data || []);
-    } catch (e) { /* silencioso */ }
-  }
-
-  // ── Agregar producto/lote encontrado físicamente en bodega ──────────────────
-  async function agregarItem() {
-    if (!formAgregar.codigo.trim()) { alert('El código es requerido'); return; }
-    setAgregandoItem(true);
-    try {
-      const res = await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/items`, {
-        codigo: formAgregar.codigo.trim(), nombre: formAgregar.nombre.trim(), lote: formAgregar.lote.trim(),
-        fecha_vencimiento: formAgregar.fecha_vencimiento.trim(), costo_unitario: formAgregar.costo_unitario || undefined,
-        conteo_1: formAgregar.conteo_1 === '' ? undefined : parseNumCO(formAgregar.conteo_1),
-      });
-      setListaActual(prev => ({ ...prev, items: [...prev.items, res.data] }));
-      setFormAgregar({ codigo: '', nombre: '', lote: '', fecha_vencimiento: '', costo_unitario: '', conteo_1: '' });
-      setMostrarFormAgregar(false);
-      await cargarReporte(listaActual.id);
-    } catch (e) {
-      alert('Error agregando el producto: ' + (e.response?.data?.error || e.message));
-    }
-    setAgregandoItem(false);
-  }
-
-  // ── Eliminar un producto agregado a mano (solo lista abierta, editor/admin) ─
-  async function eliminarItemAgregado(item) {
-    const tieneCruce = cruces.some(c => c.item_origen_id === item.id || c.item_destino_id === item.id);
-    const msg = `¿Eliminar el producto agregado "${item.codigo} — ${item.nombre}" (lote ${item.lote || 's/lote'}) de esta lista?` +
-      (tieneCruce ? '\n\nParticipa en un cambio de lote / referencia cruzada: ese cruce también se eliminará y se revertirá el ajuste en la otra fila.' : '');
-    if (!window.confirm(msg)) return;
-    try {
-      await api.delete(`/validador-inventario/listas-conteo/${listaActual.id}/items/${item.id}`);
-      setListaActual(prev => ({ ...prev, items: prev.items.filter(i => i.id !== item.id) }));
-      await cargarReporte(listaActual.id);
-      await cargarCruces(listaActual.id);
-    } catch (e) {
-      alert('Error eliminando el producto: ' + (e.response?.data?.error || e.message));
-    }
-  }
-
-  // ── Cambio de lote / referencia cruzada — neutraliza ambas diferencias ─────
-  async function registrarCruce() {
-    if (!formCruce.item_origen_id || !formCruce.item_destino_id) { alert('Elige el ítem origen y el destino'); return; }
-    if (formCruce.item_origen_id === formCruce.item_destino_id) { alert('El origen y el destino no pueden ser el mismo ítem'); return; }
-    const cant = parseNumCO(formCruce.cantidad);
-    if (!cant || cant <= 0) { alert('La cantidad debe ser mayor que cero'); return; }
-    setRegistrandoCruce(true);
-    try {
-      await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/cruces`, {
-        item_origen_id: formCruce.item_origen_id, item_destino_id: formCruce.item_destino_id,
-        cantidad: cant, motivo: formCruce.motivo.trim(),
-      });
-      setFormCruce({ item_origen_id: '', item_destino_id: '', cantidad: '', motivo: '' });
-      setMostrarFormCruce(false);
-      await cargarCruces(listaActual.id);
-      await cargarReporte(listaActual.id);
-    } catch (e) {
-      alert('Error registrando el cruce: ' + (e.response?.data?.error || e.message));
-    }
-    setRegistrandoCruce(false);
-  }
-
-  async function revertirCruce(cruceId) {
-    if (!window.confirm('¿Revertir este cruce? Las diferencias de ambos ítems volverán a su valor original.')) return;
-    try {
-      await api.delete(`/validador-inventario/listas-conteo/${listaActual.id}/cruces/${cruceId}`);
-      await cargarCruces(listaActual.id);
-      await cargarReporte(listaActual.id);
-    } catch (e) {
-      alert('Error revirtiendo el cruce: ' + (e.response?.data?.error || e.message));
-    }
-  }
-
-  // ── Reporte final consolidado (sobrantes, faltantes, agregados, cruces) ────
-  async function verReporteFinal() {
-    setMostrarReporteFinal(true);
-    setCargandoReporteFinal(true);
-    try {
-      const res = await api.get(`/validador-inventario/listas-conteo/${listaActual.id}/reporte-final`);
-      setReporteFinal(res.data);
-    } catch (e) {
-      alert('Error generando el reporte final: ' + (e.response?.data?.error || e.message));
-    }
-    setCargandoReporteFinal(false);
-  }
-
-  async function descargarReporteFinalExcel() {
-    setDescargandoReporteFinal(true);
-    try {
-      const res = await api.get(`/validador-inventario/listas-conteo/${listaActual.id}/reporte-final-excel`, { responseType: 'blob' });
-      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
-      const a = document.createElement('a');
-      a.href = blobUrl; a.download = `reporte_final_conteo_${listaActual.id}.xlsx`;
-      document.body.appendChild(a); a.click(); a.remove();
-      window.URL.revokeObjectURL(blobUrl);
-    } catch (e) {
-      alert('Error descargando el reporte final: ' + (e.response?.data?.error || e.message));
-    }
-    setDescargandoReporteFinal(false);
-  }
-
-  async function cargarReporte(id) {
-    try {
-      const res = await api.get(`/validador-inventario/listas-conteo/${id}/reporte`);
-      setReporte(res.data);
-    } catch (e) {
-      setError('No se pudo generar el reporte');
-    }
-  }
-
-  async function guardarConteoItem(item, campo) {
-    const key = `${item.id}_${campo}`;
-    const valor = editConteo[key];
-    if (valor === undefined || valor === '') return;
-    setGuardandoConteoKey(key);
-    try {
-      const res = await api.patch(`/validador-inventario/listas-conteo/${listaActual.id}/items/${item.id}`, { campo, valor: parseNumCO(valor) });
-      setListaActual(prev => ({ ...prev, items: prev.items.map(it => (it.id === item.id ? res.data : it)) }));
-      setEditConteo(prev => { const cp = { ...prev }; delete cp[key]; return cp; });
-      // La columna "Diferencia" se calcula aparte (endpoint /reporte), no se
-      // deriva sola del conteo recién guardado — hay que refrescarla para que
-      // se vea al instante, si no queda pareciendo que "no pasó nada".
-      await cargarReporte(listaActual.id);
-    } catch (e) {
-      alert('Error guardando el conteo: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoConteoKey(null);
-  }
-
-  // ── Reclasificar un ítem "SIN CLASIFICAR" (o cambiar su cuenta) directo
-  // desde la lista de conteo. Editor o admin. Queda guardado en el snapshot
-  // de esta lista Y en la tabla maestra tipos_inventario.
-  async function guardarCuentaItem(item) {
-    const valor = editCuentaItem[item.id];
-    if (valor === undefined || valor === '') return;
-    setGuardandoCuentaItemId(item.id);
-    try {
-      const res = await api.patch(`/validador-inventario/listas-conteo/${listaActual.id}/items/${item.id}/cuenta`, { cuenta: valor });
-      setListaActual(prev => ({ ...prev, items: prev.items.map(it => (it.id === item.id ? res.data : it)) }));
-      setEditCuentaItem(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando la clasificación: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoCuentaItemId(null);
-  }
-
-  // ── Historial de reclasificaciones de un grupo (auditoría) ──────────────────
-  async function verHistorialTipo(concat) {
-    setHistorialConcatAbierto(concat);
-    setCargandoHistorialTipo(true);
-    try {
-      const res = await api.get(`/validador-inventario/tipos-inventario/${encodeURIComponent(concat)}/historial`);
-      setHistorialTipoData(res.data || []);
-    } catch (e) {
-      setHistorialTipoData([]);
-    }
-    setCargandoHistorialTipo(false);
-  }
-
-  // ── Motivo/justificación de la diferencia (sustento para cierre/auditoría) ──
-  async function guardarMotivo(item) {
-    const valor = editMotivo[item.id];
-    if (valor === undefined) return;
-    setGuardandoMotivoId(item.id);
-    try {
-      const res = await api.patch(`/validador-inventario/listas-conteo/${listaActual.id}/items/${item.id}/motivo`, { motivo: valor });
-      setListaActual(prev => ({ ...prev, items: prev.items.map(it => (it.id === item.id ? res.data : it)) }));
-      setEditMotivo(prev => { const cp = { ...prev }; delete cp[item.id]; return cp; });
-    } catch (e) {
-      alert('Error guardando el motivo: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoMotivoId(null);
-  }
-
-  // ── Modo escaneo (lector de código de barras tipo teclado/USB/Bluetooth) ───
-  // La mayoría de lectores de bodega escriben el código y terminan con Enter,
-  // como si fuera un teclado — no hace falta cámara ni librería nueva. Al
-  // escanear, ubica la fila de ese código y enfoca su campo de Conteo 1 (o
-  // Conteo 2 si el 1 ya está lleno) para digitar la cantidad al instante.
-  function manejarEscaneo(e) {
-    if (e.key !== 'Enter') return;
-    const codigo = textoEscaneado.trim();
-    setTextoEscaneado('');
-    if (!codigo || !listaActual) return;
-    const item = listaActual.items.find(it => it.codigo === codigo);
-    if (!item) { setFilaResaltada('no-encontrado'); setTimeout(() => setFilaResaltada(null), 1500); return; }
-    setFilaResaltada(item.id);
-    const campo = (item.conteo_1 === null || item.conteo_1 === undefined) ? 'conteo_1' : 'conteo_2';
-    const enfocar = () => {
-      const ref = conteoInputRefs.current[`${item.id}_${campo}`];
-      if (ref) { ref.focus(); ref.select(); }
-    };
-    // Si hay un filtro activo, la fila escaneada podría estar oculta: se limpia
-    // el filtro y se espera al siguiente render para poder enfocar el input.
-    if (busquedaLista || soloNoCuadra) {
-      setBusquedaLista('');
-      setSoloNoCuadra(false);
-      setTimeout(enfocar, 80);
-    } else {
-      enfocar();
-    }
-  }
-
-  async function cerrarLista() {
-    if (!window.confirm('¿Cerrar esta lista de conteo? Ya no se podrán modificar los conteos.')) return;
-    setCerrando(true);
-    try {
-      const res = await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/cerrar`);
-      setListaActual(prev => ({ ...prev, ...res.data }));
-      await cargarReporte(listaActual.id);
-      await cargarListas();
-    } catch (e) {
-      alert('Error cerrando la lista: ' + (e.response?.data?.error || e.message));
-    }
-    setCerrando(false);
-  }
-
-  async function descargarArchivo(tipo) {
-    setDescargando(tipo);
-    try {
-      const id = listaActual.id;
-      const rutas = {
-        plantilla: [`/validador-inventario/listas-conteo/${id}/plantilla`, `lista_conteo_${id}.xlsx`],
-        plantilla2: [`/validador-inventario/listas-conteo/${id}/plantilla-segundo-conteo`, `segundo_conteo_${id}.xlsx`],
-        reporte: [`/validador-inventario/listas-conteo/${id}/reporte-excel`, `reporte_diferencias_${id}.xlsx`],
-      };
-      const [url, nombreArchivo] = rutas[tipo];
-      const res = await api.get(url, { responseType: 'blob' });
-      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = nombreArchivo;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(blobUrl);
-    } catch (e) {
-      // Con responseType 'blob' el error del servidor llega como Blob: se lee su JSON.
-      let msg = e.message;
-      if (e.response?.data instanceof Blob) {
-        try { msg = JSON.parse(await e.response.data.text()).error || msg; } catch (_) { /* se deja e.message */ }
-      } else if (e.response?.data?.error) {
-        msg = e.response.data.error;
-      }
-      alert('Error descargando el archivo: ' + msg);
-    }
-    setDescargando('');
-  }
-
-  const puedeSubclasificar = formTipo === 'cuenta_contable' || formTipo === 'grupo_inventario';
-
-  // ── Vista: listado de listas ────────────────────────────────────────────────
-  if (vistaInterna === 'listado') {
-    return (
-      <div>
-        {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
-
-        <PanelesGerenciales bodega={bodega} fmtPesos={fmtPesos} inputStyle={inputStyle} />
-
-        <button
-          onClick={() => setVistaInterna('crear')}
-          style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', marginBottom: 16 }}
-        >
-          + Nuevo conteo
-        </button>
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
-        ) : listas.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>
-            No hay conteos registrados para la bodega <strong>{bodega}</strong> todavía.
-          </div>
-        ) : (
-          <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                  {['#', 'Tipo', 'Criterio', 'Estado', 'Ítems', 'Conteo 1', 'Conteo 2', 'Creada', ''].map(h => (
-                    <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {listas.map(l => (
-                  <tr key={l.id} style={{ borderBottom: '1px solid #1a2234' }}>
-                    <td style={{ padding: '6px 8px' }}>{l.id}</td>
-                    <td style={{ padding: '6px 8px' }}>{LABEL_TIPO_LISTA[l.tipo]}</td>
-                    <td style={{ padding: '6px 8px' }}>{l.criterio || '—'}{l.subclasificar_presentacion ? ' (+ presentación)' : ''}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <span style={{
-                        background: l.estado === 'cerrada' ? '#1e2a1e' : 'var(--t-bg-sidebar)',
-                        color: l.estado === 'cerrada' ? '#4ade80' : '#fbbf24',
-                        padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600,
-                      }}>
-                        {l.estado === 'cerrada' ? '🔒 Cerrada' : '🟢 Abierta'}
-                      </span>
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>{l.total_items}</td>
-                    <td style={{ padding: '6px 8px' }}>{l.con_conteo_1}/{l.total_items}</td>
-                    <td style={{ padding: '6px 8px' }}>{l.con_conteo_2}/{l.total_items}</td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>{new Date(l.creado_en).toLocaleDateString('es-CO')}</td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <button onClick={() => abrirLista(l.id)} style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 10px', fontSize: 12, color: 'var(--t-accent)', cursor: 'pointer' }}>
-                        Abrir →
-                      </button>
-                      {isAdmin && (
-                        <button
-                          onClick={() => eliminarLista(l)}
-                          title="Eliminar esta lista de conteo"
-                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer', marginLeft: 6 }}
-                        >
-                          🗑️
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // ── Vista: crear lista ──────────────────────────────────────────────────────
-  if (vistaInterna === 'crear') {
-    return (
-      <div style={{ maxWidth: 640 }}>
-        <button onClick={() => setVistaInterna('listado')} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13, marginBottom: 14 }}>← Volver</button>
-        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Nuevo conteo — bodega {bodega}</h3>
-        {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <label style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-            Tipo de conteo
-            <select value={formTipo} onChange={(e) => setFormTipo(e.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
-              <option value="general">General (toda la bodega)</option>
-              <option value="cuenta_contable">Por cuenta contable</option>
-              <option value="grupo_inventario">Por grupo de inventario</option>
-              <option value="presentacion">Por presentación</option>
-              <option value="grupo_conteo">Por grupo de conteo</option>
-            </select>
-          </label>
-
-          {formTipo !== 'general' && formTipo !== 'grupo_conteo' && (
-            <label style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-              Criterio
-              <select value={formCriterio} onChange={(e) => setFormCriterio(e.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
-                <option value="">— Selecciona —</option>
-                {opciones.map(o => <option key={o.valor} value={o.valor}>{o.valor} ({o.items} ítems)</option>)}
-              </select>
-            </label>
-          )}
-
-          {formTipo === 'grupo_conteo' && (
-            <div>
-              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 6 }}>
-                Grupos y subgrupos <span style={{ opacity: 0.8 }}>(marca uno o varios — puedes combinar grupos completos con subgrupos sueltos de otros grupos)</span>
-              </div>
-              {opciones.length === 0 ? (
-                <p style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin grupos de conteo cargados para esta bodega. Cárgalos en Inventario → "Cargar Grupos de Conteo (Excel)", o en la pestaña Datos.</p>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 280, overflowY: 'auto', border: '1px solid var(--t-border)', borderRadius: 8, padding: 8 }}>
-                  {opciones.map(g => (
-                    <div key={g.valor}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 4px', borderRadius: 4, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={grupoEstaMarcado(g.valor, null)} onChange={() => toggleGrupoSel(g.valor, null)} />
-                        <span style={{ flex: 1, fontWeight: 600 }}>{g.valor}</span>
-                        <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>{g.items} ítems</span>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.preventDefault(); toggleExpandirGrupo(g.valor); }}
-                          style={{ background: 'none', border: 'none', color: 'var(--t-accent)', fontSize: 11, cursor: 'pointer' }}
-                        >
-                          {gruposExpandidos[g.valor] ? '▲ subgrupos' : '▼ subgrupos'}
-                        </button>
-                      </label>
-                      {gruposExpandidos[g.valor] && (
-                        <div style={{ marginLeft: 24, borderLeft: '1px solid var(--t-border)', paddingLeft: 10 }}>
-                          {!subgruposPorGrupo[g.valor] ? (
-                            <p style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Cargando…</p>
-                          ) : subgruposPorGrupo[g.valor].length === 0 ? (
-                            <p style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Sin subgrupos.</p>
-                          ) : subgruposPorGrupo[g.valor].map(s => (
-                            <label key={s.valor} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '2px 4px', cursor: 'pointer' }}>
-                              <input type="checkbox" checked={grupoEstaMarcado(g.valor, s.valor)} onChange={() => toggleGrupoSel(g.valor, s.valor)} />
-                              <span style={{ flex: 1 }}>{s.valor}</span>
-                              <span style={{ color: 'var(--t-text-muted)', fontSize: 10 }}>{s.items} ítems</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {gruposSel.length > 1 && (
-                <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '8px 10px' }}>
-                  <input type="checkbox" checked={generarPorSeparado} onChange={(e) => setGenerarPorSeparado(e.target.checked)} />
-                  Generar listas de conteo por grupo o por subgrupo
-                  <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>
-                    {generarPorSeparado
-                      ? `— crea ${gruposSel.length} listas separadas, una por cada uno marcado`
-                      : '— combina todo lo marcado en una sola lista'}
-                  </span>
-                </label>
-              )}
-
-              {progresoLote && (
-                <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 8 }}>Creando listas… {progresoLote.hecho}/{progresoLote.total}</p>
-              )}
-            </div>
-          )}
-
-          {puedeSubclasificar && (
-            <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <input type="checkbox" checked={formSubclasificar} onChange={(e) => setFormSubclasificar(e.target.checked)} />
-              Subclasificar por presentación dentro de este grupo
-            </label>
-          )}
-
-          <label style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-            Nombre de quien hace el Conteo 1 (opcional)
-            <input type="text" value={formConteo1Nombre} onChange={(e) => setFormConteo1Nombre(e.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }} />
-          </label>
-          <label style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-            Nombre de quien hace el Conteo 2 (opcional)
-            <input type="text" value={formConteo2Nombre} onChange={(e) => setFormConteo2Nombre(e.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }} />
-          </label>
-
-          <button
-            onClick={crearLista}
-            disabled={creando}
-            style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '10px 14px', fontSize: 13, fontWeight: 600, cursor: creando ? 'not-allowed' : 'pointer', marginTop: 6 }}
-          >
-            {creando
-              ? (progresoLote ? `Creando ${progresoLote.hecho}/${progresoLote.total}…` : 'Creando…')
-              : (formTipo === 'grupo_conteo' && gruposSel.length > 1 && generarPorSeparado
-                  ? `Crear ${gruposSel.length} listas y ver la última`
-                  : 'Crear conteo y ver ítems')}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Vista: detalle de una lista ─────────────────────────────────────────────
-  if (vistaInterna === 'detalle' && listaActual) {
-    const l = listaActual;
-    const abierta = l.estado === 'abierta';
-
-    // ── Buscador multi-campo + filtro "solo lo que no cuadra" ─────────────
-    // Varios términos se separan con coma, punto y coma o salto de línea
-    // (basta con que coincida UNO). Dentro de un término, las palabras
-    // separadas por espacio deben aparecer TODAS (ej. "guante 7" → nombre
-    // que contenga guante y 7). Busca en código, nombre y lote, sin
-    // distinguir mayúsculas ni tildes.
-    const normalizarBusqueda = (v) => String(v ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const terminosBusqueda = busquedaLista
-      .split(/[,;\n]+/)
-      .map(t => normalizarBusqueda(t).trim())
-      .filter(Boolean)
-      .map(t => t.split(/\s+/));
-    const repPorId = new Map((reporte?.items || []).map(r => [r.id, r]));
-    const itemsVisibles = l.items.filter(it => {
-      if (terminosBusqueda.length > 0) {
-        const pajar = normalizarBusqueda(`${it.codigo} ${it.nombre} ${it.lote}`);
-        if (!terminosBusqueda.some(palabras => palabras.every(w => pajar.includes(w)))) return false;
-      }
-      if (soloNoCuadra) {
-        const dif = repPorId.get(it.id)?.diferencia_cantidad_actual;
-        if (dif === null || dif === undefined || Number(dif) === 0) return false;
-      }
-      return true;
-    });
-    const hayFiltroLista = terminosBusqueda.length > 0 || soloNoCuadra;
-
-    return (
-      <div>
-        <button onClick={() => { setVistaInterna('listado'); cargarListas(); }} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13, marginBottom: 14 }}>← Volver a listas</button>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
-          <div>
-            <h3 style={{ fontSize: 16, fontWeight: 700 }}>
-              Conteo #{l.id} — {LABEL_TIPO_LISTA[l.tipo]}{l.criterio ? `: ${l.criterio}` : ''}
-              {l.subclasificar_presentacion ? ' (+ presentación)' : ''}
-            </h3>
-            <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4 }}>
-              Bodega {l.bodega} · Conteo 1: {l.conteo1_nombre || '—'} · Conteo 2: {l.conteo2_nombre || '—'} ·{' '}
-              <span style={{ color: abierta ? '#fbbf24' : '#4ade80', fontWeight: 600 }}>{abierta ? '🟢 Abierta' : '🔒 Cerrada'}</span>
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button onClick={() => descargarArchivo('plantilla')} disabled={!!descargando} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
-              📥 {descargando === 'plantilla' ? 'Generando…' : 'Plantilla Excel'}
-            </button>
-            {abierta && (
-              <button
-                onClick={() => descargarArchivo('plantilla2')}
-                disabled={!!descargando}
-                title="Planilla para imprimir con solo los ítems que hoy no cuadran, con casilla de Conteo 2"
-                style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}
-              >
-                🖨️ {descargando === 'plantilla2' ? 'Generando…' : 'Planilla 2.º conteo (solo diferencias)'}
-              </button>
-            )}
-            <button onClick={() => cargarReporte(l.id)} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
-              📊 Ver reporte de diferencias
-            </button>
-            {reporte && (
-              <button onClick={() => descargarArchivo('reporte')} disabled={!!descargando} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
-                📥 {descargando === 'reporte' ? 'Generando…' : 'Reporte Excel'}
-              </button>
-            )}
-            {abierta && isEditor && (
-              <button onClick={cerrarLista} disabled={cerrando} style={{ background: '#3a1d1d', border: '1px solid #5c2626', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}>
-                🔒 {cerrando ? 'Cerrando…' : 'Cerrar conteo'}
-              </button>
-            )}
-            {abierta && (
-              <button
-                onClick={() => { setModoEscaneo(m => !m); setTimeout(() => inputEscaneoRef.current?.focus(), 50); }}
-                style={{ background: modoEscaneo ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: modoEscaneo ? '#fff' : 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, cursor: 'pointer' }}
-              >
-                📷 {modoEscaneo ? 'Modo escaneo: ON' : 'Modo escaneo'}
-              </button>
-            )}
-            {abierta && (
-              <button
-                onClick={() => { setMostrarFormAgregar(m => !m); setMostrarFormCruce(false); }}
-                style={{ background: mostrarFormAgregar ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: mostrarFormAgregar ? '#fff' : 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, cursor: 'pointer' }}
-              >
-                ➕ Agregar producto/lote
-              </button>
-            )}
-            {abierta && (
-              <button
-                onClick={() => { setMostrarFormCruce(m => !m); setMostrarFormAgregar(false); }}
-                style={{ background: mostrarFormCruce ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: mostrarFormCruce ? '#fff' : 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, cursor: 'pointer' }}
-              >
-                🔀 Registrar cruce
-              </button>
-            )}
-            <button onClick={verReporteFinal} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
-              📋 Reporte final
-            </button>
-          </div>
-        </div>
-
-        {mostrarFormAgregar && (
-          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Agregar producto/lote encontrado en bodega (no estaba en el Excel de SIIS)</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Código*
-                <input value={formAgregar.codigo} onChange={e => setFormAgregar(p => ({ ...p, codigo: e.target.value }))} style={{ ...inputStyle, width: 130, display: 'block', marginTop: 3 }} />
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Nombre
-                <input value={formAgregar.nombre} onChange={e => setFormAgregar(p => ({ ...p, nombre: e.target.value }))} placeholder="(se toma del maestro si existe)" style={{ ...inputStyle, width: 200, display: 'block', marginTop: 3 }} />
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Lote
-                <input value={formAgregar.lote} onChange={e => setFormAgregar(p => ({ ...p, lote: e.target.value }))} style={{ ...inputStyle, width: 100, display: 'block', marginTop: 3 }} />
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Fecha venc.
-                <input type="date" value={formAgregar.fecha_vencimiento} onChange={e => setFormAgregar(p => ({ ...p, fecha_vencimiento: e.target.value }))} style={{ ...inputStyle, width: 130, display: 'block', marginTop: 3 }} />
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Costo unit.
-                <input type="number" value={formAgregar.costo_unitario} onChange={e => setFormAgregar(p => ({ ...p, costo_unitario: e.target.value }))} style={{ ...inputStyle, width: 100, display: 'block', marginTop: 3 }} />
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Conteo 1
-                <input type="number" value={formAgregar.conteo_1} onChange={e => setFormAgregar(p => ({ ...p, conteo_1: e.target.value }))} style={{ ...inputStyle, width: 80, display: 'block', marginTop: 3 }} />
-              </label>
-              <button onClick={agregarItem} disabled={agregandoItem} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                {agregandoItem ? 'Agregando…' : 'Agregar'}
-              </button>
-            </div>
-            <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 8 }}>
-              Queda con existencia SIIS = 0, así que lo que cuentes aparece como sobrante hasta que este código+lote entre en una carga de Excel — el sistema avisa cuando eso pase.
-            </p>
-          </div>
-        )}
-
-        {mostrarFormCruce && (
-          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Registrar cambio de lote o referencia cruzada</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Ítem origen (de donde salió)*
-                <select value={formCruce.item_origen_id} onChange={e => setFormCruce(p => ({ ...p, item_origen_id: e.target.value }))} style={{ ...inputStyle, width: 260, display: 'block', marginTop: 3 }}>
-                  <option value="">— Selecciona —</option>
-                  {l.items.map(it => <option key={it.id} value={it.id}>{it.codigo} — {it.nombre} ({it.lote || 'sin lote'})</option>)}
-                </select>
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Ítem destino (a donde llegó)*
-                <select value={formCruce.item_destino_id} onChange={e => setFormCruce(p => ({ ...p, item_destino_id: e.target.value }))} style={{ ...inputStyle, width: 260, display: 'block', marginTop: 3 }}>
-                  <option value="">— Selecciona —</option>
-                  {l.items.map(it => <option key={it.id} value={it.id}>{it.codigo} — {it.nombre} ({it.lote || 'sin lote'})</option>)}
-                </select>
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Cantidad*
-                <input type="number" value={formCruce.cantidad} onChange={e => setFormCruce(p => ({ ...p, cantidad: e.target.value }))} style={{ ...inputStyle, width: 90, display: 'block', marginTop: 3 }} />
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)', flex: 1, minWidth: 180 }}>Motivo
-                <input value={formCruce.motivo} onChange={e => setFormCruce(p => ({ ...p, motivo: e.target.value }))} placeholder="Ej: reetiquetado, producto mal ubicado…" style={{ ...inputStyle, width: '100%', display: 'block', marginTop: 3 }} />
-              </label>
-              <button onClick={registrarCruce} disabled={registrandoCruce} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                {registrandoCruce ? 'Registrando…' : 'Registrar'}
-              </button>
-            </div>
-            <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 8 }}>
-              Si origen y destino tienen el mismo código, se registra como cambio de lote; si son distintos, como referencia cruzada. La diferencia del origen baja y la del destino sube en la misma cantidad.
-            </p>
-            {cruces.length > 0 && (
-              <div style={{ marginTop: 12, borderTop: '1px solid var(--t-border)', paddingTop: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Cruces registrados en este conteo</div>
-                {cruces.map(c => (
-                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, padding: '4px 0', borderBottom: '1px solid #1a2234' }}>
-                    <span>
-                      {c.tipo === 'lote' ? '📦 Lote' : '🔀 Referencia'}: {c.origen_codigo} ({c.origen_lote || 's/lote'}) → {c.destino_codigo} ({c.destino_lote || 's/lote'}) · <strong>{Number(c.cantidad)}</strong>
-                      {c.motivo && <span style={{ color: 'var(--t-text-muted)' }}> — {c.motivo}</span>}
-                    </span>
-                    <button onClick={() => revertirCruce(c.id)} title="Revertir" style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '3px 8px', fontSize: 11, color: '#f87171', cursor: 'pointer' }}>↺ Revertir</button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {modoEscaneo && (
-          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: '10px 14px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 13 }}>📷 Escanea o escribe el código y presiona Enter:</span>
-            <input
-              ref={inputEscaneoRef}
-              type="text"
-              autoFocus
-              value={textoEscaneado}
-              onChange={(e) => setTextoEscaneado(e.target.value)}
-              onKeyDown={manejarEscaneo}
-              placeholder="Código del artículo…"
-              style={{ ...inputStyle, flex: 1, maxWidth: 260, fontFamily: 'monospace' }}
-            />
-            {filaResaltada === 'no-encontrado' && <span style={{ fontSize: 12, color: '#f87171' }}>⚠️ Código no encontrado en este conteo</span>}
-          </div>
-        )}
-
-        {reporte && (
-          <>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
-            {[
-              ['Total ítems', reporte.resumen.total_items, 'var(--t-text-primary)'],
-              ['Contados', reporte.resumen.contados, '#4ade80'],
-              ['Pendientes', reporte.resumen.pendientes, '#fbbf24'],
-              ['Con diferencia (vs. actual)', reporte.resumen.con_diferencia, '#f87171'],
-              ['Dif. valor vs. inicial', fmtPesos(reporte.resumen.diferencia_valor_total_inicial), reporte.resumen.diferencia_valor_total_inicial < 0 ? '#f87171' : '#4ade80'],
-              ['Dif. valor vs. actual', fmtPesos(reporte.resumen.diferencia_valor_total_actual), reporte.resumen.diferencia_valor_total_actual < 0 ? '#f87171' : '#4ade80'],
-            ].map(([label, value, color]) => (
-              <div key={label} style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px', flex: 1, minWidth: 120 }}>
-                <div style={{ fontSize: 20, fontWeight: 700, color }}>{value}</div>
-                <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>{label}</div>
-              </div>
-            ))}
-          </div>
-          <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 18 }}>
-            "Inicial" = existencia SIIS de cuando se creó el conteo. "Actual" = {abierta ? 'existencia SIIS en vivo ahora mismo (la bodega sigue operando)' : 'existencia SIIS congelada al cerrar el conteo'}. La diferencia oficial es la de "actual".
-          </p>
-          </>
-        )}
-
-        <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input
-            type="text"
-            value={busquedaLista}
-            onChange={(e) => setBusquedaLista(e.target.value)}
-            placeholder="Buscar por código, nombre o lote… (varios: sepáralos con coma)"
-            style={{ ...inputStyle, flex: 1, minWidth: 260 }}
-          />
-          {busquedaLista && (
-            <button
-              onClick={() => setBusquedaLista('')}
-              title="Limpiar búsqueda"
-              style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer' }}
-            >
-              ✕ Limpiar
-            </button>
-          )}
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            <input
-              type="checkbox"
-              checked={soloNoCuadra}
-              onChange={(e) => {
-                const marcado = e.target.checked;
-                setSoloNoCuadra(marcado);
-                // La diferencia sale del reporte; si aún no se ha cargado, se pide.
-                if (marcado && !reporte) cargarReporte(l.id);
-              }}
-            />
-            ⚠️ Solo lo que no cuadra
-          </label>
-          <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
-            Mostrando <strong>{itemsVisibles.length}</strong> de {l.items.length}
-          </span>
-        </div>
-
-        <style>{`
-          .fila-lista-conteo:hover { background: rgba(250, 204, 21, 0.28) !important; }
-        `}</style>
-        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {['Código', 'Nombre', 'Cuenta', 'Grupo', 'Subgrupo', 'Presentación', 'Lote', 'F. Venc.', 'Costo Unit.', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2', 'Diferencia (inicial)', 'Diferencia (actual)', 'Motivo'].map(h => (
-                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', whiteSpace: 'nowrap' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {itemsVisibles.map(item => {
-                const rep = repPorId.get(item.id);
-                const campoInput = (campo, valorGuardado, guardadoPor) => {
-                  const key = `${item.id}_${campo}`;
-                  const yaTieneValor = valorGuardado !== null && valorGuardado !== undefined;
-                  const puedeEditar = abierta && (!yaTieneValor || isEditor);
-                  return puedeEditar ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <input
-                        type="number"
-                        ref={(el) => { conteoInputRefs.current[key] = el; }}
-                        value={editConteo[key] !== undefined ? editConteo[key] : (yaTieneValor ? fmtNum2(valorGuardado) : '')}
-                        onChange={(e) => setEditConteo(prev => ({ ...prev, [key]: e.target.value }))}
-                        onKeyDown={(e) => { if (e.key === 'Enter') guardarConteoItem(item, campo); }}
-                        placeholder="—"
-                        style={{ ...inputStyle, width: 75, fontFamily: 'monospace' }}
-                      />
-                      <button
-                        onClick={() => guardarConteoItem(item, campo)}
-                        disabled={editConteo[key] === undefined || guardandoConteoKey === key}
-                        style={{
-                          background: editConteo[key] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                          color: editConteo[key] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                          border: 'none', borderRadius: 6, padding: '5px 7px', fontSize: 12,
-                          cursor: editConteo[key] !== undefined ? 'pointer' : 'not-allowed',
-                        }}
-                      >
-                        {guardandoConteoKey === key ? '…' : '💾'}
-                      </button>
-                    </div>
-                  ) : (
-                    <span style={{ fontFamily: 'monospace', color: yaTieneValor ? '#4ade80' : 'var(--t-text-muted)' }}>
-                      {yaTieneValor ? fmtNum2(valorGuardado) : '—'} {!abierta && '🔒'}
-                    </span>
-                  );
-                };
-                return (
-                  <tr key={item.id} className="fila-lista-conteo" style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : (item.origen === 'agregado' ? 'rgba(56,189,248,0.06)' : undefined), transition: 'background 0.3s' }}>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>
-                      {item.codigo}
-                      {item.origen === 'agregado' && <div style={{ fontSize: 9, color: '#38bdf8', fontWeight: 600 }}>➕ Agregado</div>}
-                      {item.origen === 'agregado' && abierta && isEditor && (
-                        <button
-                          onClick={() => eliminarItemAgregado(item)}
-                          title="Eliminar este producto agregado manualmente"
-                          style={{ marginTop: 3, background: '#3a1d1d', border: '1px solid #5c2626', borderRadius: 4, padding: '1px 6px', fontSize: 10, color: '#f87171', cursor: 'pointer' }}
-                        >
-                          🗑️ Eliminar
-                        </button>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', maxWidth: 220 }}>{item.nombre}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isEditor ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="text"
-                            value={editCuentaItem[item.id] !== undefined ? editCuentaItem[item.id] : (item.cuenta === 'SIN CLASIFICAR' ? '' : (item.cuenta || ''))}
-                            onChange={(e) => setEditCuentaItem(prev => ({ ...prev, [item.id]: e.target.value }))}
-                            placeholder={item.cuenta === 'SIN CLASIFICAR' ? 'Sin clasificar' : ''}
-                            style={{ ...inputStyle, width: 110, fontSize: 12, ...(item.cuenta === 'SIN CLASIFICAR' ? { borderColor: '#fbbf24' } : {}) }}
-                          />
-                          <button
-                            onClick={() => guardarCuentaItem(item)}
-                            disabled={editCuentaItem[item.id] === undefined || guardandoCuentaItemId === item.id}
-                            style={{
-                              background: editCuentaItem[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                              color: editCuentaItem[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                              border: 'none', borderRadius: 6, padding: '5px 7px', fontSize: 12,
-                              cursor: editCuentaItem[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                            }}
-                          >
-                            {guardandoCuentaItemId === item.id ? '…' : '💾'}
-                          </button>
-                          <button onClick={() => verHistorialTipo(item.concat)} title="Ver historial de clasificación" style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13 }}>🕘</button>
-                        </div>
-                      ) : (
-                        <span style={{ color: item.cuenta === 'SIN CLASIFICAR' ? '#fbbf24' : 'var(--t-text-secondary)' }}>
-                          {item.cuenta === 'SIN CLASIFICAR' ? '⚠️ Sin clasificar' : item.cuenta}
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', color: item.grupo_conteo ? 'var(--t-text-secondary)' : '#fbbf24' }}>{item.grupo_conteo || '⚠️ Sin grupo'}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.subgrupo_conteo || '—'}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.presentacion || '—'}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>
-                      {fmtFechaCorta(item.fecha_vencimiento)}<BadgeVencimiento fecha={item.fecha_vencimiento} />
-                    </td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {fmtNum2(item.existencia_siis)}
-                      {rep && rep.ajuste_cruce ? (
-                        <div style={{ fontSize: 10, color: rep.ajuste_cruce > 0 ? '#4ade80' : '#f87171', whiteSpace: 'nowrap' }} title="Ajuste por cambio de lote / referencia cruzada registrado en esta lista">
-                          🔀 {rep.ajuste_cruce > 0 ? '+' : ''}{fmtNum2(rep.ajuste_cruce)}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {rep && rep.existencia_siis_actual !== null ? fmtNum2(rep.existencia_siis_actual) : <span style={{ color: 'var(--t-text-muted)' }}>—</span>}
-                      {rep && rep.ajuste_cruce ? (
-                        <div style={{ fontSize: 10, color: rep.ajuste_cruce > 0 ? '#4ade80' : '#f87171', whiteSpace: 'nowrap' }} title="Ajuste por cambio de lote / referencia cruzada registrado en esta lista">
-                          🔀 {rep.ajuste_cruce > 0 ? '+' : ''}{fmtNum2(rep.ajuste_cruce)}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>{campoInput('conteo_1', item.conteo_1)}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {campoInput('conteo_2', item.conteo_2)}
-                      {rep?.requiere_reconteo && <div style={{ fontSize: 10, color: '#fbbf24', fontWeight: 600, marginTop: 2 }}>⚠️ Reconteo sugerido</div>}
-                    </td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {!rep || rep.diferencia_cantidad_inicial === null ? (
-                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
-                      ) : rep.diferencia_cantidad_inicial === 0 ? (
-                        <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
-                      ) : (
-                        <span style={{ color: '#9ca3af', fontWeight: 500 }}>
-                          {rep.diferencia_cantidad_inicial > 0 ? '+' : ''}{fmtNum2(rep.diferencia_cantidad_inicial)} ({fmtPesos(rep.diferencia_valor_inicial)})
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {!rep || rep.diferencia_cantidad_actual === null ? (
-                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
-                      ) : rep.diferencia_cantidad_actual === 0 ? (
-                        <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
-                      ) : (
-                        <span style={{ color: '#f87171', fontWeight: 600 }}>
-                          {rep.diferencia_cantidad_actual > 0 ? '+' : ''}{fmtNum2(rep.diferencia_cantidad_actual)} ({fmtPesos(rep.diferencia_valor_actual)})
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <input
-                          type="text"
-                          value={editMotivo[item.id] !== undefined ? editMotivo[item.id] : (item.motivo_diferencia || rep?.motivo_diferencia || '')}
-                          onChange={(e) => setEditMotivo(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder={rep && rep.diferencia_cantidad_actual ? 'Ej: producto vencido dado de baja' : '—'}
-                          style={{ ...inputStyle, width: 140, fontSize: 12, ...(rep && rep.diferencia_cantidad_actual && !(item.motivo_diferencia || rep.motivo_diferencia) ? { borderColor: '#fbbf24' } : {}) }}
-                        />
-                        <button
-                          onClick={() => guardarMotivo(item)}
-                          disabled={editMotivo[item.id] === undefined || guardandoMotivoId === item.id}
-                          style={{
-                            background: editMotivo[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: editMotivo[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 7px', fontSize: 12,
-                            cursor: editMotivo[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                          }}
-                        >
-                          {guardandoMotivoId === item.id ? '…' : '💾'}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {itemsVisibles.length === 0 && (
-                <tr>
-                  <td colSpan={16} style={{ padding: 28, textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 13 }}>
-                    {soloNoCuadra && !reporte
-                      ? 'Calculando diferencias…'
-                      : hayFiltroLista
-                        ? 'Ningún ítem coincide con la búsqueda o el filtro.'
-                        : 'Esta lista no tiene ítems.'}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {historialConcatAbierto && (
-          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setHistorialConcatAbierto(null)}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 20, maxWidth: 560, width: '90%', maxHeight: '70vh', overflowY: 'auto' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-                <h4 style={{ fontSize: 14, fontWeight: 700 }}>Historial de clasificación — grupo {historialConcatAbierto}</h4>
-                <button onClick={() => setHistorialConcatAbierto(null)} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 16 }}>✕</button>
-              </div>
-              {cargandoHistorialTipo ? (
-                <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Cargando…</p>
-              ) : historialTipoData.length === 0 ? (
-                <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Sin cambios registrados para este grupo.</p>
-              ) : (
-                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr>{['Fecha', 'Usuario', 'Cuenta anterior', 'Cuenta nueva', 'Origen'].map(h => (
-                      <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)' }}>{h}</th>
-                    ))}</tr>
-                  </thead>
-                  <tbody>
-                    {historialTipoData.map(h => (
-                      <tr key={h.id} style={{ borderTop: '1px solid #1a2234' }}>
-                        <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{new Date(h.cambiado_en).toLocaleString('es-CO')}</td>
-                        <td style={{ padding: '4px 6px' }}>{h.cambiado_por_nombre || '—'}</td>
-                        <td style={{ padding: '4px 6px' }}>{h.cuenta_anterior || '—'}</td>
-                        <td style={{ padding: '4px 6px' }}>{h.cuenta_nuevo}</td>
-                        <td style={{ padding: '4px 6px' }}>{h.origen}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-
-        {mostrarReporteFinal && (
-          <div className="reporte-final-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '30px 16px' }} onClick={() => setMostrarReporteFinal(false)}>
-            <style>{`
-              @media print {
-                body * { visibility: hidden; }
-                .reporte-final-imprimible, .reporte-final-imprimible * { visibility: visible; }
-                .reporte-final-imprimible { position: absolute; left: 0; top: 0; width: 100%; }
-                .no-imprimir { display: none !important; }
-              }
-            `}</style>
-            <div className="reporte-final-imprimible" onClick={(e) => e.stopPropagation()} style={{ background: '#fff', color: '#111', borderRadius: 10, padding: 24, maxWidth: 900, width: '100%' }}>
-              <div className="no-imprimir" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
-                <h3 style={{ fontSize: 16, fontWeight: 700, color: '#111' }}>Reporte final — Conteo #{listaActual.id}</h3>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button onClick={() => window.print()} style={{ background: '#111', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}>🖨️ Imprimir</button>
-                  <button onClick={descargarReporteFinalExcel} disabled={descargandoReporteFinal} style={{ background: '#f3f4f6', color: '#111', border: '1px solid #ccc', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}>
-                    📥 {descargandoReporteFinal ? 'Generando…' : 'Descargar Excel'}
-                  </button>
-                  <button onClick={() => setMostrarReporteFinal(false)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}>✕</button>
-                </div>
-              </div>
-
-              {cargandoReporteFinal || !reporteFinal ? (
-                <p style={{ color: '#111' }}>Generando…</p>
-              ) : (
-                <div style={{ fontSize: 13, color: '#111' }}>
-                  <h2 style={{ fontSize: 18, marginBottom: 2 }}>Reporte final de conteo #{reporteFinal.lista.id}</h2>
-                  <p style={{ color: '#444', marginBottom: 14 }}>
-                    {LABEL_TIPO_LISTA[reporteFinal.lista.tipo]}{reporteFinal.lista.criterio ? `: ${reporteFinal.lista.criterio}` : ''}
-                    {reporteFinal.lista.subcriterio ? ` / ${reporteFinal.lista.subcriterio}` : ''} · Bodega {reporteFinal.lista.bodega} ·{' '}
-                    {reporteFinal.lista.estado === 'cerrada' ? 'CERRADA' : 'ABIERTA'} · Impreso {new Date().toLocaleString('es-CO')}
-                  </p>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
-                    {[
-                      ['Total ítems', reporteFinal.resumen.total_items],
-                      ['Sobrantes', `${reporteFinal.resumen.total_sobrantes} (${fmtPesos(reporteFinal.resumen.valor_sobrantes)})`],
-                      ['Faltantes', `${reporteFinal.resumen.total_faltantes} (${fmtPesos(reporteFinal.resumen.valor_faltantes)})`],
-                      ['Agregados en bodega', reporteFinal.resumen.total_agregados],
-                      ['Cambios de lote', reporteFinal.resumen.total_cambios_lote],
-                      ['Referencias cruzadas', reporteFinal.resumen.total_referencias_cruzadas],
-                      ['Diferencia neta en valor', fmtPesos(reporteFinal.resumen.diferencia_valor_total_actual)],
-                    ].map(([label, val]) => (
-                      <div key={label} style={{ border: '1px solid #ddd', borderRadius: 6, padding: '8px 10px' }}>
-                        <div style={{ fontWeight: 700 }}>{val}</div>
-                        <div style={{ fontSize: 11, color: '#666' }}>{label}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {[
-                    ['Sobrantes', reporteFinal.sobrantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
-                    ['Faltantes', reporteFinal.faltantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
-                    ['Productos/lotes agregados en bodega', reporteFinal.agregados, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
-                  ].map(([titulo, filas, cols]) => (
-                    <div key={titulo} style={{ marginBottom: 16 }}>
-                      <h4 style={{ fontSize: 14, marginBottom: 6 }}>{titulo} ({filas.length})</h4>
-                      {filas.length === 0 ? <p style={{ color: '#888', fontSize: 12 }}>Sin registros.</p> : (
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                          <thead><tr>{cols.map(c => <th key={c} style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '3px 6px' }}>{c}</th>)}</tr></thead>
-                          <tbody>
-                            {filas.map(f => (
-                              <tr key={f.id}>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.codigo}</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.nombre}</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.lote || '—'}</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.definitivo}</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.existencia_siis_actual}</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee', fontWeight: 700 }}>{f.diferencia_cantidad_actual > 0 ? '+' : ''}{f.diferencia_cantidad_actual}</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.motivo_diferencia || '—'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  ))}
-
-                  {[
-                    ['Cambios de lote', reporteFinal.cambios_lote],
-                    ['Referencias cruzadas', reporteFinal.referencias_cruzadas],
-                  ].map(([titulo, filas]) => (
-                    <div key={titulo} style={{ marginBottom: 16 }}>
-                      <h4 style={{ fontSize: 14, marginBottom: 6 }}>{titulo} ({filas.length})</h4>
-                      {filas.length === 0 ? <p style={{ color: '#888', fontSize: 12 }}>Sin registros.</p> : (
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                          <thead><tr>{['Origen', 'Destino', 'Cantidad', 'Motivo'].map(c => <th key={c} style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '3px 6px' }}>{c}</th>)}</tr></thead>
-                          <tbody>
-                            {filas.map(c => (
-                              <tr key={c.id}>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{c.origen_codigo} — {c.origen_nombre} ({c.origen_lote || 's/lote'})</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{c.destino_codigo} — {c.destino_nombre} ({c.destino_lote || 's/lote'})</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{Number(c.cantidad)}</td>
-                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{c.motivo || '—'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  ))}
-
-                  <div style={{ marginTop: 30, display: 'flex', gap: 40 }}>
-                    <div style={{ flex: 1, borderTop: '1px solid #333', paddingTop: 4, fontSize: 12 }}>Firma Conteo 1 ({reporteFinal.lista.conteo1_nombre || '_____'})</div>
-                    <div style={{ flex: 1, borderTop: '1px solid #333', paddingTop: 4, fontSize: 12 }}>Firma Conteo 2 ({reporteFinal.lista.conteo2_nombre || '_____'})</div>
-                    <div style={{ flex: 1, borderTop: '1px solid #333', paddingTop: 4, fontSize: 12 }}>Firma Responsable</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
+// Valor que cuenta como "definitivo" para el reporte de diferencias: Conteo 2
+// si existe (doble conteo = verificación), si no Conteo 1, si no hay ninguno
+// el ítem sigue pendiente.
+function conteoDefinitivo(item) {
+  if (item.conteo_2 !== null && item.conteo_2 !== undefined) return Number(item.conteo_2);
+  if (item.conteo_1 !== null && item.conteo_1 !== undefined) return Number(item.conteo_1);
   return null;
 }
 
-// ── Helpers de vencimiento (mismo criterio que el backend) ──────────────────
-function diasParaVencerJS(fechaStr) {
+// Umbral para marcar "requiere reconteo": Conteo 1 y Conteo 2 existen, no
+// coinciden, y su diferencia relativa supera el 5%. Es solo una alerta visual,
+// no bloquea el cierre — la regla de tomar Conteo 2 como definitivo se
+// mantiene igual.
+const UMBRAL_RECONTEO_PORC = 0.05;
+function requiereReconteo(item) {
+  if (item.conteo_1 === null || item.conteo_1 === undefined || item.conteo_2 === null || item.conteo_2 === undefined) return false;
+  const c1 = Number(item.conteo_1), c2 = Number(item.conteo_2);
+  if (c1 === c2) return false;
+  const base = Math.max(Math.abs(c1), Math.abs(c2), 1);
+  return Math.abs(c1 - c2) / base > UMBRAL_RECONTEO_PORC;
+}
+
+// Días calendario hasta el vencimiento (negativo si ya venció). Acepta
+// fecha_vencimiento en formatos comunes de Excel (YYYY-MM-DD, DD/MM/YYYY).
+function diasParaVencer(fechaStr) {
   if (!fechaStr) return null;
   let f = null;
   const iso = String(fechaStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -2520,633 +763,1358 @@ function diasParaVencerJS(fechaStr) {
   const hoy = new Date(); hoy.setHours(0, 0, 0, 0); f.setHours(0, 0, 0, 0);
   return Math.round((f - hoy) / 86400000);
 }
-function BadgeVencimiento({ fecha }) {
-  const dias = diasParaVencerJS(fecha);
-  if (dias === null || dias > 90) return null;
-  const color = dias < 0 ? '#f87171' : dias <= 30 ? '#f87171' : '#fbbf24';
-  const texto = dias < 0 ? `Vencido hace ${Math.abs(dias)}d` : `Vence en ${dias}d`;
-  return <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color, whiteSpace: 'nowrap' }}>⏰ {texto}</span>;
-}
 
-// ════════════════════════════════════════════════════════════════════════════
-// PESTAÑA "DATOS" — catálogos maestros (cuenta contable, y grupo/subgrupo de
-// conteo) editables uno a uno desde la app, sin depender de subir un Excel
-// completo cada vez que se necesita agregar o corregir un solo artículo.
-// ════════════════════════════════════════════════════════════════════════════
-function DatosMaestros({ isEditor, isAdmin, inputStyle }) {
-  const [sub, setSub] = useState('cuentas'); // 'cuentas' | 'grupos'
+// ── GET /api/validador-inventario/listas-conteo/opciones?bodega=BV&tipo=... ──
+// Valores disponibles para elegir criterio al crear una lista (con conteo de
+// ítems que caerían en cada uno), para poblar el selector en el frontend.
+router.get('/listas-conteo/opciones', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    const tipo = req.query.tipo;
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
 
-  const tabBtn = (key, label) => (
-    <button
-      key={key}
-      onClick={() => setSub(key)}
-      style={{
-        background: sub === key ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-        color: sub === key ? '#fff' : 'var(--t-text-primary)',
-        border: '1px solid var(--t-border)', borderRadius: 6,
-        padding: '6px 12px', fontSize: 13, fontWeight: 500, cursor: 'pointer',
-      }}
-    >
-      {label}
-    </button>
-  );
-
-  return (
-    <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        {tabBtn('cuentas', 'Cuentas Contables')}
-        {tabBtn('grupos', 'Grupos de Conteo y Subgrupos')}
-      </div>
-      {sub === 'cuentas'
-        ? <TablaCuentasContables isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} />
-        : <TablaGruposConteo isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} />}
-    </div>
-  );
-}
-
-// ── Sub-pestaña: Cuentas Contables (tabla tipos_inventario) ─────────────────
-function TablaCuentasContables({ isEditor, isAdmin, inputStyle }) {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [busqueda, setBusqueda] = useState('');
-  const [editValues, setEditValues] = useState({}); // concat -> {contable, cuenta}
-  const [guardandoConcat, setGuardandoConcat] = useState(null);
-  const [nuevoConcat, setNuevoConcat] = useState('');
-  const [nuevoContable, setNuevoContable] = useState('');
-  const [nuevoCuenta, setNuevoCuenta] = useState('');
-  const [agregando, setAgregando] = useState(false);
-  const puedeEditar = isEditor || isAdmin;
-
-  const cargar = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/validador-inventario/tipos-inventario');
-      setRows(res.data || []);
-    } catch (e) {
-      setError('No se pudo cargar la lista de cuentas contables');
+    let sql;
+    if (tipo === 'cuenta_contable') {
+      sql = `SELECT COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS valor, COUNT(*)::int AS items
+             FROM validador_inventario vi
+             LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+             WHERE vi.bodega = $1
+             GROUP BY 1 ORDER BY 1`;
+    } else if (tipo === 'grupo_inventario') {
+      sql = `SELECT grupo_inventario(vi.codigo) AS valor, COUNT(*)::int AS items
+             FROM validador_inventario vi
+             WHERE vi.bodega = $1
+             GROUP BY 1 ORDER BY 1`;
+    } else if (tipo === 'presentacion') {
+      sql = `SELECT COALESCE(pi.presentacion, 'SIN PRESENTACIÓN') AS valor, COUNT(*)::int AS items
+             FROM validador_inventario vi
+             LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+             WHERE vi.bodega = $1
+             GROUP BY 1 ORDER BY 1`;
+    } else {
+      return res.status(400).json({ error: "tipo debe ser 'cuenta_contable', 'grupo_inventario' o 'presentacion'" });
     }
-    setLoading(false);
-  }, []);
+    const { rows } = await pool.query(sql, [bodega]);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar opciones de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  useEffect(() => { cargar(); }, [cargar]);
-
-  async function guardar(concat) {
-    const val = editValues[concat];
-    if (!val) return;
-    if (!val.cuenta?.trim()) { setError('La cuenta no puede quedar vacía'); return; }
-    setGuardandoConcat(concat);
-    setError('');
-    try {
-      await api.patch(`/validador-inventario/tipos-inventario/${concat}`, { contable: val.contable, cuenta: val.cuenta });
-      await cargar();
-      setEditValues(prev => { const n = { ...prev }; delete n[concat]; return n; });
-    } catch (e) {
-      setError('No se pudo guardar: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoConcat(null);
+// ── POST /api/validador-inventario/listas-conteo ──────────────────────────────
+// Crea una lista de conteo y toma la "foto" (snapshot) de los ítems que
+// cumplen el criterio elegido, tal como están en ese momento.
+//
+// Para tipo === 'grupo_conteo' además del criterio único de siempre
+// (criterio/subcriterio), se puede mandar `criteriosGrupo: [{grupo, subgrupo?}]`
+// para combinar VARIOS grupos/subgrupos en una sola lista (unión / OR entre
+// ellos) — esto es lo que usa el checklist multi-selección del formulario.
+router.post('/listas-conteo', authMiddleware, async (req, res) => {
+  const { bodega, tipo, criterio, subcriterio, criteriosGrupo, subclasificar_presentacion, conteo1_nombre, conteo2_nombre } = req.body;
+  if (!bodega || !TIPOS_LISTA.includes(tipo)) {
+    return res.status(400).json({ error: 'bodega y tipo válido son requeridos' });
   }
 
-  async function eliminar(concat) {
-    if (!window.confirm(`¿Eliminar la clasificación contable de "${concat}"? Los artículos que la usan quedarán como "SIN CLASIFICAR".`)) return;
-    try {
-      await api.delete(`/validador-inventario/tipos-inventario/${concat}`);
-      await cargar();
-    } catch (e) {
-      setError('No se pudo eliminar: ' + (e.response?.data?.error || e.message));
-    }
+  const multiGrupos = tipo === 'grupo_conteo' && Array.isArray(criteriosGrupo) && criteriosGrupo.length > 0
+    ? criteriosGrupo
+        .filter(c => c && c.grupo)
+        .map(c => ({ grupo: truncar(c.grupo, 150), subgrupo: c.subgrupo ? truncar(c.subgrupo, 150) : null }))
+    : null;
+
+  if (tipo !== 'general' && !(multiGrupos && multiGrupos.length > 0) && !criterio) {
+    return res.status(400).json({ error: 'criterio requerido para este tipo de conteo' });
   }
 
-  async function agregar() {
-    const concat = nuevoConcat.trim().toUpperCase();
-    if (!concat || !nuevoCuenta.trim()) { setError('Concat y Cuenta son requeridos'); return; }
-    setAgregando(true);
-    setError('');
-    try {
-      await api.patch(`/validador-inventario/tipos-inventario/${concat}`, { contable: nuevoContable.trim(), cuenta: nuevoCuenta.trim() });
-      setNuevoConcat(''); setNuevoContable(''); setNuevoCuenta('');
-      await cargar();
-    } catch (e) {
-      setError('No se pudo agregar: ' + (e.response?.data?.error || e.message));
-    }
-    setAgregando(false);
-  }
+  const bod = String(bodega).toUpperCase();
+  // El criterio "legacy" se conserva como texto para que el listado siga
+  // mostrando algo legible incluso cuando se combinan varios grupos/subgrupos.
+  const criterioGuardado = multiGrupos
+    ? multiGrupos.map(c => (c.subgrupo ? `${c.grupo} > ${c.subgrupo}` : c.grupo)).join(', ')
+    : (tipo === 'general' ? null : truncar(criterio, 150));
+  const subcriterioGuardado = multiGrupos ? null : (tipo === 'grupo_conteo' ? (truncar(subcriterio, 150) || null) : null);
 
-  const filtradas = rows.filter(r => {
-    if (!busqueda) return true;
-    const q = busqueda.toUpperCase();
-    return r.concat.toUpperCase().includes(q) || (r.contable || '').toUpperCase().includes(q) || (r.cuenta || '').toUpperCase().includes(q);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: listaRows } = await client.query(
+      `INSERT INTO listas_conteo (bodega, tipo, criterio, subcriterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre, creado_por)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [bod, tipo, criterioGuardado, subcriterioGuardado,
+       !!subclasificar_presentacion, truncar(conteo1_nombre, 100), truncar(conteo2_nombre, 100), req.user.id]
+    );
+    const lista = listaRows[0];
+
+    let filtroSql = '';
+    const params = [bod];
+    if (multiGrupos && multiGrupos.length > 0) {
+      const condiciones = [];
+      for (const c of multiGrupos) {
+        params.push(c.grupo);
+        let cond = `cc.grupo = $${params.length}`;
+        if (c.subgrupo) {
+          params.push(c.subgrupo);
+          cond += ` AND COALESCE(NULLIF(cc.subgrupo, ''), 'SIN SUBGRUPO') = $${params.length}`;
+        }
+        condiciones.push(`(${cond})`);
+      }
+      filtroSql = `AND (${condiciones.join(' OR ')})`;
+    } else if (tipo === 'cuenta_contable') {
+      filtroSql = `AND COALESCE(ti.cuenta, 'SIN CLASIFICAR') = $2`;
+      params.push(criterio);
+    } else if (tipo === 'grupo_inventario') {
+      filtroSql = `AND grupo_inventario(vi.codigo) = $2`;
+      params.push(criterio);
+    } else if (tipo === 'presentacion') {
+      filtroSql = `AND COALESCE(pi.presentacion, 'SIN PRESENTACIÓN') = $2`;
+      params.push(criterio);
+    } else if (tipo === 'grupo_conteo') {
+      filtroSql = `AND cc.grupo = $2`;
+      params.push(criterio);
+      if (subcriterio) {
+        filtroSql += ` AND COALESCE(NULLIF(cc.subgrupo, ''), 'SIN SUBGRUPO') = $3`;
+        params.push(subcriterio);
+      }
+    }
+
+    // Orden: alfabético puro para "grupo_conteo" (así lo pidieron); para los
+    // demás tipos se mantiene el orden por presentación ya existente.
+    const ordenSql = tipo === 'grupo_conteo' ? 'ORDER BY vi.nombre ASC' : 'ORDER BY pi.presentacion NULLS LAST, vi.nombre ASC';
+
+    const { rows: items } = await client.query(
+      `SELECT vi.codigo, vi.nombre, vi.lote, vi.fecha_vencimiento, vi.existencia_sistema, vi.costo_unitario,
+              COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta, concat_tipo_inventario(vi.codigo) AS concat, pi.presentacion,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+       WHERE vi.bodega = $1 AND vi.sin_existencias = false ${filtroSql}
+       ${ordenSql}`,
+      params
+    );
+
+    if (items.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No hay ítems que cumplan ese criterio en esta bodega' });
+    }
+
+    for (const it of items) {
+      await client.query(
+        `INSERT INTO listas_conteo_items (lista_id, codigo, nombre, lote, fecha_vencimiento, presentacion, cuenta, concat, grupo_conteo, subgrupo_conteo, existencia_siis, costo_unitario)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [lista.id, it.codigo, it.nombre, it.lote, it.fecha_vencimiento, it.presentacion, it.cuenta, it.concat, it.grupo_conteo, it.subgrupo_conteo, it.existencia_sistema, it.costo_unitario]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ ...lista, total_items: items.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al crear lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo?bodega=BV ────────────────────
+// Resumen de todas las listas (abiertas y cerradas) de una bodega.
+router.get('/listas-conteo', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    const params = [];
+    let where = '';
+    if (bodega) { where = 'WHERE lc.bodega = $1'; params.push(bodega); }
+    const { rows } = await pool.query(
+      `SELECT lc.*,
+              COUNT(li.id)::int AS total_items,
+              COUNT(li.conteo_1)::int AS con_conteo_1,
+              COUNT(li.conteo_2)::int AS con_conteo_2
+       FROM listas_conteo lc
+       LEFT JOIN listas_conteo_items li ON li.lista_id = lc.id
+       ${where}
+       GROUP BY lc.id
+       ORDER BY lc.creado_en DESC`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar listas de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id ───────────────────────────
+// Detalle de una lista con todos sus ítems (ordenados por presentación si
+// aplica subclasificación).
+router.get('/listas-conteo/:id', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const { rows: items } = await pool.query(
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`,
+      [req.params.id]
+    );
+    res.json({ ...listaRows[0], items });
+  } catch (err) {
+    console.error('Error al obtener lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── PATCH /api/validador-inventario/listas-conteo/:id/items/:itemId ──────────
+// Guarda Conteo 1 o Conteo 2 de un ítem, directo desde la app. Cualquiera con
+// acceso puede diligenciar un campo vacío; una vez lleno, solo editor/admin
+// puede modificarlo (mismo criterio que el conteo general). Bloqueado si la
+// lista ya está cerrada.
+router.patch('/listas-conteo/:id/items/:itemId', authMiddleware, async (req, res) => {
+  try {
+    const { campo, valor } = req.body;
+    if (!['conteo_1', 'conteo_2'].includes(campo)) {
+      return res.status(400).json({ error: "campo debe ser 'conteo_1' o 'conteo_2'" });
+    }
+    if (valor === undefined || valor === null || valor === '') {
+      return res.status(400).json({ error: 'valor requerido' });
+    }
+    const { rows: listaRows } = await pool.query(`SELECT estado FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    if (listaRows[0].estado === 'cerrada') {
+      return res.status(400).json({ error: 'La lista está cerrada, no se puede modificar' });
+    }
+
+    const { rows: itemRows } = await pool.query(
+      `SELECT * FROM listas_conteo_items WHERE id = $1 AND lista_id = $2`,
+      [req.params.itemId, req.params.id]
+    );
+    if (!itemRows.length) return res.status(404).json({ error: 'Ítem no encontrado' });
+    const item = itemRows[0];
+
+    const yaTeniaValor = item[campo] !== null && item[campo] !== undefined;
+    if (yaTeniaValor && !['admin', 'editor'].includes(req.user.rol)) {
+      return res.status(403).json({ error: 'Este ítem ya fue contado; solo editor/admin puede modificarlo' });
+    }
+
+    const colValor = campo, colPor = `${campo}_por`, colEn = `${campo}_en`;
+    const { rows } = await pool.query(
+      `UPDATE listas_conteo_items SET ${colValor} = $1, ${colPor} = $2, ${colEn} = NOW() WHERE id = $3 RETURNING *`,
+      [valor, req.user.id, req.params.itemId]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar conteo de lista:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Calcula el detalle de diferencias para una lista ya con sus items cargados
+// (cerrada: usa existencia_siis_cierre; abierta: usa existencia_actual_live).
+// Compartido entre el reporte JSON y el export a Excel.
+function calcularDetalleReporte(lista, items) {
+  let valorTotalInicial = 0, valorTotalActual = 0;
+  let conDiferencia = 0, contados = 0, requierenReconteo = 0;
+  const detalle = items.map(it => {
+    const definitivo = conteoDefinitivo(it);
+    if (definitivo !== null) contados++;
+
+    // Un producto agregado a mano NO existe en SIIS: su existencia (inicial y
+    // actual) es siempre 0 y no se mueve, aunque después se cargue un Excel de
+    // SIIS que ya lo incluya o la lista se cierre. Así todo lo contado aparece
+    // como sobrante hasta que se ajuste en SIIS.
+    const esAgregado = it.origen === 'agregado';
+    const existenciaInicial = esAgregado ? 0 : Number(it.existencia_siis);
+
+    const existenciaActual = esAgregado
+      ? 0
+      : (lista.estado === 'cerrada'
+        ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
+        : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null));
+
+    // Un ítem agregado a mano no existe en el inventario, así que el cruce en
+    // vivo no devuelve nada: su existencia esperada es la del snapshot (0),
+    // no "desconocida" — si no, nunca mostraría el sobrante.
+    const existenciaActualEfectiva = existenciaActual;
+
+    // Ajuste por cambios de lote / referencias cruzadas: lo que el sistema
+    // tenía en otra fila pero físicamente está en esta (o viceversa). Se suma
+    // a la existencia esperada para que ambas filas del cruce se neutralicen.
+    const ajuste = Number(it.ajuste_cruce || 0);
+    const esperadoInicial = existenciaInicial + ajuste;
+    const esperadoActual = existenciaActualEfectiva === null ? null : existenciaActualEfectiva + ajuste;
+
+    const diferenciaInicial = definitivo === null ? null : Number((definitivo - esperadoInicial).toFixed(3));
+    const diferenciaActual = (definitivo === null || esperadoActual === null) ? null : Number((definitivo - esperadoActual).toFixed(3));
+    const valorInicial = diferenciaInicial === null ? null : Number((diferenciaInicial * Number(it.costo_unitario)).toFixed(2));
+    const valorActual = diferenciaActual === null ? null : Number((diferenciaActual * Number(it.costo_unitario)).toFixed(2));
+    const reconteo = requiereReconteo(it);
+    const diasVence = diasParaVencer(it.fecha_vencimiento);
+
+    if (diferenciaActual) { conDiferencia++; valorTotalActual += valorActual; }
+    if (diferenciaInicial) valorTotalInicial += valorInicial;
+    if (reconteo) requierenReconteo++;
+
+    return {
+      id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, presentacion: it.presentacion, cuenta: it.cuenta,
+      grupo_conteo: it.grupo_conteo, subgrupo_conteo: it.subgrupo_conteo,
+      existencia_siis_inicial: existenciaInicial,
+      existencia_siis_actual: existenciaActualEfectiva,
+      conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
+      conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null,
+      definitivo,
+      diferencia_cantidad_inicial: diferenciaInicial, diferencia_valor_inicial: valorInicial,
+      diferencia_cantidad_actual: diferenciaActual, diferencia_valor_actual: valorActual,
+      requiere_reconteo: reconteo,
+      motivo_diferencia: it.motivo_diferencia || '',
+      dias_para_vencer: diasVence,
+      origen: it.origen || 'snapshot',
+      ajuste_cruce: ajuste,
+      costo_unitario: Number(it.costo_unitario || 0),
+    };
   });
-
-  // Cuentas ya existentes, para que el campo "Cuenta" sea un desplegable
-  // (sugiere las que ya existen, pero se puede escribir una nueva).
-  const cuentasExistentes = [...new Set(rows.map(r => r.cuenta).filter(Boolean))].sort();
-
-  return (
-    <div>
-      <datalist id="dl-datos-cuentas">{cuentasExistentes.map(c => <option key={c} value={c} />)}</datalist>
-      {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
-
-      <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
-        Mapeo de CONCAT (prefijo del código de artículo) → cuenta contable. Alimenta la columna "Cuenta" del Inventario y el conteo "por cuenta contable".
-      </p>
-
-      {puedeEditar && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 12 }}>
-          <input placeholder="Concat (ej. 010101)" value={nuevoConcat} onChange={e => setNuevoConcat(e.target.value)} style={{ ...inputStyle, width: 140 }} maxLength={6} />
-          <input placeholder="Código contable" value={nuevoContable} onChange={e => setNuevoContable(e.target.value)} style={{ ...inputStyle, width: 160 }} />
-          <input placeholder="Nombre de cuenta" list="dl-datos-cuentas" value={nuevoCuenta} onChange={e => setNuevoCuenta(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200 }} />
-          <button onClick={agregar} disabled={agregando} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
-            {agregando ? 'Agregando…' : '+ Agregar'}
-          </button>
-        </div>
-      )}
-
-      <input type="text" placeholder="Buscar concat, código contable o cuenta…" value={busqueda} onChange={e => setBusqueda(e.target.value)} style={{ ...inputStyle, width: 320, marginBottom: 12 }} />
-
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
-      ) : (
-        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflow: 'auto', maxHeight: 560 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {['Concat', 'Código Contable', 'Cuenta', ''].map(h => (
-                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', position: 'sticky', top: 0, background: 'var(--t-bg-sidebar)' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtradas.map(r => {
-                const ev = editValues[r.concat] || { contable: r.contable || '', cuenta: r.cuenta || '' };
-                const cambio = ev.contable !== (r.contable || '') || ev.cuenta !== (r.cuenta || '');
-                return (
-                  <tr key={r.concat} style={{ borderBottom: '1px solid #1a2234' }}>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{r.concat}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <input value={ev.contable} disabled={!puedeEditar}
-                        onChange={e => setEditValues(prev => ({ ...prev, [r.concat]: { ...ev, contable: e.target.value } }))}
-                        style={{ ...inputStyle, width: 130 }} />
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <input value={ev.cuenta} disabled={!puedeEditar} list="dl-datos-cuentas"
-                        onChange={e => setEditValues(prev => ({ ...prev, [r.concat]: { ...ev, cuenta: e.target.value } }))}
-                        style={{ ...inputStyle, width: 220 }} />
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      {puedeEditar && cambio && (
-                        <button onClick={() => guardar(r.concat)} disabled={guardandoConcat === r.concat}
-                          style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer', marginRight: 6 }}>
-                          {guardandoConcat === r.concat ? '…' : 'Guardar'}
-                        </button>
-                      )}
-                      {isAdmin && (
-                        <button onClick={() => eliminar(r.concat)} title="Eliminar"
-                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '4px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}>
-                          🗑️
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {filtradas.length === 0 && (
-                <tr><td colSpan={4} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin resultados</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Sub-pestaña: Grupos de Conteo y Subgrupos (tabla clasificacion_conteo) ──
-function TablaGruposConteo({ isEditor, isAdmin, inputStyle }) {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [busqueda, setBusqueda] = useState('');
-  const [editValues, setEditValues] = useState({}); // codigo -> {grupo, subgrupo}
-  const [guardandoCodigo, setGuardandoCodigo] = useState(null);
-  const [nuevoCodigo, setNuevoCodigo] = useState('');
-  const [nuevoGrupo, setNuevoGrupo] = useState('');
-  const [nuevoSubgrupo, setNuevoSubgrupo] = useState('');
-  const [agregando, setAgregando] = useState(false);
-  const [limpiando, setLimpiando] = useState(false);
-  const puedeEditar = isEditor || isAdmin;
-
-  const cargar = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/validador-inventario/clasificacion-conteo');
-      setRows(res.data || []);
-    } catch (e) {
-      setError('No se pudo cargar la lista de grupos de conteo');
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { cargar(); }, [cargar]);
-
-  async function guardar(codigo) {
-    const val = editValues[codigo];
-    if (!val) return;
-    if (!val.grupo?.trim()) { setError('El grupo no puede quedar vacío'); return; }
-    setGuardandoCodigo(codigo);
-    setError('');
-    try {
-      await api.patch(`/validador-inventario/clasificacion-conteo/${codigo}`, { grupo: val.grupo, subgrupo: val.subgrupo });
-      await cargar();
-      setEditValues(prev => { const n = { ...prev }; delete n[codigo]; return n; });
-    } catch (e) {
-      setError('No se pudo guardar: ' + (e.response?.data?.error || e.message));
-    }
-    setGuardandoCodigo(null);
-  }
-
-  async function eliminar(codigo) {
-    if (!window.confirm(`¿Eliminar la clasificación de grupo del código "${codigo}"?`)) return;
-    try {
-      await api.delete(`/validador-inventario/clasificacion-conteo/${codigo}`);
-      await cargar();
-    } catch (e) {
-      setError('No se pudo eliminar: ' + (e.response?.data?.error || e.message));
-    }
-  }
-
-  async function agregar() {
-    const codigo = normalizarCodigo(nuevoCodigo);
-    if (!codigo || !nuevoGrupo.trim()) { setError('Código y grupo son requeridos'); return; }
-    setAgregando(true);
-    setError('');
-    try {
-      await api.patch(`/validador-inventario/clasificacion-conteo/${codigo}`, { grupo: nuevoGrupo.trim(), subgrupo: nuevoSubgrupo.trim() });
-      setNuevoCodigo(''); setNuevoGrupo(''); setNuevoSubgrupo('');
-      await cargar();
-    } catch (e) {
-      setError('No se pudo agregar: ' + (e.response?.data?.error || e.message));
-    }
-    setAgregando(false);
-  }
-
-  async function limpiarDuplicados() {
-    if (!window.confirm('¿Buscar y eliminar códigos de 9 dígitos que quedaron duplicados de una versión correcta de 10 dígitos? Esto no afecta códigos que no tengan una versión corregida.')) return;
-    setLimpiando(true);
-    setError('');
-    try {
-      const res = await api.post('/validador-inventario/clasificacion-conteo/limpiar-duplicados');
-      await cargar();
-      window.alert(`Se eliminaron ${res.data.eliminados} código(s) duplicado(s).`);
-    } catch (e) {
-      setError('No se pudo limpiar: ' + (e.response?.data?.error || e.message));
-    }
-    setLimpiando(false);
-  }
-
-  const filtradas = rows.filter(r => {
-    if (!busqueda) return true;
-    const q = busqueda.toUpperCase();
-    return r.codigo.toUpperCase().includes(q) || (r.nombre || '').toUpperCase().includes(q)
-      || (r.grupo || '').toUpperCase().includes(q) || (r.subgrupo || '').toUpperCase().includes(q);
-  });
-
-  // Grupos y subgrupos ya existentes, para que ambos campos sean
-  // desplegables (sugieren lo ya usado, pero se puede escribir uno nuevo).
-  const gruposExistentes = [...new Set(rows.map(r => r.grupo).filter(Boolean))].sort();
-  const mapaSubgruposLocal = {};
-  for (const r of rows) {
-    if (!r.grupo || !r.subgrupo) continue;
-    if (!mapaSubgruposLocal[r.grupo]) mapaSubgruposLocal[r.grupo] = new Set();
-    mapaSubgruposLocal[r.grupo].add(r.subgrupo);
-  }
-  const subgruposDeLocal = (grupo) => {
-    const todos = [...new Set(rows.map(r => r.subgrupo).filter(Boolean))].sort();
-    if (grupo) {
-      const key = Object.keys(mapaSubgruposLocal).find(k => k.toLowerCase() === grupo.trim().toLowerCase());
-      if (key) return [...mapaSubgruposLocal[key]].sort();
-    }
-    return todos;
+  return {
+    resumen: {
+      total_items: items.length, contados, pendientes: items.length - contados,
+      con_diferencia: conDiferencia, requieren_reconteo: requierenReconteo,
+      diferencia_valor_total_inicial: Number(valorTotalInicial.toFixed(2)),
+      diferencia_valor_total_actual: Number(valorTotalActual.toFixed(2)),
+    },
+    items: detalle,
   };
-
-  return (
-    <div>
-      <datalist id="dl-datos-grupos">{gruposExistentes.map(g => <option key={g} value={g} />)}</datalist>
-      <datalist id="dl-datos-subgrupos-nuevo">{subgruposDeLocal(nuevoGrupo).map(s => <option key={s} value={s} />)}</datalist>
-      {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
-
-      <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
-        Grupo y subgrupo de conteo por artículo (usado para crear Listas de Conteo "por grupo"). El código se normaliza solo: si tiene 9 dígitos numéricos, se le agrega el cero inicial.
-      </p>
-
-      {isAdmin && (
-        <button onClick={limpiarDuplicados} disabled={limpiando}
-          style={{ background: 'none', border: '1px solid #5c2626', color: '#f87171', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer', marginBottom: 12 }}>
-          {limpiando ? 'Limpiando…' : '🧹 Limpiar códigos duplicados de 9 dígitos'}
-        </button>
-      )}
-
-      {puedeEditar && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center', background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 12 }}>
-          <input placeholder="Código de artículo" value={nuevoCodigo} onChange={e => setNuevoCodigo(e.target.value)} style={{ ...inputStyle, width: 160 }} />
-          <input placeholder="Grupo" list="dl-datos-grupos" value={nuevoGrupo} onChange={e => setNuevoGrupo(e.target.value)} style={{ ...inputStyle, width: 180 }} />
-          <input placeholder="Subgrupo (opcional)" list="dl-datos-subgrupos-nuevo" value={nuevoSubgrupo} onChange={e => setNuevoSubgrupo(e.target.value)} style={{ ...inputStyle, width: 180 }} />
-          <button onClick={agregar} disabled={agregando} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
-            {agregando ? 'Agregando…' : '+ Agregar'}
-          </button>
-        </div>
-      )}
-
-      <input type="text" placeholder="Buscar código, nombre, grupo o subgrupo…" value={busqueda} onChange={e => setBusqueda(e.target.value)} style={{ ...inputStyle, width: 320, marginBottom: 12 }} />
-
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
-      ) : (
-        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflow: 'auto', maxHeight: 560 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {['Código', 'Nombre', 'Grupo', 'Subgrupo', ''].map(h => (
-                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', position: 'sticky', top: 0, background: 'var(--t-bg-sidebar)' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtradas.map(r => {
-                const ev = editValues[r.codigo] || { grupo: r.grupo || '', subgrupo: r.subgrupo || '' };
-                const cambio = ev.grupo !== (r.grupo || '') || ev.subgrupo !== (r.subgrupo || '');
-                return (
-                  <tr key={r.codigo} style={{ borderBottom: '1px solid #1a2234' }}>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{r.codigo}</td>
-                    <td style={{ padding: '6px 8px', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.nombre || ''}>{r.nombre || '—'}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <input value={ev.grupo} disabled={!puedeEditar} list="dl-datos-grupos"
-                        onChange={e => setEditValues(prev => ({ ...prev, [r.codigo]: { ...ev, grupo: e.target.value } }))}
-                        style={{ ...inputStyle, width: 160 }} />
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <input value={ev.subgrupo} disabled={!puedeEditar} list={`dl-datos-subgrupos-${r.codigo}`}
-                        onChange={e => setEditValues(prev => ({ ...prev, [r.codigo]: { ...ev, subgrupo: e.target.value } }))}
-                        style={{ ...inputStyle, width: 160 }} />
-                      <datalist id={`dl-datos-subgrupos-${r.codigo}`}>
-                        {subgruposDeLocal(ev.grupo).map(s => <option key={s} value={s} />)}
-                      </datalist>
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      {puedeEditar && cambio && (
-                        <button onClick={() => guardar(r.codigo)} disabled={guardandoCodigo === r.codigo}
-                          style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer', marginRight: 6 }}>
-                          {guardandoCodigo === r.codigo ? '…' : 'Guardar'}
-                        </button>
-                      )}
-                      {isAdmin && (
-                        <button onClick={() => eliminar(r.codigo)} title="Eliminar"
-                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '4px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}>
-                          🗑️
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {filtradas.length === 0 && (
-                <tr><td colSpan={5} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin resultados</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
 }
 
-// ── Panel gerencial: dashboard de progreso, historial por código, y reporte
-// consolidado — todo dentro de la vista de listado de Listas de Conteo.
-function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
-  const primerDiaMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-  const hoy = new Date().toISOString().slice(0, 10);
-
-  const [abierto, setAbierto] = useState('dashboard'); // 'dashboard' | 'historial' | 'consolidado' | null
-  const [desde, setDesde] = useState(primerDiaMes);
-  const [hasta, setHasta] = useState(hoy);
-  const [dash, setDash] = useState(null);
-  const [cargandoDash, setCargandoDash] = useState(false);
-
-  const [codigoBuscar, setCodigoBuscar] = useState('');
-  const [historialCodigo, setHistorialCodigo] = useState(null);
-  const [buscando, setBuscando] = useState(false);
-
-  const [consolidado, setConsolidado] = useState(null);
-  const [cargandoConsolidado, setCargandoConsolidado] = useState(false);
-  const [descargandoConsolidado, setDescargandoConsolidado] = useState(false);
-
-  const cargarDashboard = useCallback(async () => {
-    setCargandoDash(true);
-    try {
-      const res = await api.get('/validador-inventario/dashboard', { params: { bodega, desde, hasta } });
-      setDash(res.data);
-    } catch (e) { /* silencioso: panel opcional */ }
-    setCargandoDash(false);
-  }, [bodega, desde, hasta]);
-
-  useEffect(() => { if (abierto === 'dashboard') cargarDashboard(); }, [abierto, cargarDashboard]);
-
-  async function buscarHistorialCodigo() {
-    if (!codigoBuscar.trim()) return;
-    setBuscando(true);
-    try {
-      const res = await api.get(`/validador-inventario/historial-codigo/${encodeURIComponent(codigoBuscar.trim())}`, { params: { bodega } });
-      setHistorialCodigo(res.data);
-    } catch (e) { setHistorialCodigo([]); }
-    setBuscando(false);
+async function obtenerItemsConActual(lista, listaId) {
+  if (lista.estado === 'cerrada') {
+    const r = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1`, [listaId]);
+    return r.rows;
   }
+  const r = await pool.query(
+    `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
+     FROM listas_conteo_items li
+     LEFT JOIN validador_inventario vi
+       ON vi.bodega = $2 AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
+     WHERE li.lista_id = $1`,
+    [listaId, lista.bodega]
+  );
+  return r.rows;
+}
 
-  async function cargarConsolidado() {
-    setCargandoConsolidado(true);
-    try {
-      const res = await api.get('/validador-inventario/listas-conteo-consolidado', { params: { bodega, desde, hasta } });
-      setConsolidado(res.data);
-    } catch (e) { /* silencioso */ }
-    setCargandoConsolidado(false);
+// ── GET /api/validador-inventario/listas-conteo/:id/reporte ──────────────────
+// Reporte de diferencias, mostrando SIEMPRE dos referencias lado a lado:
+//   - existencia_siis_inicial: la del momento en que se creó la lista.
+//   - existencia_siis_actual: si la lista ya está cerrada, la que quedó
+//     congelada al cerrar; si sigue abierta, se consulta en vivo contra
+//     validador_inventario (puede haber cambiado por movimientos de bodega).
+// Disponible en cualquier momento, no solo al cerrar.
+router.get('/listas-conteo/:id/reporte', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const lista = listaRows[0];
+    const items = await obtenerItemsConActual(lista, req.params.id);
+    const { resumen, items: detalle } = calcularDetalleReporte(lista, items);
+    res.json({ lista, resumen, items: detalle });
+  } catch (err) {
+    console.error('Error al generar reporte de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
+});
 
-  async function descargarConsolidadoExcel() {
-    setDescargandoConsolidado(true);
-    try {
-      const res = await api.get('/validador-inventario/listas-conteo-consolidado-excel', { params: { bodega, desde, hasta }, responseType: 'blob' });
-      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
-      const a = document.createElement('a');
-      a.href = blobUrl; a.download = `consolidado_${bodega}_${desde}_${hasta}.xlsx`;
-      document.body.appendChild(a); a.click(); a.remove();
-      window.URL.revokeObjectURL(blobUrl);
-    } catch (e) {
-      alert('Error descargando el consolidado: ' + (e.response?.data?.error || e.message));
+// ── POST /api/validador-inventario/listas-conteo/:id/cerrar ──────────────────
+// Cierra la lista (editor/admin): congela la existencia SIIS "actual" de cada
+// ítem (la bodega puede haber seguido operando desde que se creó la lista) y
+// ya no se pueden modificar los conteos.
+router.post('/listas-conteo/:id/cerrar', authMiddleware, editorOrAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: listaRows } = await client.query(
+      `SELECT * FROM listas_conteo WHERE id = $1 AND estado = 'abierta' FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!listaRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Lista no encontrada o ya estaba cerrada' });
     }
-    setDescargandoConsolidado(false);
+    const lista = listaRows[0];
+
+    await client.query(
+      `UPDATE listas_conteo_items li
+       SET existencia_siis_cierre = vi.existencia_sistema
+       FROM validador_inventario vi
+       WHERE li.lista_id = $1
+         AND COALESCE(li.origen, 'snapshot') <> 'agregado'
+         AND vi.bodega = $2 AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento`,
+      [req.params.id, lista.bodega]
+    );
+    // Los productos agregados a mano nunca existen en SIIS: se congelan en 0.
+    await client.query(
+      `UPDATE listas_conteo_items SET existencia_siis_cierre = 0 WHERE lista_id = $1 AND origen = 'agregado'`,
+      [req.params.id]
+    );
+
+    const { rows } = await client.query(
+      `UPDATE listas_conteo SET estado = 'cerrada', cerrado_por = $1, cerrado_en = NOW() WHERE id = $2 RETURNING *`,
+      [req.user.id, req.params.id]
+    );
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al cerrar lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
   }
+});
 
-  const seccion = (key, titulo) => (
-    <button
-      onClick={() => setAbierto(abierto === key ? null : key)}
-      style={{
-        background: abierto === key ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: abierto === key ? '#fff' : 'var(--t-text-primary)',
-        border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-      }}
-    >
-      {titulo}
-    </button>
-  );
+// ── DELETE /api/validador-inventario/listas-conteo/:id ────────────────────────
+// Elimina una lista de conteo completa (sus ítems se borran en cascada). Solo
+// admin, porque puede tratarse de un conteo ya cerrado y con historial.
+router.delete('/listas-conteo/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`DELETE FROM listas_conteo WHERE id = $1 RETURNING id`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    res.json({ ok: true, id: rows[0].id });
+  } catch (err) {
+    console.error('Error al eliminar lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
-  return (
-    <div style={{ marginBottom: 20 }}>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        {seccion('dashboard', '📊 Dashboard de progreso')}
-        {seccion('historial', '🔎 Historial por código')}
-        {seccion('consolidado', '📑 Reporte consolidado')}
-        {(abierto === 'dashboard' || abierto === 'consolidado') && (
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 8 }}>
-            <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={{ ...inputStyle, fontSize: 12 }} />
-            <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>a</span>
-            <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={{ ...inputStyle, fontSize: 12 }} />
-            {abierto === 'dashboard' && <button onClick={cargarDashboard} style={{ ...miniBtn }}>Actualizar</button>}
-            {abierto === 'consolidado' && <button onClick={cargarConsolidado} style={{ ...miniBtn }}>Generar</button>}
-          </div>
-        )}
-      </div>
+// ── GET /api/validador-inventario/listas-conteo/:id/plantilla ────────────────
+// Genera el Excel en blanco para salir a contar en bodega.
+router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const lista = listaRows[0];
+    const ordenPlantilla = lista.tipo === 'grupo_conteo' ? 'ORDER BY nombre ASC' : 'ORDER BY presentacion NULLS LAST, nombre ASC';
+    const { rows: items } = await pool.query(
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ${ordenPlantilla}`,
+      [req.params.id]
+    );
 
-      {abierto === 'dashboard' && (
-        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 8 }}>
-          {cargandoDash ? (
-            <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Cargando…</p>
-          ) : !dash ? (
-            <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Sin datos.</p>
-          ) : (
-            <>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-                {[
-                  ['Grupos totales', dash.total_grupos_inventario, 'var(--t-text-primary)'],
-                  ['Grupos contados (periodo)', `${dash.grupos_contados_periodo}/${dash.total_grupos_inventario}`, '#4ade80'],
-                  ['Conteos abiertos', dash.conteos_abiertos, '#fbbf24'],
-                  ['Conteos cerrados (periodo)', dash.conteos_cerrados_periodo, 'var(--t-text-primary)'],
-                  ['Ítems con diferencia', dash.items_con_diferencia_periodo, '#f87171'],
-                  ['Diferencia en valor (periodo)', fmtPesos(dash.diferencia_valor_total_periodo), dash.diferencia_valor_total_periodo < 0 ? '#f87171' : '#4ade80'],
-                ].map(([label, value, color]) => (
-                  <div key={label} style={{ minWidth: 130, flex: 1 }}>
-                    <div style={{ fontSize: 18, fontWeight: 700, color }}>{value}</div>
-                    <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{label}</div>
-                  </div>
-                ))}
-              </div>
-              {dash.conteos.length > 0 && (
-                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                  <thead><tr>{['#', 'Tipo', 'Criterio', 'Estado', 'Creado'].map(h => <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)' }}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {dash.conteos.map(c => (
-                      <tr key={c.id} style={{ borderTop: '1px solid #1a2234' }}>
-                        <td style={{ padding: '4px 6px' }}>{c.id}</td>
-                        <td style={{ padding: '4px 6px' }}>{LABEL_TIPO_LISTA[c.tipo]}</td>
-                        <td style={{ padding: '4px 6px' }}>{c.criterio || '—'}</td>
-                        <td style={{ padding: '4px 6px' }}>{c.estado === 'cerrada' ? '🔒' : '🟢'}</td>
-                        <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{new Date(c.creado_en).toLocaleDateString('es-CO')}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </>
-          )}
-        </div>
-      )}
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Conteo');
+    ws.columns = [
+      { width: 16 }, { width: 40 }, { width: 14 }, { width: 14 }, { width: 20 }, { width: 16 }, { width: 16 }, { width: 12 }, { width: 12 }, { width: 12 },
+    ];
 
-      {abierto === 'historial' && (
-        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 8 }}>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <input
-              type="text" value={codigoBuscar} onChange={(e) => setCodigoBuscar(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && buscarHistorialCodigo()}
-              placeholder="Código del artículo" style={{ ...inputStyle, flex: 1, maxWidth: 220 }}
-            />
-            <button onClick={buscarHistorialCodigo} disabled={buscando} style={miniBtnAccent}>{buscando ? 'Buscando…' : 'Buscar'}</button>
-          </div>
-          {historialCodigo && (
-            historialCodigo.length === 0 ? (
-              <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Este código no ha entrado en ningún conteo todavía.</p>
-            ) : (
-              <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr>{['Conteo #', 'Criterio', 'Estado', 'Conteo 1', 'Conteo 2', 'SIIS inicial', 'SIIS actual', 'Diferencia', 'Motivo'].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
-                  ))}</tr>
-                </thead>
-                <tbody>
-                  {historialCodigo.map((h, i) => (
-                    <tr key={i} style={{ borderTop: '1px solid #1a2234' }}>
-                      <td style={{ padding: '4px 6px' }}>{h.lista_id}</td>
-                      <td style={{ padding: '4px 6px' }}>{h.criterio || '—'}</td>
-                      <td style={{ padding: '4px 6px' }}>{h.estado === 'cerrada' ? '🔒' : '🟢'}</td>
-                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.conteo_1 ?? '—'}</td>
-                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.conteo_2 ?? '—'}</td>
-                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.existencia_siis_inicial}</td>
-                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.existencia_siis_actual ?? '—'}</td>
-                      <td style={{ padding: '4px 6px', fontFamily: 'monospace', color: h.diferencia ? '#f87171' : '#4ade80' }}>{h.diferencia ?? '—'}</td>
-                      <td style={{ padding: '4px 6px' }}>{h.motivo_diferencia || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )
-          )}
-        </div>
-      )}
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}${lista.subcriterio ? ' / ' + lista.subcriterio : ''}`;
+    ws.mergeCells('A1:J1');
+    ws.getCell('A1').value = `Lista de Conteo #${lista.id} — ${tituloCriterio}`;
+    ws.getCell('A1').font = { bold: true, size: 14 };
 
-      {abierto === 'consolidado' && (
-        <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 16, marginBottom: 8 }}>
-          {cargandoConsolidado ? (
-            <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Generando…</p>
-          ) : !consolidado ? (
-            <p style={{ fontSize: 13, color: 'var(--t-text-muted)' }}>Elige el rango de fechas y presiona "Generar".</p>
-          ) : (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-                <p style={{ fontSize: 13 }}>
-                  <strong>{consolidado.total_conteos}</strong> conteos cerrados · <strong>{consolidado.items_con_diferencia}</strong> ítems con diferencia ·
-                  diferencia en valor: <strong style={{ color: consolidado.diferencia_valor_total_actual !== undefined ? undefined : undefined }}>{fmtPesos(consolidado.diferencia_valor_total)}</strong>
-                </p>
-                <button onClick={descargarConsolidadoExcel} disabled={descargandoConsolidado} style={miniBtn}>
-                  📥 {descargandoConsolidado ? 'Generando…' : 'Descargar Excel'}
-                </button>
-              </div>
-              {consolidado.items.length > 0 && (
-                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                  <thead><tr>{['Conteo #', 'Código', 'Nombre', 'Definitivo', 'SIIS actual', 'Dif.'].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
-                  ))}</tr></thead>
-                  <tbody>
-                    {consolidado.items.map((it, i) => (
-                      <tr key={i} style={{ borderTop: '1px solid #1a2234' }}>
-                        <td style={{ padding: '4px 6px' }}>{it.conteo_id}</td>
-                        <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{it.codigo}</td>
-                        <td style={{ padding: '4px 6px' }}>{it.nombre}</td>
-                        <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{it.definitivo}</td>
-                        <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{it.existencia_siis_actual}</td>
-                        <td style={{ padding: '4px 6px', fontFamily: 'monospace', color: it.diferencia_cantidad_actual > 0 ? '#4ade80' : '#f87171' }}>
-                          {it.diferencia_cantidad_actual > 0 ? '+' : ''}{it.diferencia_cantidad_actual}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
+    ws.getCell('A2').value = 'Bodega:';       ws.getCell('B2').value = lista.bodega;
+    ws.getCell('C2').value = 'Fecha:';        ws.getCell('D2').value = new Date().toLocaleDateString('es-CO');
+    ws.getCell('A3').value = 'Conteo 1 por:'; ws.getCell('B3').value = lista.conteo1_nombre || '_______________';
+    ws.getCell('C3').value = 'Conteo 2 por:'; ws.getCell('D3').value = lista.conteo2_nombre || '_______________';
+    ['A2', 'C2', 'A3', 'C3'].forEach(c => { ws.getCell(c).font = { bold: true }; });
+
+    const filaEncabezado = 5;
+    const encabezados = ['Código', 'Nombre', 'Lote', 'Fecha Venc.', 'Presentación', 'Grupo', 'Subgrupo', 'Conteo 1', 'Conteo 2', 'SIIS'];
+    ws.getRow(filaEncabezado).values = encabezados;
+    ws.getRow(filaEncabezado).font = { bold: true };
+    ws.getRow(filaEncabezado).eachCell(c => {
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+      c.border = { bottom: { style: 'thin' } };
+    });
+
+    let fila = filaEncabezado + 1;
+    let presentacionActual = Symbol('inicio'); // fuerza que la primera fila dispare el encabezado de grupo
+    for (const it of items) {
+      if (lista.subclasificar_presentacion && it.presentacion !== presentacionActual) {
+        presentacionActual = it.presentacion;
+        const r = ws.getRow(fila);
+        ws.mergeCells(`A${fila}:J${fila}`);
+        r.getCell(1).value = it.presentacion || 'SIN PRESENTACIÓN';
+        r.font = { bold: true, italic: true };
+        r.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+        fila++;
+      }
+      ws.getRow(fila).values = [
+        it.codigo, it.nombre, it.lote || '', it.fecha_vencimiento || '', it.presentacion || '',
+        it.grupo_conteo || '', it.subgrupo_conteo || '',
+        null, null, Number(it.existencia_siis),
+      ];
+      fila++;
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="lista_conteo_${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al generar plantilla de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/plantilla-segundo-conteo ─
+// Igual a la planilla de conteo, pero SOLO con los ítems que hoy no cuadran
+// (diferencia actual distinta de cero, la misma que muestra el filtro "Solo lo
+// que no cuadra") y únicamente con la casilla de Conteo 2 (sin Conteo 1, para
+// que el recuento sea a ciegas) más una casilla de observaciones. Lista para
+// imprimir en horizontal, con el encabezado repetido en cada hoja.
+router.get('/listas-conteo/:id/plantilla-segundo-conteo', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const lista = listaRows[0];
+
+    const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
+    const { items: detalle } = calcularDetalleReporte(lista, itemsRaw);
+    const idsConDiferencia = new Set(
+      detalle.filter(d => d.diferencia_cantidad_actual !== null && d.diferencia_cantidad_actual !== 0).map(d => d.id)
+    );
+    const items = itemsRaw.filter(it => idsConDiferencia.has(it.id));
+    if (!items.length) {
+      return res.status(400).json({ error: 'No hay ítems con diferencia: nada que recontar' });
+    }
+
+    const cmp = (a, b) => String(a || '').localeCompare(String(b || ''), 'es');
+    items.sort(lista.tipo === 'grupo_conteo'
+      ? (a, b) => cmp(a.nombre, b.nombre)
+      : (a, b) => ((a.presentacion == null) - (b.presentacion == null)) || cmp(a.presentacion, b.presentacion) || cmp(a.nombre, b.nombre));
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Segundo conteo');
+    ws.columns = [
+      { width: 16 }, { width: 40 }, { width: 14 }, { width: 14 }, { width: 20 }, { width: 16 }, { width: 16 }, { width: 12 }, { width: 14 }, { width: 34 },
+    ];
+    ws.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '5:5' };
+
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}${lista.subcriterio ? ' / ' + lista.subcriterio : ''}`;
+    ws.mergeCells('A1:J1');
+    ws.getCell('A1').value = `SEGUNDO CONTEO — Lista #${lista.id} — ${tituloCriterio}`;
+    ws.getCell('A1').font = { bold: true, size: 14 };
+
+    ws.getCell('A2').value = 'Bodega:';        ws.getCell('B2').value = lista.bodega;
+    ws.getCell('C2').value = 'Fecha:';         ws.getCell('D2').value = new Date().toLocaleDateString('es-CO');
+    ws.getCell('E2').value = 'Ítems a recontar:'; ws.getCell('F2').value = items.length;
+    ws.getCell('A3').value = 'Conteo 2 por:';  ws.getCell('B3').value = lista.conteo2_nombre || '_______________';
+    ['A2', 'C2', 'E2', 'A3'].forEach(c => { ws.getCell(c).font = { bold: true }; });
+
+    const filaEncabezado = 5;
+    ws.getRow(filaEncabezado).values = ['Código', 'Nombre', 'Lote', 'Fecha Venc.', 'Presentación', 'Grupo', 'Subgrupo', 'SIIS', 'Conteo 2', 'Observaciones'];
+    ws.getRow(filaEncabezado).font = { bold: true };
+    ws.getRow(filaEncabezado).eachCell(c => {
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+      c.border = { bottom: { style: 'thin' } };
+    });
+
+    const borde = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    let fila = filaEncabezado + 1;
+    for (const it of items) {
+      const esAgregado = it.origen === 'agregado';
+      const r = ws.getRow(fila);
+      r.values = [
+        it.codigo, it.nombre, it.lote || '', it.fecha_vencimiento || '', it.presentacion || '',
+        it.grupo_conteo || '', it.subgrupo_conteo || '',
+        esAgregado ? 0 : Number(it.existencia_siis), null, null,
+      ];
+      r.height = 26;
+      r.alignment = { vertical: 'middle', wrapText: true };
+      r.getCell(9).border = borde;   // casilla para anotar el Conteo 2
+      r.getCell(10).border = borde;  // casilla de observaciones
+      fila++;
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="segundo_conteo_${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al generar planilla de segundo conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/reporte-excel ────────────
+// Exporta el reporte de diferencias a Excel, con SIIS inicial y SIIS actual
+// (al cierre, o en vivo si sigue abierta) lado a lado.
+router.get('/listas-conteo/:id/reporte-excel', authMiddleware, async (req, res) => {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const lista = listaRows[0];
+    const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
+    itemsRaw.sort((a, b) => (a.presentacion || '').localeCompare(b.presentacion || '') || a.nombre.localeCompare(b.nombre));
+    const { resumen, items } = calcularDetalleReporte(lista, itemsRaw);
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Reporte de diferencias');
+    ws.columns = [
+      { width: 16 }, { width: 40 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 12 },
+      { width: 13 }, { width: 13 }, { width: 13 }, { width: 13 },
+    ];
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}`;
+    ws.mergeCells('A1:K1');
+    ws.getCell('A1').value = `Reporte de diferencias — Conteo #${lista.id} — ${tituloCriterio} (${lista.estado === 'cerrada' ? 'CERRADA' : 'ABIERTA'})`;
+    ws.getCell('A1').font = { bold: true, size: 13 };
+    ws.getCell('A2').value = `Total: ${resumen.total_items} · Contados: ${resumen.contados} · Con diferencia: ${resumen.con_diferencia} · Diferencia en valor (vs. actual): ${resumen.diferencia_valor_total_actual}`;
+
+    const filaEncabezado = 4;
+    ws.getRow(filaEncabezado).values = [
+      'Código', 'Nombre', 'Presentación', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2',
+      'Dif. Cant. (inicial)', 'Dif. Valor (inicial)', 'Dif. Cant. (actual)', 'Dif. Valor (actual)',
+    ];
+    ws.getRow(filaEncabezado).font = { bold: true };
+
+    let fila = filaEncabezado + 1;
+    for (const it of items) {
+      ws.getRow(fila).values = [
+        it.codigo, it.nombre, it.presentacion || '',
+        it.existencia_siis_inicial, it.existencia_siis_actual ?? 'N/D',
+        it.conteo_1 ?? '', it.conteo_2 ?? '',
+        it.diferencia_cantidad_inicial ?? '', it.diferencia_valor_inicial ?? '',
+        it.diferencia_cantidad_actual ?? '', it.diferencia_valor_actual ?? '',
+      ];
+      if (it.diferencia_cantidad_actual) {
+        ws.getRow(fila).eachCell(c => { c.font = { color: { argb: it.diferencia_cantidad_actual > 0 ? 'FF166534' : 'FFB91C1C' } }; });
+      }
+      fila++;
+    }
+    ws.getRow(fila + 1).getCell(8).value = 'Dif. valor total (inicial):';
+    ws.getRow(fila + 1).getCell(9).value = resumen.diferencia_valor_total_inicial;
+    ws.getRow(fila + 2).getCell(10).value = 'Dif. valor total (actual):';
+    ws.getRow(fila + 2).getCell(11).value = resumen.diferencia_valor_total_actual;
+    ws.getRow(fila + 1).eachCell(c => { c.font = { bold: true }; });
+    ws.getRow(fila + 2).eachCell(c => { c.font = { bold: true }; });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="reporte_diferencias_${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al generar reporte excel de lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── PATCH /api/validador-inventario/listas-conteo/:id/items/:itemId/cuenta ───
+// Reclasifica un ítem "SIN CLASIFICAR" (o cambia su cuenta) directo desde una
+// lista de conteo. Editor o admin. No depende de si la lista está abierta o
+// cerrada (clasificar no altera el conteo). Actualiza el snapshot de la lista
+// Y la tabla maestra tipos_inventario, para que el Validador general y las
+// próximas listas de conteo ya vean el artículo clasificado.
+router.patch('/listas-conteo/:id/items/:itemId/cuenta', authMiddleware, editorOrAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { cuenta, contable } = req.body;
+    if (!cuenta) { client.release(); return res.status(400).json({ error: 'cuenta requerida' }); }
+
+    const { rows: itemRows } = await client.query(
+      `SELECT * FROM listas_conteo_items WHERE id = $1 AND lista_id = $2`,
+      [req.params.itemId, req.params.id]
+    );
+    if (!itemRows.length) { client.release(); return res.status(404).json({ error: 'Ítem no encontrado' }); }
+    const item = itemRows[0];
+    const contableNuevo = truncar(contable, 30);
+    const cuentaNuevo = truncar(cuenta, 100);
+
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `UPDATE listas_conteo_items SET cuenta = $1 WHERE id = $2 RETURNING *`,
+      [cuentaNuevo, req.params.itemId]
+    );
+
+    if (item.concat) {
+      const { rows: anteriorRows } = await client.query(`SELECT contable, cuenta FROM tipos_inventario WHERE concat = $1`, [item.concat]);
+      const anterior = anteriorRows[0] || null;
+      if (!anterior || anterior.contable !== contableNuevo || anterior.cuenta !== cuentaNuevo) {
+        await registrarHistorialTipo(client, item.concat, anterior, contableNuevo, cuentaNuevo, 'manual_desde_conteo', req.user.id);
+      }
+      await client.query(
+        `INSERT INTO tipos_inventario (concat, contable, cuenta)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (concat) DO UPDATE SET contable = EXCLUDED.contable, cuenta = EXCLUDED.cuenta`,
+        [item.concat, contableNuevo, cuentaNuevo]
+      );
+    }
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al clasificar ítem de la lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── PATCH /api/validador-inventario/listas-conteo/:id/items/:itemId/motivo ───
+// Justificación de la diferencia (para sustento contable/auditoría). Sin
+// restricción de rol — lo diligencia quien esté haciendo el conteo o el cierre.
+router.patch('/listas-conteo/:id/items/:itemId/motivo', authMiddleware, async (req, res) => {
+  try {
+    const { motivo } = req.body;
+    if (motivo === undefined) return res.status(400).json({ error: 'motivo requerido' });
+    const { rows } = await pool.query(
+      `UPDATE listas_conteo_items SET motivo_diferencia = $1 WHERE id = $2 AND lista_id = $3 RETURNING *`,
+      [truncar(motivo, 300), req.params.itemId, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Ítem no encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al guardar motivo de diferencia:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/dashboard?bodega=BV&desde=&hasta= ──────────
+// Vista gerencial de progreso: cuántos grupos existen vs cuántos se han
+// contado en el periodo, y la diferencia en valor acumulada de los conteos
+// cerrados en ese rango.
+router.get('/dashboard', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const desde = req.query.desde || '1900-01-01';
+    const hasta = req.query.hasta || '2999-12-31';
+
+    const { rows: gruposRows } = await pool.query(
+      `SELECT COUNT(DISTINCT grupo_inventario(codigo))::int AS total FROM validador_inventario WHERE bodega = $1`,
+      [bodega]
+    );
+    const totalGrupos = gruposRows[0].total;
+
+    const { rows: conteosPeriodo } = await pool.query(
+      `SELECT id, tipo, criterio, estado, subclasificar_presentacion, creado_en, cerrado_en
+       FROM listas_conteo
+       WHERE bodega = $1 AND creado_en::date BETWEEN $2 AND $3
+       ORDER BY creado_en DESC`,
+      [bodega, desde, hasta]
+    );
+
+    const gruposContados = new Set(
+      conteosPeriodo.filter(c => c.tipo === 'grupo_inventario' && c.estado === 'cerrada').map(c => c.criterio)
+    ).size;
+
+    const cerradosEnPeriodo = conteosPeriodo.filter(c => c.estado === 'cerrada');
+    let diferenciaValorPeriodo = 0, itemsConDiferenciaPeriodo = 0;
+    for (const c of cerradosEnPeriodo) {
+      const items = await obtenerItemsConActual(c, c.id);
+      const { resumen } = calcularDetalleReporte(c, items);
+      diferenciaValorPeriodo += resumen.diferencia_valor_total_actual;
+      itemsConDiferenciaPeriodo += resumen.con_diferencia;
+    }
+
+    res.json({
+      bodega,
+      total_grupos_inventario: totalGrupos,
+      grupos_contados_periodo: gruposContados,
+      conteos_abiertos: conteosPeriodo.filter(c => c.estado === 'abierta').length,
+      conteos_cerrados_periodo: cerradosEnPeriodo.length,
+      items_con_diferencia_periodo: itemsConDiferenciaPeriodo,
+      diferencia_valor_total_periodo: Number(diferenciaValorPeriodo.toFixed(2)),
+      conteos: conteosPeriodo,
+    });
+  } catch (err) {
+    console.error('Error al generar dashboard:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/historial-codigo/:codigo?bodega=BV ─────────
+// Todas las veces que un código ha entrado en un conteo, con su resultado —
+// útil para detectar diferencias recurrentes (posible fuga o error sistemático).
+router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    const { rows } = await pool.query(
+      `SELECT li.*, lc.tipo, lc.criterio, lc.estado, lc.creado_en AS conteo_creado_en, lc.cerrado_en AS conteo_cerrado_en
+       FROM listas_conteo_items li
+       JOIN listas_conteo lc ON lc.id = li.lista_id
+       WHERE li.codigo = $1 AND ($2 = '' OR lc.bodega = $2)
+       ORDER BY lc.creado_en DESC`,
+      [req.params.codigo, bodega]
+    );
+    const historial = rows.map(it => {
+      const definitivo = conteoDefinitivo(it);
+      const existenciaActual = it.origen === 'agregado'
+        ? 0
+        : (it.estado === 'cerrada'
+          ? (it.existencia_siis_cierre !== null ? Number(it.existencia_siis_cierre) : null)
+          : null);
+      const diferencia = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
+      return {
+        lista_id: it.lista_id, tipo: it.tipo, criterio: it.criterio, estado: it.estado,
+        creado_en: it.conteo_creado_en, cerrado_en: it.conteo_cerrado_en,
+        conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
+        conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null,
+        existencia_siis_inicial: it.origen === 'agregado' ? 0 : Number(it.existencia_siis), existencia_siis_actual: existenciaActual,
+        diferencia, motivo_diferencia: it.motivo_diferencia || '',
+      };
+    });
+    res.json(historial);
+  } catch (err) {
+    console.error('Error al obtener historial de código:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/consolidado?bodega=&desde=&hasta= ──
+// Agrega todos los conteos CERRADOS de un rango de fechas (por cerrado_en):
+// totales, y el detalle solo de los ítems con diferencia real, con trazabilidad
+// de a qué conteo pertenece cada uno.
+router.get('/listas-conteo-consolidado', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const desde = req.query.desde || '1900-01-01';
+    const hasta = req.query.hasta || '2999-12-31';
+
+    const { rows: conteos } = await pool.query(
+      `SELECT * FROM listas_conteo WHERE bodega = $1 AND estado = 'cerrada' AND cerrado_en::date BETWEEN $2 AND $3 ORDER BY cerrado_en ASC`,
+      [bodega, desde, hasta]
+    );
+
+    let diferenciaValorTotal = 0, itemsConDiferencia = 0;
+    const itemsDiferencia = [];
+    for (const c of conteos) {
+      const items = await obtenerItemsConActual(c, c.id);
+      const { items: detalle, resumen } = calcularDetalleReporte(c, items);
+      diferenciaValorTotal += resumen.diferencia_valor_total_actual;
+      itemsConDiferencia += resumen.con_diferencia;
+      for (const it of detalle) {
+        if (it.diferencia_cantidad_actual) {
+          itemsDiferencia.push({ ...it, conteo_id: c.id, conteo_tipo: c.tipo, conteo_criterio: c.criterio, conteo_cerrado_en: c.cerrado_en });
+        }
+      }
+    }
+
+    res.json({
+      bodega, desde, hasta,
+      total_conteos: conteos.length,
+      items_con_diferencia: itemsConDiferencia,
+      diferencia_valor_total: Number(diferenciaValorTotal.toFixed(2)),
+      conteos: conteos.map(c => ({ id: c.id, tipo: c.tipo, criterio: c.criterio, cerrado_en: c.cerrado_en })),
+      items: itemsDiferencia,
+    });
+  } catch (err) {
+    console.error('Error al generar reporte consolidado:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo-consolidado-excel ────────────
+router.get('/listas-conteo-consolidado-excel', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const desde = req.query.desde || '1900-01-01';
+    const hasta = req.query.hasta || '2999-12-31';
+
+    const { rows: conteos } = await pool.query(
+      `SELECT * FROM listas_conteo WHERE bodega = $1 AND estado = 'cerrada' AND cerrado_en::date BETWEEN $2 AND $3 ORDER BY cerrado_en ASC`,
+      [bodega, desde, hasta]
+    );
+    let diferenciaValorTotal = 0;
+    const itemsDiferencia = [];
+    for (const c of conteos) {
+      const items = await obtenerItemsConActual(c, c.id);
+      const { items: detalle, resumen } = calcularDetalleReporte(c, items);
+      diferenciaValorTotal += resumen.diferencia_valor_total_actual;
+      for (const it of detalle) {
+        if (it.diferencia_cantidad_actual) itemsDiferencia.push({ ...it, conteo_id: c.id, conteo_criterio: c.criterio, conteo_cerrado_en: c.cerrado_en });
+      }
+    }
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Consolidado');
+    ws.columns = [{ width: 10 }, { width: 12 }, { width: 16 }, { width: 40 }, { width: 12 }, { width: 12 }, { width: 13 }, { width: 30 }];
+    ws.mergeCells('A1:H1');
+    ws.getCell('A1').value = `Reporte consolidado de diferencias — Bodega ${bodega} — ${desde} a ${hasta}`;
+    ws.getCell('A1').font = { bold: true, size: 13 };
+    ws.getCell('A2').value = `Conteos cerrados: ${conteos.length} · Diferencia en valor total: ${diferenciaValorTotal.toFixed(2)}`;
+    const filaEnc = 4;
+    ws.getRow(filaEnc).values = ['Conteo #', 'Cerrado', 'Código', 'Nombre', 'Conteo def.', 'SIIS actual', 'Dif. Cantidad', 'Motivo'];
+    ws.getRow(filaEnc).font = { bold: true };
+    let fila = filaEnc + 1;
+    for (const it of itemsDiferencia) {
+      ws.getRow(fila).values = [
+        it.conteo_id, it.conteo_cerrado_en ? new Date(it.conteo_cerrado_en).toLocaleDateString('es-CO') : '',
+        it.codigo, it.nombre, it.definitivo, it.existencia_siis_actual, it.diferencia_cantidad_actual, it.motivo_diferencia || '',
+      ];
+      fila++;
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="consolidado_${bodega}_${desde}_${hasta}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al exportar consolidado:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// AJUSTES DENTRO DE UNA LISTA DE CONTEO
+//  - Agregar productos/lotes encontrados en bodega que no estaban en el Excel
+//  - Cambios de lote (mismo código) y referencias cruzadas (códigos distintos)
+//  - Reporte final consolidado (JSON + Excel) para imprimir y firmar
+// ════════════════════════════════════════════════════════════════════════════
+
+async function listaAbiertaOError(listaId, res) {
+  const { rows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [listaId]);
+  if (!rows.length) { res.status(404).json({ error: 'Lista no encontrada' }); return null; }
+  if (rows[0].estado === 'cerrada') { res.status(400).json({ error: 'La lista está cerrada, no se puede modificar' }); return null; }
+  return rows[0];
 }
 
-const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
-const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+// ── POST /api/validador-inventario/listas-conteo/:id/items ───────────────────
+// Agrega a la lista un producto/lote hallado físicamente que no venía en el
+// snapshot. Queda con existencia_siis = 0 y origen = 'agregado', así que todo
+// lo que se cuente de él aparece como sobrante hasta que se incluya en SIIS.
+router.post('/listas-conteo/:id/items', authMiddleware, async (req, res) => {
+  const lista = await listaAbiertaOError(req.params.id, res);
+  if (!lista) return;
+  try {
+    const { codigo, nombre, lote, fecha_vencimiento, costo_unitario, conteo_1 } = req.body;
+    const cod = truncar(codigo, 50);
+    if (!cod) return res.status(400).json({ error: 'codigo requerido' });
+
+    // Se completa lo que ya se sepa del código: nombre/costo desde el
+    // inventario de la bodega, y su clasificación desde los maestros.
+    const { rows: refRows } = await pool.query(
+      `SELECT vi.nombre, vi.costo_unitario, COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo, pi.presentacion
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+       LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
+       WHERE vi.bodega = $1 AND vi.codigo = $2 LIMIT 1`,
+      [lista.bodega, cod]
+    );
+    const ref = refRows[0] || {};
+
+    // Si no estaba en el inventario, igual se buscan sus maestros por código.
+    let cuenta = ref.cuenta, grupo = ref.grupo_conteo, subgrupo = ref.subgrupo_conteo, presentacion = ref.presentacion;
+    if (!refRows.length) {
+      const { rows: m } = await pool.query(
+        `SELECT COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta, cc.grupo, cc.subgrupo, pi.presentacion
+         FROM (SELECT $1::text AS codigo) x
+         LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(x.codigo)
+         LEFT JOIN clasificacion_conteo cc ON cc.codigo = x.codigo
+         LEFT JOIN presentaciones_inventario pi ON pi.codigo = x.codigo`,
+        [cod]
+      );
+      cuenta = m[0]?.cuenta || 'SIN CLASIFICAR';
+      grupo = m[0]?.grupo; subgrupo = m[0]?.subgrupo; presentacion = m[0]?.presentacion;
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO listas_conteo_items
+         (lista_id, codigo, nombre, lote, fecha_vencimiento, presentacion, cuenta, concat,
+          grupo_conteo, subgrupo_conteo, existencia_siis, costo_unitario, origen, conteo_1, conteo_1_por, conteo_1_en)
+       VALUES ($1,$2::text,$3,$4,$5,$6,$7,concat_tipo_inventario($2::text),$8,$9,0,$10,'agregado',$11::numeric,$12,
+               CASE WHEN $11::numeric IS NULL THEN NULL ELSE NOW() END)
+       RETURNING *`,
+      [lista.id, cod, truncar(nombre || ref.nombre || '', 300), truncar(lote, 100), truncar(fecha_vencimiento, 20),
+       truncar(presentacion, 200), truncar(cuenta, 100), truncar(grupo, 100), truncar(subgrupo, 100),
+       costo_unitario !== undefined && costo_unitario !== null && costo_unitario !== '' ? costo_unitario : (ref.costo_unitario || 0),
+       conteo_1 === undefined || conteo_1 === null || conteo_1 === '' ? null : conteo_1, req.user.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al agregar ítem a la lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── DELETE /api/validador-inventario/listas-conteo/:id/items/:itemId ─────────
+// Elimina un producto/lote agregado a mano (origen = 'agregado') de una lista
+// ABIERTA. Los ítems del snapshot no se pueden borrar. Si el ítem participa en
+// cambios de lote / referencias cruzadas, primero se revierte el ajuste que
+// dejaron en la fila contraparte y luego el ítem se borra (sus cruces se van
+// en cascada), para que la otra fila no quede con un ajuste huérfano.
+router.delete('/listas-conteo/:id/items/:itemId', authMiddleware, editorOrAdmin, async (req, res) => {
+  const lista = await listaAbiertaOError(req.params.id, res);
+  if (!lista) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT * FROM listas_conteo_items WHERE id = $1 AND lista_id = $2 FOR UPDATE`,
+      [req.params.itemId, lista.id]
+    );
+    if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ítem no encontrado' }); }
+    const item = rows[0];
+    if (item.origen !== 'agregado') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Solo se pueden eliminar los productos agregados manualmente' });
+    }
+
+    const { rows: cruces } = await client.query(
+      `SELECT * FROM listas_conteo_cruces WHERE lista_id = $1 AND (item_origen_id = $2 OR item_destino_id = $2)`,
+      [lista.id, item.id]
+    );
+    for (const c of cruces) {
+      if (Number(c.item_origen_id) === Number(item.id)) {
+        // El ítem era el origen: la contraparte (destino) había recibido +cantidad.
+        await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce - $1 WHERE id = $2`, [c.cantidad, c.item_destino_id]);
+      } else {
+        // El ítem era el destino: la contraparte (origen) había recibido -cantidad.
+        await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce + $1 WHERE id = $2`, [c.cantidad, c.item_origen_id]);
+      }
+    }
+
+    await client.query(`DELETE FROM listas_conteo_items WHERE id = $1`, [item.id]);
+    await client.query('COMMIT');
+    res.json({ ok: true, id: item.id, cruces_revertidos: cruces.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al eliminar ítem agregado:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/cruces ───────────────────
+router.get('/listas-conteo/:id/cruces', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT c.*, u.nombre AS creado_por_nombre,
+              o.codigo AS origen_codigo, o.nombre AS origen_nombre, o.lote AS origen_lote,
+              d.codigo AS destino_codigo, d.nombre AS destino_nombre, d.lote AS destino_lote
+       FROM listas_conteo_cruces c
+       LEFT JOIN usuarios u ON u.id = c.creado_por
+       JOIN listas_conteo_items o ON o.id = c.item_origen_id
+       JOIN listas_conteo_items d ON d.id = c.item_destino_id
+       WHERE c.lista_id = $1 ORDER BY c.creado_en DESC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar cruces:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/listas-conteo/:id/cruces ──────────────────
+// Registra un cambio de lote o referencia cruzada y aplica el ajuste a ambas
+// filas (origen -cantidad, destino +cantidad) para que las diferencias se
+// neutralicen. El movimiento queda registrado para el reporte final.
+router.post('/listas-conteo/:id/cruces', authMiddleware, async (req, res) => {
+  const lista = await listaAbiertaOError(req.params.id, res);
+  if (!lista) return;
+  const client = await pool.connect();
+  try {
+    const { item_origen_id, item_destino_id, cantidad, motivo } = req.body;
+    const cant = Number(cantidad);
+    if (!item_origen_id || !item_destino_id) { client.release(); return res.status(400).json({ error: 'item_origen_id e item_destino_id son requeridos' }); }
+    if (String(item_origen_id) === String(item_destino_id)) { client.release(); return res.status(400).json({ error: 'El origen y el destino no pueden ser el mismo ítem' }); }
+    if (!cant || cant <= 0) { client.release(); return res.status(400).json({ error: 'La cantidad debe ser mayor que cero' }); }
+
+    await client.query('BEGIN');
+    const { rows: itemsRows } = await client.query(
+      `SELECT * FROM listas_conteo_items WHERE id = ANY($1::int[]) AND lista_id = $2`,
+      [[item_origen_id, item_destino_id], lista.id]
+    );
+    if (itemsRows.length !== 2) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ error: 'Ítems no encontrados en esta lista' }); }
+    const origen = itemsRows.find(i => String(i.id) === String(item_origen_id));
+    const destino = itemsRows.find(i => String(i.id) === String(item_destino_id));
+    const tipo = origen.codigo === destino.codigo ? 'lote' : 'referencia';
+
+    // No dejar mover más unidades de las que el origen realmente tiene
+    // disponibles: lo contado (definitivo) menos lo que ya se haya sacado por
+    // cruces anteriores (ajuste_cruce, que para el origen ya es negativo).
+    const definitivoOrigen = conteoDefinitivo(origen);
+    if (definitivoOrigen === null) {
+      await client.query('ROLLBACK'); client.release();
+      return res.status(400).json({ error: 'El ítem origen todavía no tiene un conteo físico registrado (Conteo 1). Cuéntalo antes de moverle unidades a otro ítem.' });
+    }
+    const disponibleOrigen = definitivoOrigen + Number(origen.ajuste_cruce || 0);
+    if (cant > disponibleOrigen) {
+      await client.query('ROLLBACK'); client.release();
+      return res.status(400).json({
+        error: `Solo hay ${disponibleOrigen} unidad(es) disponibles en el ítem origen (contadas: ${definitivoOrigen}` +
+               (origen.ajuste_cruce ? `, ya movidas por otro cruce: ${-origen.ajuste_cruce}` : '') +
+               `). No se pueden mover ${cant}.`
+      });
+    }
+
+    await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce - $1 WHERE id = $2`, [cant, origen.id]);
+    await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce + $1 WHERE id = $2`, [cant, destino.id]);
+
+    const { rows } = await client.query(
+      `INSERT INTO listas_conteo_cruces (lista_id, item_origen_id, item_destino_id, cantidad, tipo, motivo, creado_por)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [lista.id, origen.id, destino.id, cant, tipo, truncar(motivo, 300), req.user.id]
+    );
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al registrar cruce:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── DELETE /api/validador-inventario/listas-conteo/:id/cruces/:cruceId ───────
+// Revierte el ajuste aplicado y borra el registro del cruce.
+router.delete('/listas-conteo/:id/cruces/:cruceId', authMiddleware, async (req, res) => {
+  const lista = await listaAbiertaOError(req.params.id, res);
+  if (!lista) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`SELECT * FROM listas_conteo_cruces WHERE id = $1 AND lista_id = $2`, [req.params.cruceId, lista.id]);
+    if (!rows.length) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ error: 'Cruce no encontrado' }); }
+    const c = rows[0];
+    await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce + $1 WHERE id = $2`, [c.cantidad, c.item_origen_id]);
+    await client.query(`UPDATE listas_conteo_items SET ajuste_cruce = ajuste_cruce - $1 WHERE id = $2`, [c.cantidad, c.item_destino_id]);
+    await client.query(`DELETE FROM listas_conteo_cruces WHERE id = $1`, [c.id]);
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al revertir cruce:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/reporte-final ────────────
+// Reporte consolidado para imprimir/firmar: sobrantes, faltantes, cambios de
+// lote, referencias cruzadas y productos/lotes agregados en bodega.
+async function armarReporteFinal(listaId) {
+  const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [listaId]);
+  if (!listaRows.length) return null;
+  const lista = listaRows[0];
+  const itemsRaw = await obtenerItemsConActual(lista, listaId);
+  const { resumen, items } = calcularDetalleReporte(lista, itemsRaw);
+
+  const { rows: cruces } = await pool.query(
+    `SELECT c.*, u.nombre AS creado_por_nombre,
+            o.codigo AS origen_codigo, o.nombre AS origen_nombre, o.lote AS origen_lote,
+            d.codigo AS destino_codigo, d.nombre AS destino_nombre, d.lote AS destino_lote,
+            o.costo_unitario AS origen_costo
+     FROM listas_conteo_cruces c
+     LEFT JOIN usuarios u ON u.id = c.creado_por
+     JOIN listas_conteo_items o ON o.id = c.item_origen_id
+     JOIN listas_conteo_items d ON d.id = c.item_destino_id
+     WHERE c.lista_id = $1 ORDER BY c.tipo, c.creado_en`,
+    [listaId]
+  );
+
+  const sobrantes = items.filter(i => i.diferencia_cantidad_actual > 0 && i.origen !== 'agregado');
+  const faltantes = items.filter(i => i.diferencia_cantidad_actual < 0);
+  const agregados = items.filter(i => i.origen === 'agregado');
+  const cambiosLote = cruces.filter(c => c.tipo === 'lote');
+  const referenciasCruzadas = cruces.filter(c => c.tipo === 'referencia');
+
+  const suma = (arr, campo) => Number(arr.reduce((s, x) => s + Number(x[campo] || 0), 0).toFixed(2));
+
+  return {
+    lista,
+    resumen: {
+      ...resumen,
+      total_sobrantes: sobrantes.length,
+      valor_sobrantes: suma(sobrantes, 'diferencia_valor_actual'),
+      total_faltantes: faltantes.length,
+      valor_faltantes: suma(faltantes, 'diferencia_valor_actual'),
+      total_agregados: agregados.length,
+      valor_agregados: suma(agregados, 'diferencia_valor_actual'),
+      total_cambios_lote: cambiosLote.length,
+      total_referencias_cruzadas: referenciasCruzadas.length,
+    },
+    sobrantes, faltantes, agregados, cambios_lote: cambiosLote, referencias_cruzadas: referenciasCruzadas,
+  };
+}
+
+router.get('/listas-conteo/:id/reporte-final', authMiddleware, async (req, res) => {
+  try {
+    const data = await armarReporteFinal(req.params.id);
+    if (!data) return res.status(404).json({ error: 'Lista no encontrada' });
+    res.json(data);
+  } catch (err) {
+    console.error('Error al generar reporte final:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/listas-conteo/:id/reporte-final-excel ──────
+router.get('/listas-conteo/:id/reporte-final-excel', authMiddleware, async (req, res) => {
+  try {
+    const data = await armarReporteFinal(req.params.id);
+    if (!data) return res.status(404).json({ error: 'Lista no encontrada' });
+    const { lista, resumen, sobrantes, faltantes, agregados, cambios_lote, referencias_cruzadas } = data;
+
+    const wb = new ExcelJS.Workbook();
+    const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}${lista.subcriterio ? ' / ' + lista.subcriterio : ''}`;
+
+    const hojaResumen = wb.addWorksheet('Resumen');
+    hojaResumen.columns = [{ width: 38 }, { width: 22 }];
+    hojaResumen.mergeCells('A1:B1');
+    hojaResumen.getCell('A1').value = `Reporte final de conteo #${lista.id}`;
+    hojaResumen.getCell('A1').font = { bold: true, size: 14 };
+    hojaResumen.getCell('A2').value = tituloCriterio;
+    [
+      ['Bodega', lista.bodega],
+      ['Estado', lista.estado === 'cerrada' ? 'CERRADA' : 'ABIERTA'],
+      ['Conteo 1 por', lista.conteo1_nombre || ''],
+      ['Conteo 2 por', lista.conteo2_nombre || ''],
+      ['Fecha de impresión', new Date().toLocaleString('es-CO')],
+      ['', ''],
+      ['Total ítems', resumen.total_items],
+      ['Contados', resumen.contados],
+      ['Pendientes', resumen.pendientes],
+      ['Sobrantes', `${resumen.total_sobrantes} (${resumen.valor_sobrantes})`],
+      ['Faltantes', `${resumen.total_faltantes} (${resumen.valor_faltantes})`],
+      ['Productos/lotes agregados', `${resumen.total_agregados} (${resumen.valor_agregados})`],
+      ['Cambios de lote', resumen.total_cambios_lote],
+      ['Referencias cruzadas', resumen.total_referencias_cruzadas],
+      ['Diferencia neta en valor', resumen.diferencia_valor_total_actual],
+    ].forEach((fila, i) => {
+      const r = hojaResumen.getRow(4 + i);
+      r.getCell(1).value = fila[0]; r.getCell(2).value = fila[1];
+      r.getCell(1).font = { bold: true };
+    });
+    const filaFirmas = 4 + 16;
+    hojaResumen.getCell(`A${filaFirmas}`).value = 'Firma Conteo 1: ______________________';
+    hojaResumen.getCell(`A${filaFirmas + 2}`).value = 'Firma Conteo 2: ______________________';
+    hojaResumen.getCell(`A${filaFirmas + 4}`).value = 'Firma Responsable: ___________________';
+
+    const hojaDif = (nombre, filas) => {
+      const ws = wb.addWorksheet(nombre);
+      ws.columns = [{ width: 16 }, { width: 40 }, { width: 16 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 13 }, { width: 14 }, { width: 30 }];
+      ws.getRow(1).values = ['Código', 'Nombre', 'Lote', 'Presentación', 'SIIS', 'Contado', 'Diferencia', 'Valor', 'Motivo'];
+      ws.getRow(1).font = { bold: true };
+      filas.forEach((it, i) => {
+        ws.getRow(2 + i).values = [
+          it.codigo, it.nombre, it.lote || '', it.presentacion || '',
+          it.existencia_siis_actual, it.definitivo, it.diferencia_cantidad_actual, it.diferencia_valor_actual, it.motivo_diferencia || '',
+        ];
+      });
+      if (filas.length === 0) ws.getRow(2).values = ['— Sin registros —'];
+    };
+    hojaDif('Sobrantes', sobrantes);
+    hojaDif('Faltantes', faltantes);
+    hojaDif('Agregados en bodega', agregados);
+
+    const hojaCruces = (nombre, filas) => {
+      const ws = wb.addWorksheet(nombre);
+      ws.columns = [{ width: 16 }, { width: 34 }, { width: 14 }, { width: 16 }, { width: 34 }, { width: 14 }, { width: 12 }, { width: 30 }, { width: 18 }];
+      ws.getRow(1).values = ['Cód. origen', 'Producto origen', 'Lote origen', 'Cód. destino', 'Producto destino', 'Lote destino', 'Cantidad', 'Motivo', 'Registrado por'];
+      ws.getRow(1).font = { bold: true };
+      filas.forEach((c, i) => {
+        ws.getRow(2 + i).values = [
+          c.origen_codigo, c.origen_nombre, c.origen_lote || '',
+          c.destino_codigo, c.destino_nombre, c.destino_lote || '',
+          Number(c.cantidad), c.motivo || '', c.creado_por_nombre || '',
+        ];
+      });
+      if (filas.length === 0) ws.getRow(2).values = ['— Sin registros —'];
+    };
+    hojaCruces('Cambios de lote', cambios_lote);
+    hojaCruces('Referencias cruzadas', referencias_cruzadas);
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="reporte_final_conteo_${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al exportar reporte final:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/pendientes-inclusion-siis?bodega=BV ────────
+// Productos/lotes que se agregaron a mano en alguna lista de conteo y que aún
+// NO aparecen en el inventario de la bodega — es decir, el ajuste todavía no
+// se reflejó en el Excel de SIIS que se sube a la app.
+router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const { rows } = await pool.query(
+      `SELECT li.id, li.codigo, li.nombre, li.lote, li.fecha_vencimiento, li.conteo_1, li.conteo_2,
+              li.lista_id, lc.criterio, lc.creado_en AS lista_creada_en
+       FROM listas_conteo_items li
+       JOIN listas_conteo lc ON lc.id = li.lista_id
+       WHERE lc.bodega = $1 AND li.origen = 'agregado' AND li.incluido_en_siis = false
+         AND NOT EXISTS (
+           SELECT 1 FROM validador_inventario vi
+           WHERE vi.bodega = lc.bodega AND vi.codigo = li.codigo
+             AND COALESCE(vi.lote,'') = COALESCE(li.lote,'')
+         )
+       ORDER BY lc.creado_en DESC`,
+      [bodega]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar pendientes de inclusión en SIIS:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
