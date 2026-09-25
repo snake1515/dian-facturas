@@ -53,6 +53,31 @@ function fmtFechaCorta(f) {
   return String(f).substring(0, 10);
 }
 
+// Convierte a dd-mm-aaaa. fecha_vencimiento es texto libre: puede venir en ISO
+// ("2027-01-31"), d/m/y ("31/01/2027"), o como serial de Excel ("46752") cuando
+// el Excel de SIIS no formateó la celda como fecha — Excel cuenta los días desde
+// el 1899-12-30 (con el conocido "bug" del año bisiesto 1900, que se replica aquí
+// por compatibilidad, igual que hace la propia Excel).
+function fmtFechaDDMMAAAA(fechaStr) {
+  if (!fechaStr) return '—';
+  const raw = String(fechaStr).trim();
+  let f = null;
+
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const dmy = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  const serial = raw.match(/^\d{4,6}$/);
+
+  if (iso) f = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  else if (dmy) f = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+  else if (serial) f = new Date(Math.round((Number(raw) - 25569) * 86400 * 1000));
+  else { const d = new Date(raw); if (!isNaN(d.getTime())) f = d; }
+
+  if (!f || isNaN(f.getTime())) return raw; // no se reconoce: se muestra tal cual llegó
+  const dd = String(f.getDate()).padStart(2, '0');
+  const mm = String(f.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${f.getFullYear()}`;
+}
+
 // Limita a máximo 2 decimales y quita ceros sobrantes (Postgres NUMERIC(14,3)
 // devuelve valores como "46.000"; esto los deja en "46" o "11.5")
 function fmtNum2(v) {
@@ -2439,9 +2464,9 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                   </div>
 
                   {[
-                    ['Sobrantes', reporteFinal.sobrantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
-                    ['Faltantes', reporteFinal.faltantes, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
-                    ['Productos/lotes agregados en bodega', reporteFinal.agregados, ['Código', 'Nombre', 'Lote', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
+                    ['Sobrantes', reporteFinal.sobrantes, ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
+                    ['Faltantes', reporteFinal.faltantes, ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
+                    ['Productos/lotes agregados en bodega', reporteFinal.agregados, ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
                   ].map(([titulo, filas, cols]) => (
                     <div key={titulo} style={{ marginBottom: 16 }}>
                       <h4 style={{ fontSize: 14, marginBottom: 6 }}>{titulo} ({filas.length})</h4>
@@ -2454,6 +2479,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.codigo}</td>
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.nombre}</td>
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.lote || '—'}</td>
+                                <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{fmtFechaDDMMAAAA(f.fecha_vencimiento)}</td>
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.definitivo}</td>
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee' }}>{f.existencia_siis_actual}</td>
                                 <td style={{ padding: '3px 6px', borderBottom: '1px solid #eee', fontWeight: 700 }}>{f.diferencia_cantidad_actual > 0 ? '+' : ''}{f.diferencia_cantidad_actual}</td>
@@ -3147,134 +3173,3 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
