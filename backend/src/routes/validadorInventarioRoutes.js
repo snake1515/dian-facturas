@@ -751,6 +751,34 @@ function requiereReconteo(item) {
 
 // Días calendario hasta el vencimiento (negativo si ya venció). Acepta
 // fecha_vencimiento en formatos comunes de Excel (YYYY-MM-DD, DD/MM/YYYY).
+// Excel (Windows) cuenta los días desde 1899-12-30 (con el conocido "bug" del
+// año bisiesto 1900, que todas las hojas de cálculo replican por compatibilidad).
+function fechaDesdeSerialExcel(serial) {
+  const ms = Math.round((serial - 25569) * 86400 * 1000); // 25569 = días hasta 1970-01-01
+  const d = new Date(ms);
+  return isNaN(d.getTime()) ? null : d;
+}
+function formatearFechaDDMMAAAA(fechaStr) {
+  if (fechaStr === null || fechaStr === undefined || fechaStr === '') return '';
+  const raw = String(fechaStr).trim();
+  let f = null;
+
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const dmy = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  const serial = raw.match(/^\d{4,6}$/);
+
+  if (iso) f = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  else if (dmy) f = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+  else if (serial) f = fechaDesdeSerialExcel(Number(raw));
+  else { const d = new Date(raw); if (!isNaN(d.getTime())) f = d; }
+
+  if (!f || isNaN(f.getTime())) return raw; // no se reconoce: se muestra tal cual llegó
+  const dd = String(f.getDate()).padStart(2, '0');
+  const mm = String(f.getMonth() + 1).padStart(2, '0');
+  const aaaa = f.getFullYear();
+  return `${dd}-${mm}-${aaaa}`;
+}
+
 function diasParaVencer(fechaStr) {
   if (!fechaStr) return null;
   let f = null;
@@ -1056,7 +1084,8 @@ function calcularDetalleReporte(lista, items) {
     if (reconteo) requierenReconteo++;
 
     return {
-      id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, presentacion: it.presentacion, cuenta: it.cuenta,
+      id: it.id, codigo: it.codigo, nombre: it.nombre, lote: it.lote, fecha_vencimiento: it.fecha_vencimiento,
+      presentacion: it.presentacion, cuenta: it.cuenta,
       grupo_conteo: it.grupo_conteo, subgrupo_conteo: it.subgrupo_conteo,
       existencia_siis_inicial: existenciaInicial,
       existencia_siis_actual: existenciaActualEfectiva,
@@ -1986,12 +2015,12 @@ router.get('/listas-conteo/:id/reporte-final-excel', authMiddleware, async (req,
 
     const hojaDif = (nombre, filas) => {
       const ws = wb.addWorksheet(nombre);
-      ws.columns = [{ width: 16 }, { width: 40 }, { width: 16 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 13 }, { width: 14 }, { width: 30 }];
-      ws.getRow(1).values = ['Código', 'Nombre', 'Lote', 'Presentación', 'SIIS', 'Contado', 'Diferencia', 'Valor', 'Motivo'];
+      ws.columns = [{ width: 16 }, { width: 40 }, { width: 16 }, { width: 13 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 13 }, { width: 14 }, { width: 30 }];
+      ws.getRow(1).values = ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Presentación', 'SIIS', 'Contado', 'Diferencia', 'Valor', 'Motivo'];
       ws.getRow(1).font = { bold: true };
       filas.forEach((it, i) => {
         ws.getRow(2 + i).values = [
-          it.codigo, it.nombre, it.lote || '', it.presentacion || '',
+          it.codigo, it.nombre, it.lote || '', formatearFechaDDMMAAAA(it.fecha_vencimiento), it.presentacion || '',
           it.existencia_siis_actual, it.definitivo, it.diferencia_cantidad_actual, it.diferencia_valor_actual, it.motivo_diferencia || '',
         ];
       });
@@ -2058,239 +2087,3 @@ router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
