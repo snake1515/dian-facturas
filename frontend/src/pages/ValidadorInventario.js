@@ -2452,6 +2452,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                       ['Sobrantes', `${reporteFinal.resumen.total_sobrantes} (${fmtPesos(reporteFinal.resumen.valor_sobrantes)})`],
                       ['Faltantes', `${reporteFinal.resumen.total_faltantes} (${fmtPesos(reporteFinal.resumen.valor_faltantes)})`],
                       ['Agregados en bodega', reporteFinal.resumen.total_agregados],
+                      ['Ítems cuadrados', reporteFinal.resumen.total_cuadrados],
                       ['Cambios de lote', reporteFinal.resumen.total_cambios_lote],
                       ['Referencias cruzadas', reporteFinal.resumen.total_referencias_cruzadas],
                       ['Diferencia neta en valor', fmtPesos(reporteFinal.resumen.diferencia_valor_total_actual)],
@@ -2467,6 +2468,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                     ['Sobrantes', reporteFinal.sobrantes, ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
                     ['Faltantes', reporteFinal.faltantes, ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
                     ['Productos/lotes agregados en bodega', reporteFinal.agregados, ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
+                    ['Ítems cuadrados', reporteFinal.cuadrados, ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Contado', 'SIIS', 'Diferencia', 'Motivo']],
                   ].map(([titulo, filas, cols]) => (
                     <div key={titulo} style={{ marginBottom: 16 }}>
                       <h4 style={{ fontSize: 14, marginBottom: 6 }}>{titulo} ({filas.length})</h4>
@@ -3173,3 +3175,9 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
+
+
