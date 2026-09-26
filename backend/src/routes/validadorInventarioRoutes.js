@@ -1938,6 +1938,9 @@ async function armarReporteFinal(listaId) {
   const sobrantes = items.filter(i => i.diferencia_cantidad_actual > 0 && i.origen !== 'agregado');
   const faltantes = items.filter(i => i.diferencia_cantidad_actual < 0);
   const agregados = items.filter(i => i.origen === 'agregado');
+  // Cuadrados: ya contados (diferencia_cantidad_actual !== null) y sin diferencia.
+  // Los agregados no entran aquí porque siempre tienen su propia pestaña.
+  const cuadrados = items.filter(i => i.diferencia_cantidad_actual === 0 && i.origen !== 'agregado');
   const cambiosLote = cruces.filter(c => c.tipo === 'lote');
   const referenciasCruzadas = cruces.filter(c => c.tipo === 'referencia');
 
@@ -1953,10 +1956,11 @@ async function armarReporteFinal(listaId) {
       valor_faltantes: suma(faltantes, 'diferencia_valor_actual'),
       total_agregados: agregados.length,
       valor_agregados: suma(agregados, 'diferencia_valor_actual'),
+      total_cuadrados: cuadrados.length,
       total_cambios_lote: cambiosLote.length,
       total_referencias_cruzadas: referenciasCruzadas.length,
     },
-    sobrantes, faltantes, agregados, cambios_lote: cambiosLote, referencias_cruzadas: referenciasCruzadas,
+    sobrantes, faltantes, agregados, cuadrados, cambios_lote: cambiosLote, referencias_cruzadas: referenciasCruzadas,
   };
 }
 
@@ -1976,7 +1980,7 @@ router.get('/listas-conteo/:id/reporte-final-excel', authMiddleware, async (req,
   try {
     const data = await armarReporteFinal(req.params.id);
     if (!data) return res.status(404).json({ error: 'Lista no encontrada' });
-    const { lista, resumen, sobrantes, faltantes, agregados, cambios_lote, referencias_cruzadas } = data;
+    const { lista, resumen, sobrantes, faltantes, agregados, cuadrados, cambios_lote, referencias_cruzadas } = data;
 
     const wb = new ExcelJS.Workbook();
     const tituloCriterio = lista.tipo === 'general' ? LABEL_TIPO.general : `${LABEL_TIPO[lista.tipo]}: ${lista.criterio}${lista.subcriterio ? ' / ' + lista.subcriterio : ''}`;
@@ -2000,6 +2004,7 @@ router.get('/listas-conteo/:id/reporte-final-excel', authMiddleware, async (req,
       ['Sobrantes', `${resumen.total_sobrantes} (${resumen.valor_sobrantes})`],
       ['Faltantes', `${resumen.total_faltantes} (${resumen.valor_faltantes})`],
       ['Productos/lotes agregados', `${resumen.total_agregados} (${resumen.valor_agregados})`],
+      ['Ítems cuadrados', resumen.total_cuadrados],
       ['Cambios de lote', resumen.total_cambios_lote],
       ['Referencias cruzadas', resumen.total_referencias_cruzadas],
       ['Diferencia neta en valor', resumen.diferencia_valor_total_actual],
@@ -2008,7 +2013,7 @@ router.get('/listas-conteo/:id/reporte-final-excel', authMiddleware, async (req,
       r.getCell(1).value = fila[0]; r.getCell(2).value = fila[1];
       r.getCell(1).font = { bold: true };
     });
-    const filaFirmas = 4 + 16;
+    const filaFirmas = 4 + 17;
     hojaResumen.getCell(`A${filaFirmas}`).value = 'Firma Conteo 1: ______________________';
     hojaResumen.getCell(`A${filaFirmas + 2}`).value = 'Firma Conteo 2: ______________________';
     hojaResumen.getCell(`A${filaFirmas + 4}`).value = 'Firma Responsable: ___________________';
@@ -2029,6 +2034,7 @@ router.get('/listas-conteo/:id/reporte-final-excel', authMiddleware, async (req,
     hojaDif('Sobrantes', sobrantes);
     hojaDif('Faltantes', faltantes);
     hojaDif('Agregados en bodega', agregados);
+    hojaDif('Ítems cuadrados', cuadrados);
 
     const hojaCruces = (nombre, filas) => {
       const ws = wb.addWorksheet(nombre);
@@ -2087,3 +2093,4 @@ router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
