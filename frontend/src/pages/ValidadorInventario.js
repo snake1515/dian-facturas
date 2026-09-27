@@ -1307,6 +1307,13 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   // ── Buscador dentro del detalle de una lista ──
   const [busquedaLista, setBusquedaLista] = useState('');
   const [soloNoCuadra, setSoloNoCuadra] = useState(false);
+  // ── Novedad por fila (Sobrante/Faltante automático; Referencia cruzada / Cambio
+  // de lote abren un mini-formulario inline en esa misma fila) ──
+  const [novedadAbierta, setNovedadAbierta] = useState(null); // { itemId, tipo: 'referencia'|'lote', esOrigen }
+  const [busquedaContraparte, setBusquedaContraparte] = useState('');
+  const [contraparteId, setContraparteId] = useState('');
+  const [cantidadNovedad, setCantidadNovedad] = useState('');
+  const [motivoNovedad, setMotivoNovedad] = useState('');
   const [textoEscaneado, setTextoEscaneado] = useState('');
   const [filaResaltada, setFilaResaltada] = useState(null);
   const [historialConcatAbierto, setHistorialConcatAbierto] = useState(null);
@@ -1322,8 +1329,6 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
   const [mostrarFormAgregar, setMostrarFormAgregar] = useState(false);
   const [formAgregar, setFormAgregar] = useState({ codigo: '', nombre: '', lote: '', fecha_vencimiento: '', costo_unitario: '', conteo_1: '' });
   const [agregandoItem, setAgregandoItem] = useState(false);
-  const [mostrarFormCruce, setMostrarFormCruce] = useState(false);
-  const [formCruce, setFormCruce] = useState({ item_origen_id: '', item_destino_id: '', cantidad: '', motivo: '' });
   const [registrandoCruce, setRegistrandoCruce] = useState(false);
   const [cruces, setCruces] = useState([]);
   const [mostrarReporteFinal, setMostrarReporteFinal] = useState(false);
@@ -1471,6 +1476,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
     setReporte(null);
     setBusquedaLista('');
     setSoloNoCuadra(false);
+    setNovedadAbierta(null);
     setCruces([]);
     setReporteFinal(null);
     setMostrarReporteFinal(false);
@@ -1528,24 +1534,41 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
     }
   }
 
-  // ── Cambio de lote / referencia cruzada — neutraliza ambas diferencias ─────
-  async function registrarCruce() {
-    if (!formCruce.item_origen_id || !formCruce.item_destino_id) { alert('Elige el ítem origen y el destino'); return; }
-    if (formCruce.item_origen_id === formCruce.item_destino_id) { alert('El origen y el destino no pueden ser el mismo ítem'); return; }
-    const cant = parseNumCO(formCruce.cantidad);
+  // ── Novedad "Referencia cruzada" / "Cambio de lote" — se abre desde el
+  // desplegable de la fila. La fila donde se abrió decide su rol automáticamente:
+  // Faltante = origen (de donde "salió"), Sobrante = destino (a donde "llegó").
+  // Igual que antes, esto neutraliza ambas diferencias en la cantidad cruzada.
+  function abrirNovedadCruce(item, diferencia, tipo) {
+    setNovedadAbierta({ itemId: item.id, tipo, esOrigen: diferencia < 0 });
+    setBusquedaContraparte('');
+    setContraparteId('');
+    setCantidadNovedad(fmtNum2(Math.abs(diferencia)));
+    setMotivoNovedad('');
+  }
+  function cerrarNovedadCruce() {
+    setNovedadAbierta(null);
+    setBusquedaContraparte('');
+    setContraparteId('');
+    setCantidadNovedad('');
+    setMotivoNovedad('');
+  }
+  async function registrarNovedadCruce() {
+    if (!novedadAbierta) return;
+    if (!contraparteId) { alert('Elige el producto/lote con el que se cruza'); return; }
+    const cant = parseNumCO(cantidadNovedad);
     if (!cant || cant <= 0) { alert('La cantidad debe ser mayor que cero'); return; }
+    const item_origen_id = novedadAbierta.esOrigen ? novedadAbierta.itemId : contraparteId;
+    const item_destino_id = novedadAbierta.esOrigen ? contraparteId : novedadAbierta.itemId;
     setRegistrandoCruce(true);
     try {
       await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/cruces`, {
-        item_origen_id: formCruce.item_origen_id, item_destino_id: formCruce.item_destino_id,
-        cantidad: cant, motivo: formCruce.motivo.trim(),
+        item_origen_id, item_destino_id, cantidad: cant, motivo: motivoNovedad.trim(),
       });
-      setFormCruce({ item_origen_id: '', item_destino_id: '', cantidad: '', motivo: '' });
-      setMostrarFormCruce(false);
+      cerrarNovedadCruce();
       await cargarCruces(listaActual.id);
       await cargarReporte(listaActual.id);
     } catch (e) {
-      alert('Error registrando el cruce: ' + (e.response?.data?.error || e.message));
+      alert('Error registrando la novedad: ' + (e.response?.data?.error || e.message));
     }
     setRegistrandoCruce(false);
   }
@@ -2018,18 +2041,10 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
             )}
             {abierta && (
               <button
-                onClick={() => { setMostrarFormAgregar(m => !m); setMostrarFormCruce(false); }}
+                onClick={() => setMostrarFormAgregar(m => !m)}
                 style={{ background: mostrarFormAgregar ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: mostrarFormAgregar ? '#fff' : 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, cursor: 'pointer' }}
               >
                 ➕ Agregar producto/lote
-              </button>
-            )}
-            {abierta && (
-              <button
-                onClick={() => { setMostrarFormCruce(m => !m); setMostrarFormAgregar(false); }}
-                style={{ background: mostrarFormCruce ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: mostrarFormCruce ? '#fff' : 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, cursor: 'pointer' }}
-              >
-                🔀 Registrar cruce
               </button>
             )}
             <button onClick={verReporteFinal} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
@@ -2067,52 +2082,6 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
             <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 8 }}>
               Queda con existencia SIIS = 0, así que lo que cuentes aparece como sobrante hasta que este código+lote entre en una carga de Excel — el sistema avisa cuando eso pase.
             </p>
-          </div>
-        )}
-
-        {mostrarFormCruce && (
-          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Registrar cambio de lote o referencia cruzada</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Ítem origen (de donde salió)*
-                <select value={formCruce.item_origen_id} onChange={e => setFormCruce(p => ({ ...p, item_origen_id: e.target.value }))} style={{ ...inputStyle, width: 260, display: 'block', marginTop: 3 }}>
-                  <option value="">— Selecciona —</option>
-                  {l.items.map(it => <option key={it.id} value={it.id}>{it.codigo} — {it.nombre} ({it.lote || 'sin lote'})</option>)}
-                </select>
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Ítem destino (a donde llegó)*
-                <select value={formCruce.item_destino_id} onChange={e => setFormCruce(p => ({ ...p, item_destino_id: e.target.value }))} style={{ ...inputStyle, width: 260, display: 'block', marginTop: 3 }}>
-                  <option value="">— Selecciona —</option>
-                  {l.items.map(it => <option key={it.id} value={it.id}>{it.codigo} — {it.nombre} ({it.lote || 'sin lote'})</option>)}
-                </select>
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Cantidad*
-                <input type="number" value={formCruce.cantidad} onChange={e => setFormCruce(p => ({ ...p, cantidad: e.target.value }))} style={{ ...inputStyle, width: 90, display: 'block', marginTop: 3 }} />
-              </label>
-              <label style={{ fontSize: 11, color: 'var(--t-text-muted)', flex: 1, minWidth: 180 }}>Motivo
-                <input value={formCruce.motivo} onChange={e => setFormCruce(p => ({ ...p, motivo: e.target.value }))} placeholder="Ej: reetiquetado, producto mal ubicado…" style={{ ...inputStyle, width: '100%', display: 'block', marginTop: 3 }} />
-              </label>
-              <button onClick={registrarCruce} disabled={registrandoCruce} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                {registrandoCruce ? 'Registrando…' : 'Registrar'}
-              </button>
-            </div>
-            <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 8 }}>
-              Si origen y destino tienen el mismo código, se registra como cambio de lote; si son distintos, como referencia cruzada. La diferencia del origen baja y la del destino sube en la misma cantidad.
-            </p>
-            {cruces.length > 0 && (
-              <div style={{ marginTop: 12, borderTop: '1px solid var(--t-border)', paddingTop: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Cruces registrados en este conteo</div>
-                {cruces.map(c => (
-                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, padding: '4px 0', borderBottom: '1px solid #1a2234' }}>
-                    <span>
-                      {c.tipo === 'lote' ? '📦 Lote' : '🔀 Referencia'}: {c.origen_codigo} ({c.origen_lote || 's/lote'}) → {c.destino_codigo} ({c.destino_lote || 's/lote'}) · <strong>{Number(c.cantidad)}</strong>
-                      {c.motivo && <span style={{ color: 'var(--t-text-muted)' }}> — {c.motivo}</span>}
-                    </span>
-                    <button onClick={() => revertirCruce(c.id)} title="Revertir" style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '3px 8px', fontSize: 11, color: '#f87171', cursor: 'pointer' }}>↺ Revertir</button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
@@ -2154,6 +2123,21 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
             "Inicial" = existencia SIIS de cuando se creó el conteo. "Actual" = {abierta ? 'existencia SIIS en vivo ahora mismo (la bodega sigue operando)' : 'existencia SIIS congelada al cerrar el conteo'}. La diferencia oficial es la de "actual".
           </p>
           </>
+        )}
+
+        {cruces.length > 0 && (
+          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Cambios de lote / referencias cruzadas registrados en este conteo</div>
+            {cruces.map(c => (
+              <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, padding: '4px 0', borderBottom: '1px solid #1a2234' }}>
+                <span>
+                  {c.tipo === 'lote' ? '📦 Lote' : '🔀 Referencia'}: {c.origen_codigo} ({c.origen_lote || 's/lote'}) → {c.destino_codigo} ({c.destino_lote || 's/lote'}) · <strong>{Number(c.cantidad)}</strong>
+                  {c.motivo && <span style={{ color: 'var(--t-text-muted)' }}> — {c.motivo}</span>}
+                </span>
+                {abierta && <button onClick={() => revertirCruce(c.id)} title="Revertir" style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '3px 8px', fontSize: 11, color: '#f87171', cursor: 'pointer' }}>↺ Revertir</button>}
+              </div>
+            ))}
+          </div>
         )}
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -2198,7 +2182,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {['Código', 'Nombre', 'Cuenta', 'Grupo', 'Subgrupo', 'Presentación', 'Lote', 'F. Venc.', 'Costo Unit.', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2', 'Diferencia (inicial)', 'Diferencia (actual)', 'Motivo'].map(h => (
+                {['Código', 'Nombre', 'Cuenta', 'Grupo', 'Subgrupo', 'Presentación', 'Lote', 'F. Venc.', 'Costo Unit.', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2', 'Diferencia (inicial)', 'Diferencia (actual)', 'Estado', 'Novedad', 'Motivo'].map(h => (
                   <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -2240,8 +2224,12 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                     </span>
                   );
                 };
+                const diferenciaItem = rep ? rep.diferencia_cantidad_actual : null;
+                const sinDiferencia = diferenciaItem === null || diferenciaItem === undefined || diferenciaItem === 0;
+                const novedadFilaActiva = novedadAbierta && novedadAbierta.itemId === item.id ? novedadAbierta : null;
                 return (
-                  <tr key={item.id} className="fila-lista-conteo" style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : (item.origen === 'agregado' ? 'rgba(56,189,248,0.06)' : undefined), transition: 'background 0.3s' }}>
+                  <React.Fragment key={item.id}>
+                  <tr className="fila-lista-conteo" style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : (item.origen === 'agregado' ? 'rgba(56,189,248,0.06)' : undefined), transition: 'background 0.3s' }}>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>
                       {item.codigo}
                       {item.origen === 'agregado' && <div style={{ fontSize: 9, color: '#38bdf8', fontWeight: 600 }}>➕ Agregado</div>}
@@ -2337,6 +2325,37 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                         </span>
                       )}
                     </td>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                      {sinDiferencia ? (
+                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
+                      ) : diferenciaItem > 0 ? (
+                        <span style={{ color: '#f97316', fontWeight: 700 }}>🟠 Sobrante</span>
+                      ) : (
+                        <span style={{ color: '#ef4444', fontWeight: 700 }}>🔴 Faltante</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '6px 8px', minWidth: 155 }}>
+                      {sinDiferencia ? (
+                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
+                      ) : !abierta ? (
+                        <span style={{ color: 'var(--t-text-secondary)' }}>{diferenciaItem > 0 ? 'Sobrante' : 'Faltante'}</span>
+                      ) : (
+                        <select
+                          value={novedadFilaActiva ? novedadFilaActiva.tipo : (diferenciaItem > 0 ? 'sobrante' : 'faltante')}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (v === 'sobrante' || v === 'faltante') { if (novedadFilaActiva) cerrarNovedadCruce(); return; }
+                            abrirNovedadCruce(item, diferenciaItem, v);
+                          }}
+                          style={{ ...inputStyle, width: 150, fontSize: 12 }}
+                        >
+                          <option value="sobrante" disabled={diferenciaItem < 0}>Sobrante</option>
+                          <option value="faltante" disabled={diferenciaItem > 0}>Faltante</option>
+                          <option value="referencia">Referencia cruzada</option>
+                          <option value="lote">Cambio de lote</option>
+                        </select>
+                      )}
+                    </td>
                     <td style={{ padding: '6px 8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                         <input
@@ -2361,11 +2380,77 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                       </div>
                     </td>
                   </tr>
+
+                  {novedadFilaActiva && (() => {
+                    const candidatos = l.items
+                      .filter(it => it.id !== item.id)
+                      .filter(it => novedadFilaActiva.tipo === 'lote' ? it.codigo === item.codigo : it.codigo !== item.codigo)
+                      .filter(it => {
+                        if (!busquedaContraparte.trim()) return true;
+                        const q = normalizarBusqueda(busquedaContraparte);
+                        return normalizarBusqueda(`${it.codigo} ${it.nombre} ${it.lote}`).includes(q);
+                      });
+                    const contraparte = l.items.find(it => String(it.id) === String(contraparteId));
+                    const etiquetaContraparte = novedadFilaActiva.esOrigen
+                      ? 'Producto/lote al que llegaron estas unidades (destino)'
+                      : 'Producto/lote del que vinieron estas unidades (origen)';
+                    return (
+                      <tr>
+                        <td colSpan={18} style={{ padding: 0 }}>
+                          <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-accent)', borderRadius: 8, padding: 12, margin: '6px 4px' }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+                              {novedadFilaActiva.tipo === 'lote' ? '📦 Cambio de lote' : '🔀 Referencia cruzada'} — {item.codigo} · {item.nombre} ({item.lote || 'sin lote'})
+                              {novedadFilaActiva.tipo === 'lote' && <span style={{ color: 'var(--t-text-muted)', fontWeight: 400 }}> — solo se muestran lotes del mismo código</span>}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                              <label style={{ fontSize: 11, color: 'var(--t-text-muted)', flex: 1, minWidth: 220 }}>{etiquetaContraparte}*
+                                <input
+                                  type="text"
+                                  value={contraparte ? `${contraparte.codigo} — ${contraparte.nombre} (${contraparte.lote || 'sin lote'})` : busquedaContraparte}
+                                  onChange={(e) => { setContraparteId(''); setBusquedaContraparte(e.target.value); }}
+                                  placeholder="Busca por código, nombre o lote…"
+                                  style={{ ...inputStyle, width: '100%', display: 'block', marginTop: 3 }}
+                                />
+                                {!contraparteId && busquedaContraparte.trim() && (
+                                  <div style={{ marginTop: 3, maxHeight: 140, overflowY: 'auto', border: '1px solid var(--t-border)', borderRadius: 6, background: 'var(--t-bg-sidebar)' }}>
+                                    {candidatos.length === 0 ? (
+                                      <div style={{ padding: '6px 8px', fontSize: 12, color: 'var(--t-text-muted)' }}>Sin coincidencias.</div>
+                                    ) : candidatos.slice(0, 20).map(it => (
+                                      <div
+                                        key={it.id}
+                                        onClick={() => { setContraparteId(it.id); setBusquedaContraparte(''); }}
+                                        style={{ padding: '6px 8px', fontSize: 12, cursor: 'pointer', borderBottom: '1px solid #1a2234' }}
+                                      >
+                                        {it.codigo} — {it.nombre} ({it.lote || 'sin lote'})
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </label>
+                              <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Cantidad*
+                                <input type="number" value={cantidadNovedad} onChange={e => setCantidadNovedad(e.target.value)} style={{ ...inputStyle, width: 90, display: 'block', marginTop: 3 }} />
+                              </label>
+                              <label style={{ fontSize: 11, color: 'var(--t-text-muted)', flex: 1, minWidth: 180 }}>Motivo
+                                <input value={motivoNovedad} onChange={e => setMotivoNovedad(e.target.value)} placeholder="Ej: reetiquetado, producto mal ubicado…" style={{ ...inputStyle, width: '100%', display: 'block', marginTop: 3 }} />
+                              </label>
+                              <button onClick={registrarNovedadCruce} disabled={registrandoCruce || !contraparteId} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                                {registrandoCruce ? 'Registrando…' : 'Registrar'}
+                              </button>
+                              <button onClick={cerrarNovedadCruce} style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '7px 14px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer' }}>
+                                Cancelar
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })()}
+                  </React.Fragment>
                 );
               })}
               {itemsVisibles.length === 0 && (
                 <tr>
-                  <td colSpan={16} style={{ padding: 28, textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 13 }}>
+                  <td colSpan={18} style={{ padding: 28, textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 13 }}>
                     {soloNoCuadra && !reporte
                       ? 'Calculando diferencias…'
                       : hayFiltroLista
@@ -3175,9 +3260,4 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
-
-
-
-
-
 
