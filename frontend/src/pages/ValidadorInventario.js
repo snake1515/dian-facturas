@@ -152,7 +152,8 @@ export default function ValidadorInventario() {
   const [guardandoGrupoConteoId, setGuardandoGrupoConteoId] = useState(null);
   const [importandoGrupoConteo, setImportandoGrupoConteo] = useState(false);
   const fileInputGrupoConteoRef = useRef(null);
-  const [vista, setVista] = useState('inventario'); // 'inventario' | 'listas' | 'datos'
+  const [vista, setVista] = useState('sesiones'); // 'sesiones' | 'listas' | 'datos'
+  const [sesionSel, setSesionSel] = useState(null); // { id, bodega, estado } | { legacy: true, bodega } | null
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
 
@@ -725,17 +726,14 @@ export default function ValidadorInventario() {
       <div style={{ marginBottom: 18 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--t-text-primary)' }}>Validador de Inventarios</h1>
         <p style={{ fontSize: 13, color: 'var(--t-text-muted)', marginTop: 2 }}>
-          Conteo físico de bodega contra el sistema — sube el Excel de SIIS cuando quieras actualizar existencias sin perder lo ya contado
-        </p>
-        <p style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4 }}>
-          Última carga de Excel para <strong>{bodega}</strong>: {ultimaCargaTexto}
+          Conteo físico de bodega contra el sistema — cada sesión parte de un Excel de SIIS y agrupa sus listas de conteo
         </p>
       </div>
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, borderBottom: '1px solid var(--t-border)' }}>
         {[
-          { key: 'inventario', label: 'Inventario' },
+          { key: 'sesiones', label: 'Sesiones de Conteo' },
           { key: 'listas', label: 'Listas de Conteo' },
           { key: 'datos', label: 'Datos' },
         ].map(t => (
@@ -755,505 +753,490 @@ export default function ValidadorInventario() {
       </div>
 
       {vista === 'listas' ? (
-        <ListasConteo bodega={bodega} BODEGAS={BODEGAS} isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} fmtPesos={fmtPesos} />
+        <ListasConteo bodega={sesionSel && sesionSel.bodega ? sesionSel.bodega : bodega} BODEGAS={BODEGAS} isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} fmtPesos={fmtPesos} sesionSel={sesionSel} irASesiones={() => setVista('sesiones')} />
       ) : vista === 'datos' ? (
-        <DatosMaestros isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} />
+        <>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+          {isAdmin && (
+            <>
+              <input ref={fileInputPresentacionesRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoPresentaciones} style={{ display: 'none' }} id="input-excel-presentaciones" />
+              <label htmlFor="input-excel-presentaciones" title="Excel aparte con columnas CODIGO y PRESENTACION" style={{
+                background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
+                padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}>
+                📤 {importandoPresentaciones ? 'Procesando…' : 'Cargar Presentaciones (Excel)'}
+              </label>
+            </>
+          )}
+          {isEditor && (
+            <>
+              <input ref={fileInputTiposRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoTipos} style={{ display: 'none' }} id="input-excel-tipos" />
+              <label htmlFor="input-excel-tipos" title="Excel aparte con columnas CONCAT, CONTABLE y CUENTA" style={{
+                background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
+                padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}>
+                📤 {importandoTipos ? 'Procesando…' : 'Cargar Grupos/Cuentas (Excel)'}
+              </label>
+            </>
+          )}
+          {isEditor && (
+            <>
+              <input ref={fileInputGrupoConteoRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoGrupoConteo} style={{ display: 'none' }} id="input-excel-grupo-conteo" />
+              <label htmlFor="input-excel-grupo-conteo" title="Un solo Excel con columnas CODIGO, GRUPO y SUBGRUPO (para las Listas de Conteo)" style={{
+                background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
+                padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}>
+                📤 {importandoGrupoConteo ? 'Procesando…' : 'Cargar Grupos de Conteo (Excel)'}
+              </label>
+            </>
+          )}
+          </div>
+          <DatosMaestros isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} />
+        </>
       ) : (
-      <>
-      {/* Toolbar */}
+        <SesionesConteo
+          bodega={bodega} setBodega={setBodega} BODEGAS={BODEGAS}
+          isEditor={isEditor} isAdmin={isAdmin} inputStyle={inputStyle} fmtPesos={fmtPesos}
+          sesionSel={sesionSel} setSesionSel={setSesionSel} irAListas={() => setVista('listas')}
+        />
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════
+// SESIONES DE CONTEO — reemplaza a la antigua pestaña "Inventario"
+// Una sesión = una auditoría de UNA bodega: se abre subiendo el Excel de SIIS
+// (queda guardado y se puede volver a descargar) y de ahí salen sus listas.
+// ═════════════════════════════════════════════
+
+// Lee el Excel del reporte de SIIS con la misma lógica de siempre (detecta la
+// bodega en la cabecera, ubica la fila CODIGO, repara filas con HTML roto).
+function leerExcelSiis(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array', raw: true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+
+        // Detectar bodega desde la cabecera del reporte (ej. "Bodega :  BV")
+        let bodegaDetectada = null;
+        const textoCabecera = String(data[0]?.[1] || '');
+        const match = textoCabecera.match(/Bodega\s*:\s*([A-Za-z0-9]{2})/i);
+        if (match) bodegaDetectada = match[1].toUpperCase();
+
+        const idxHeader = data.findIndex(r => String(r[0]).trim().toUpperCase() === 'CODIGO');
+        if (idxHeader === -1) throw new Error('No se encontró la columna CODIGO en el archivo. ¿Es el reporte correcto?');
+
+        const filas = data.slice(idxHeader + 1);
+        const items = [];
+        let filasCorregidas = 0;
+
+        // Detecta cuando la celda "nombre" trae pegado un fragmento de HTML roto
+        // del reporte SIIS; en ese caso la fecha real "desaparece" de la fila y
+        // las columnas siguientes se corren una posición.
+        const FRAGMENTO_ROTO_RE = /\/t[dr]>\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\s*$/i;
+
+        for (const r of filas) {
+          const codigo = normalizarCodigo(r[0]);
+          if (!codigo || codigo.toUpperCase().startsWith('TOTAL')) continue;
+
+          let nombreRaw = String(r[1] || '');
+          let fecha_vencimiento, lote, existencia_sistema, costo_unitario, costo_total;
+
+          const roto = nombreRaw.match(FRAGMENTO_ROTO_RE);
+          if (roto) {
+            fecha_vencimiento = roto[1];
+            nombreRaw = nombreRaw.slice(0, roto.index);
+            lote = String(r[2] || '').trim();
+            existencia_sistema = parseNumCO(r[3]);
+            costo_unitario = parseNumCO(r[4]);
+            costo_total = parseNumCO(r[5]);
+            filasCorregidas++;
+          } else {
+            fecha_vencimiento = String(r[2] || '').trim();
+            lote = String(r[3] || '').trim();
+            existencia_sistema = parseNumCO(r[4]);
+            costo_unitario = parseNumCO(r[5]);
+            costo_total = parseNumCO(r[6]);
+          }
+
+          const nombre = nombreRaw
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/\/t[dr]>/gi, ' ')
+            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, ' ')
+            .replace(/[\r\n]+/g, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+
+          items.push({ codigo, nombre, fecha_vencimiento, lote, existencia_sistema, costo_unitario, costo_total });
+        }
+
+        if (items.length === 0) throw new Error('El archivo no tiene filas de inventario válidas');
+        resolve({ items, bodegaDetectada, filasCorregidas });
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function SesionesConteo({ bodega, setBodega, BODEGAS, isEditor, isAdmin, inputStyle, fmtPesos, sesionSel, setSesionSel, irAListas }) {
+  const [sesiones, setSesiones] = useState([]);
+  const [listasViejas, setListasViejas] = useState(0);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+  const [aviso, setAviso] = useState('');
+  const [detalle, setDetalle] = useState(null);
+  const [items, setItems] = useState(null);
+  const [verItems, setVerItems] = useState(false);
+  const [busquedaItems, setBusquedaItems] = useState('');
+  const [subiendo, setSubiendo] = useState(false);
+  const [alerta, setAlerta] = useState(null);
+  const inputNueva = useRef(null);
+  const inputRefrescar = useRef(null);
+
+  const fmtFechaHora = (f) => f ? new Date(f).toLocaleString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+  const hayActiva = sesiones.some(x => x.estado === 'activa');
+  const sesionId = sesionSel && sesionSel.id ? sesionSel.id : null;
+
+  const cargarSesiones = useCallback(async () => {
+    setCargando(true);
+    try {
+      const [rs, rl] = await Promise.all([
+        api.get('/validador-inventario/sesiones-conteo', { params: { bodega } }),
+        api.get('/validador-inventario/listas-conteo', { params: { bodega, sin_sesion: 1 } }),
+      ]);
+      setSesiones(rs.data || []);
+      setListasViejas((rl.data || []).length);
+    } catch (e) {
+      setError('No se pudieron cargar las sesiones de conteo');
+    }
+    setCargando(false);
+  }, [bodega]);
+
+  useEffect(() => { cargarSesiones(); }, [cargarSesiones]);
+
+  // Al cambiar de bodega se descarta la sesión elegida si era de otra bodega
+  useEffect(() => {
+    if (sesionSel && sesionSel.bodega && sesionSel.bodega !== bodega) { setSesionSel(null); setDetalle(null); setItems(null); setVerItems(false); }
+  }, [bodega]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const cargarDetalle = useCallback(async (id) => {
+    try {
+      const res = await api.get(`/validador-inventario/sesiones-conteo/${id}`);
+      setDetalle(res.data);
+      setSesionSel({ id: res.data.sesion.id, bodega: res.data.sesion.bodega, estado: res.data.sesion.estado });
+    } catch (e) {
+      setError('No se pudo cargar la sesión');
+    }
+  }, [setSesionSel]);
+
+  useEffect(() => { if (sesionId) cargarDetalle(sesionId); else setDetalle(null); }, [sesionId, cargarDetalle]);
+
+  // Si no hay nada elegido y existe una sesión activa, se abre sola
+  useEffect(() => {
+    if (!sesionSel && sesiones.length > 0) {
+      const activa = sesiones.find(x => x.estado === 'activa');
+      if (activa) setSesionSel({ id: activa.id, bodega: activa.bodega, estado: activa.estado });
+    }
+  }, [sesiones, sesionSel, setSesionSel]);
+
+  async function subirExcel(e, sesionExistenteId) {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    setError(''); setAviso(''); setAlerta(null);
+    setSubiendo(true);
+    try {
+      const { items: filas, bodegaDetectada, filasCorregidas } = await leerExcelSiis(file);
+      const bodegaDestino = bodegaDetectada || bodega;
+      const res = await api.post('/validador-inventario/importar', {
+        sesion_id: sesionExistenteId || undefined,
+        bodega: bodegaDestino,
+        items: filas,
+        nombre_archivo: file.name,
+      });
+      if (!sesionExistenteId && bodegaDestino !== bodega) setBodega(bodegaDestino);
+      const a = res.data?.nuevos_sin_clasificar;
+      if (a && (a.sin_cuenta.length > 0 || a.sin_grupo_conteo.length > 0)) setAlerta(a);
+      if (filasCorregidas > 0) setAviso(`⚠️ Se corrigieron automáticamente ${filasCorregidas} fila(s) del Excel con la fecha de vencimiento pegada al nombre (fragmento HTML roto del reporte SIIS). Revisa esos ítems.`);
+      setItems(null);
+      await cargarSesiones();
+      if (res.data?.sesion_id) {
+        if (sesionExistenteId) await cargarDetalle(sesionExistenteId);
+        else setSesionSel({ id: res.data.sesion_id, bodega: bodegaDestino, estado: 'activa' });
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    }
+    setSubiendo(false);
+  }
+
+  async function descargarExcel() {
+    try {
+      const res = await api.get(`/validador-inventario/sesiones-conteo/${sesionId}/excel`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url; a.download = `sesion_${sesionId}_bodega_${detalle?.sesion?.bodega || bodega}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      let msg = e.message;
+      if (e.response?.data instanceof Blob) { try { msg = JSON.parse(await e.response.data.text()).error || msg; } catch (_) { /* se deja e.message */ } }
+      alert('Error descargando el Excel: ' + msg);
+    }
+  }
+
+  async function archivarSesion() {
+    if (!window.confirm('¿Archivar esta sesión? Quedará de solo lectura (sus listas y su Excel se conservan) y podrás abrir una sesión nueva para esta bodega, que pedirá su propio Excel.')) return;
+    try {
+      await api.post(`/validador-inventario/sesiones-conteo/${sesionId}/cerrar`);
+      await cargarSesiones();
+      await cargarDetalle(sesionId);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    }
+  }
+
+  async function alternarItems() {
+    const nuevo = !verItems;
+    setVerItems(nuevo);
+    if (nuevo && items === null) {
+      try {
+        const res = await api.get(`/validador-inventario/sesiones-conteo/${sesionId}/items`);
+        setItems(res.data || []);
+      } catch (e) { setItems([]); }
+    }
+  }
+
+  const s = detalle ? detalle.sesion : null;
+  const activa = s && s.estado === 'activa';
+  const cardStyle = { background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: '14px 16px', flex: 1, minWidth: 150 };
+  const btn = (primario) => ({
+    background: primario ? 'var(--t-accent)' : 'var(--t-bg-sidebar)', color: primario ? '#fff' : 'var(--t-text-primary)',
+    border: primario ? 'none' : '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500,
+    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+  });
+
+  const q = busquedaItems.trim().toLowerCase();
+  const itemsFiltrados = (items || []).filter(it => !q || `${it.codigo} ${it.nombre} ${it.lote} ${it.cuenta}`.toLowerCase().includes(q));
+
+  return (
+    <div>
+      {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
+      {aviso && <div style={{ background: '#3a2d0f', color: '#fbbf24', border: '1px solid #5c4a1a', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{aviso}</div>}
+      {alerta && (
+        <div style={{ background: '#3a2d0f', color: '#fbbf24', border: '1px solid #5c4a1a', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
+          <strong>{alerta.total_nuevos} ítem(s) nuevos</strong> en este Excel. {alerta.sin_cuenta.length > 0 && <>Sin cuenta contable: {alerta.sin_cuenta.slice(0, 15).join(', ')}{alerta.sin_cuenta.length > 15 ? '…' : ''}. </>}
+          {alerta.sin_grupo_conteo.length > 0 && <>Sin grupo de conteo: {alerta.sin_grupo_conteo.slice(0, 15).join(', ')}{alerta.sin_grupo_conteo.length > 15 ? '…' : ''}. </>}
+          Clasifícalos en la pestaña Datos.
+          <button onClick={() => setAlerta(null)} style={{ marginLeft: 10, background: 'none', border: 'none', color: '#fbbf24', cursor: 'pointer' }}>✕</button>
+        </div>
+      )}
+
+      {/* Barra: bodega + abrir sesión nueva */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <select value={bodega} onChange={(e) => setBodega(e.target.value)} style={inputStyle}>
           {BODEGAS.map(b => <option key={b.codigo} value={b.codigo}>{b.codigo} — {b.nombre}</option>)}
         </select>
-
-        <input ref={fileInputRef} type="file" accept=".xls,.xlsx" onChange={handleArchivo} style={{ display: 'none' }} id="input-excel-validador" />
-        <label htmlFor="input-excel-validador" style={{
-          background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6,
-          padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-        }}>
-          📤 {importando ? 'Procesando…' : 'Cargar / Actualizar Excel'}
-        </label>
-
-        {isAdmin && (
-          <>
-            <input ref={fileInputPresentacionesRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoPresentaciones} style={{ display: 'none' }} id="input-excel-presentaciones" />
-            <label htmlFor="input-excel-presentaciones" title="Excel aparte con columnas CODIGO y PRESENTACION" style={{
-              background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
-              padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              📤 {importandoPresentaciones ? 'Procesando…' : 'Cargar Presentaciones (Excel)'}
-            </label>
-          </>
-        )}
-
         {isEditor && (
           <>
-            <input ref={fileInputTiposRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoTipos} style={{ display: 'none' }} id="input-excel-tipos" />
-            <label htmlFor="input-excel-tipos" title="Excel aparte con columnas CONCAT, CONTABLE y CUENTA" style={{
-              background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
-              padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              📤 {importandoTipos ? 'Procesando…' : 'Cargar Grupos/Cuentas (Excel)'}
+            <input ref={inputNueva} type="file" accept=".xls,.xlsx" onChange={(e) => subirExcel(e, null)} style={{ display: 'none' }} id="input-excel-sesion-nueva" />
+            <label
+              htmlFor={hayActiva || subiendo ? undefined : 'input-excel-sesion-nueva'}
+              title={hayActiva ? 'Ya hay una sesión activa en esta bodega: archívala para abrir una nueva' : 'Sube el Excel de SIIS para abrir la sesión'}
+              style={{ ...btn(true), opacity: hayActiva || subiendo ? 0.5 : 1, cursor: hayActiva || subiendo ? 'not-allowed' : 'pointer' }}
+            >
+              ➕ {subiendo ? 'Procesando…' : 'Abrir sesión nueva (subir Excel de SIIS)'}
             </label>
           </>
         )}
-
-        {isEditor && (
-          <>
-            <input ref={fileInputGrupoConteoRef} type="file" accept=".xls,.xlsx" onChange={handleArchivoGrupoConteo} style={{ display: 'none' }} id="input-excel-grupo-conteo" />
-            <label htmlFor="input-excel-grupo-conteo" title="Un solo Excel con columnas CODIGO, GRUPO y SUBGRUPO (para las Listas de Conteo)" style={{
-              background: 'var(--t-bg-sidebar)', color: 'var(--t-text-primary)', border: '1px solid var(--t-border)', borderRadius: 6,
-              padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              📤 {importandoGrupoConteo ? 'Procesando…' : 'Cargar Grupos de Conteo (Excel)'}
-            </label>
-          </>
-        )}
-
-        <input
-          type="text" placeholder="Buscar código o nombre…" value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          style={{ ...inputStyle, flex: 1, minWidth: 200 }}
-        />
-
-        <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={inputStyle}>
-          <option value="todos">Todos</option>
-          <option value="contados">✅ Contados</option>
-          <option value="pendientes">⏳ Pendientes</option>
-          <option value="diferencias_reales">⚠️ Diferencias reales</option>
-          <option value="diferencias_actualizacion">🔄 Por actualización</option>
-          <option value="sin_existencias">🚫 Sin existencias</option>
-          <option value="sin_cuenta">⚠️ Sin cuenta contable</option>
-          <option value="sin_grupo_conteo">⚠️ Sin grupo de conteo</option>
-        </select>
       </div>
 
-      {error && (
-        <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
-          {error}
-        </div>
-      )}
-
-      {(totalSinCuenta > 0 || totalSinGrupoConteo > 0) && (
-        <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <span>
-            🔴 En <strong>{bodega}</strong> hay <strong>{totalSinCuenta}</strong> ítem(s) sin cuenta contable y{' '}
-            <strong>{totalSinGrupoConteo}</strong> sin grupo de conteo (sean nuevos o no). Revísalos y clasifícalos.
-          </span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {totalSinCuenta > 0 && (
-              <button onClick={() => setFiltro('sin_cuenta')} style={{ background: '#5c2626', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Ver sin cuenta ({totalSinCuenta})
-              </button>
-            )}
-            {totalSinGrupoConteo > 0 && (
-              <button onClick={() => setFiltro('sin_grupo_conteo')} style={{ background: '#5c2626', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Ver sin grupo ({totalSinGrupoConteo})
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {pendientesSiis.length > 0 && (
-        <div style={{ background: '#0f2a3a', color: '#38bdf8', border: '1px solid #0f5c7a', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
-          📦 Hay <strong>{pendientesSiis.length}</strong> producto(s)/lote(s) agregado(s) a mano en un conteo (bodega {bodega}) que aún no aparecen en el Excel de SIIS que subes:{' '}
-          {pendientesSiis.slice(0, 5).map(p => `${p.codigo} (${p.lote || 's/lote'})`).join(', ')}
-          {pendientesSiis.length > 5 ? ` y ${pendientesSiis.length - 5} más` : ''}. Cuando SIIS los incluya, esta lista se limpia sola.
-        </div>
-      )}
-
-      {alertaNuevosSinClasificar && (
-        <div style={{ background: '#3a2f0f', color: '#fbbf24', border: '1px solid #7a5c0f', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <span>
-            ⚠️ Entraron <strong>{alertaNuevosSinClasificar.total_nuevos}</strong> producto(s) nuevo(s) con esta carga —{' '}
-            <strong>{alertaNuevosSinClasificar.sin_cuenta.length}</strong> sin cuenta contable y{' '}
-            <strong>{alertaNuevosSinClasificar.sin_grupo_conteo.length}</strong> sin grupo de conteo. Clasifícalos para que queden agrupados correctamente.
-          </span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {alertaNuevosSinClasificar.sin_cuenta.length > 0 && (
-              <button onClick={() => setFiltro('sin_cuenta')} style={{ background: '#7a5c0f', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Ver sin cuenta
-              </button>
-            )}
-            {alertaNuevosSinClasificar.sin_grupo_conteo.length > 0 && (
-              <button onClick={() => setFiltro('sin_grupo_conteo')} style={{ background: '#7a5c0f', border: 'none', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Ver sin grupo
-              </button>
-            )}
-            <button onClick={() => setAlertaNuevosSinClasificar(null)} title="Cerrar aviso" style={{ background: 'none', border: 'none', color: '#fbbf24', cursor: 'pointer', fontSize: 14 }}>✕</button>
-          </div>
-        </div>
-      )}
-
-      {/* Resumen */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
-        {card('Total ítems', totales.total, 'var(--t-text-primary)')}
-        {card('Contados', totales.contados, '#4ade80')}
-        {card('Pendientes', totales.pendientes, '#fbbf24')}
-        {card('⚠️ Diferencias reales', totales.diferenciasReales, '#f87171')}
-        {card('🔄 Por actualización', totales.diferenciasPorActualizacion, '#38bdf8')}
-        {card('Sin existencias', totales.sinExistencias, '#94a3b8')}
-        {card('% Avance', `${avance}%`, 'var(--t-accent)')}
-      </div>
-
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 60, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
-      ) : items.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 60, color: 'var(--t-text-muted)', fontSize: 13 }}>
-          No hay inventario cargado para la bodega <strong>{bodega}</strong>. Usa "Cargar / Actualizar Excel" para empezar.
-        </div>
+      {cargando ? (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
       ) : (
-        <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto', width: '100%', maxWidth: '100%' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {[
-                  { key: null,            label: 'Código' },
-                  { key: null,            label: 'Nombre' },
-                  { key: null,            label: 'Cuenta' },
-                  { key: null,            label: 'Grupo Conteo' },
-                  { key: null,            label: 'Subgrupo' },
-                  { key: null,            label: 'Presentación' },
-                  { key: null,            label: 'Lote' },
-                  { key: null,            label: 'Fecha Venc.' },
-                  { key: null,            label: 'Existencia' },
-                  { key: 'costo_unitario', label: 'Costo Unit.' },
-                  { key: 'costo_total',    label: 'Costo Total' },
-                  { key: null,            label: 'Cant. Física' },
-                  { key: null,            label: 'Diferencia' },
-                  { key: null,            label: 'Notas' },
-                  { key: null,            label: 'Sobrante en libro' },
-                  { key: null,            label: 'Estado' },
-                  { key: null,            label: '' },
-                ].map(({ key, label }) => (
-                  <th
-                    key={label}
-                    onClick={key ? () => toggleSort(key) : undefined}
-                    style={{
-                      padding: '8px 8px', textAlign: 'left', color: key ? 'var(--t-accent)' : 'var(--t-text-muted)',
-                      fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)',
-                      cursor: key ? 'pointer' : 'default', userSelect: 'none',
-                    }}
-                  >
-                    {label}
-                    {key && sortCol === key && (
-                      <span style={{ marginLeft: 4 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
-                    )}
-                    {key && sortCol !== key && <span style={{ marginLeft: 4, opacity: 0.3 }}>⇅</span>}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {itemsFiltrados.map(item => {
-                const enEdicion = editValues[item.id] !== undefined;
-                const yaContado = item.contado;
-                // Si ya fue contado, solo editor/admin pueden modificar
-                const puedeEditar = !yaContado || puedeEditarContado;
-                const valorActual = enEdicion ? editValues[item.id] : fmtNum2(item.cantidad_fisica);
-                const diferencia = yaContado ? Number(item.cantidad_fisica) - Number(item.existencia_sistema) : null;
-                // Clasificación de la diferencia: prioriza SIEMPRE la elección
-                // manual guardada (persiste entre cargas de Excel); si aún no
-                // se ha clasificado, usa la detección automática por fecha
-                // solo como sugerencia inicial.
-                const tipoDif = getTipoDiferencia(item);
-                return (
-                  <tr key={item.id} style={{ borderBottom: '1px solid #1a2234', opacity: item.sin_existencias ? 0.6 : 1 }}>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--t-text-secondary)' }}>{item.codigo}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-primary)', maxWidth: 240 }}>{item.nombre}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isEditor ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="text"
-                            list="dl-cuentas"
-                            value={editCuenta[item.id] !== undefined ? editCuenta[item.id] : (item.cuenta || '')}
-                            onChange={(e) => setEditCuenta(prev => ({ ...prev, [item.id]: e.target.value }))}
-                            placeholder={item.cuenta ? '' : `Sin clasificar (${item.concat})`}
-                            title={`Grupo de inventario: ${item.concat}. Cuenta contable derivada del código.`}
-                            style={{ ...inputStyle, width: 130, fontSize: 12 }}
-                          />
-                          <button
-                            onClick={() => guardarCuenta(item)}
-                            disabled={editCuenta[item.id] === undefined || guardandoCuentaId === item.id}
-                            title="Guardar cuenta/grupo"
-                            style={{
-                              background: editCuenta[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                              color: editCuenta[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                              border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                              cursor: editCuenta[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                            }}
-                          >
-                            {guardandoCuentaId === item.id ? '…' : '💾'}
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ color: item.cuenta ? 'var(--t-text-secondary)' : '#fbbf24' }}>{item.cuenta || '⚠️ Sin clasificar'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isEditor ? (
-                        <input
-                          type="text"
-                          list="dl-grupos"
-                          value={editGrupoConteo[item.id]?.grupo !== undefined ? editGrupoConteo[item.id].grupo : (item.grupo_conteo || '')}
-                          onChange={(e) => setEditGrupoConteo(prev => ({ ...prev, [item.id]: { grupo: e.target.value, subgrupo: prev[item.id]?.subgrupo !== undefined ? prev[item.id].subgrupo : (item.subgrupo_conteo || '') } }))}
-                          placeholder={item.grupo_conteo ? '' : 'Sin grupo'}
-                          style={{ ...inputStyle, width: 110, fontSize: 12, ...(item.grupo_conteo ? {} : { borderColor: '#fbbf24' }) }}
-                        />
-                      ) : (
-                        <span style={{ color: item.grupo_conteo ? 'var(--t-text-secondary)' : '#fbbf24' }}>{item.grupo_conteo || '⚠️ Sin grupo'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isEditor ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="text"
-                            list={`dl-subgrupos-${item.id}`}
-                            value={editGrupoConteo[item.id]?.subgrupo !== undefined ? editGrupoConteo[item.id].subgrupo : (item.subgrupo_conteo || '')}
-                            onChange={(e) => setEditGrupoConteo(prev => ({ ...prev, [item.id]: { grupo: prev[item.id]?.grupo !== undefined ? prev[item.id].grupo : (item.grupo_conteo || ''), subgrupo: e.target.value } }))}
-                            placeholder="—"
-                            style={{ ...inputStyle, width: 110, fontSize: 12 }}
-                          />
-                          <datalist id={`dl-subgrupos-${item.id}`}>
-                            {subgruposDe(editGrupoConteo[item.id]?.grupo !== undefined ? editGrupoConteo[item.id].grupo : item.grupo_conteo).map(s => <option key={s} value={s} />)}
-                          </datalist>
-                          <button
-                            onClick={() => guardarGrupoConteo({ ...item, grupo: editGrupoConteo[item.id]?.grupo ?? item.grupo_conteo, subgrupo: editGrupoConteo[item.id]?.subgrupo ?? item.subgrupo_conteo })}
-                            disabled={editGrupoConteo[item.id] === undefined || guardandoGrupoConteoId === item.id}
-                            title="Guardar grupo y subgrupo de conteo"
-                            style={{
-                              background: editGrupoConteo[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                              color: editGrupoConteo[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                              border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                              cursor: editGrupoConteo[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                            }}
-                          >
-                            {guardandoGrupoConteoId === item.id ? '…' : '💾'}
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ color: 'var(--t-text-secondary)' }}>{item.subgrupo_conteo || '—'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {isAdmin ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="text"
-                            list="dl-presentaciones"
-                            value={editPresentacion[item.id] !== undefined ? editPresentacion[item.id] : (item.presentacion || '')}
-                            onChange={(e) => setEditPresentacion(prev => ({ ...prev, [item.id]: e.target.value }))}
-                            placeholder="—"
-                            title="Presentación del artículo (ej. Caja x100). Se guarda por código, no por lote."
-                            style={{ ...inputStyle, width: 110, fontSize: 12 }}
-                          />
-                          <button
-                            onClick={() => guardarPresentacion(item)}
-                            disabled={editPresentacion[item.id] === undefined || guardandoPresentacionId === item.id}
-                            title="Guardar presentación"
-                            style={{
-                              background: editPresentacion[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                              color: editPresentacion[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                              border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                              cursor: editPresentacion[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                            }}
-                          >
-                            {guardandoPresentacionId === item.id ? '…' : '💾'}
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ color: 'var(--t-text-secondary)' }}>{item.presentacion || '—'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)' }}>{item.lote || '—'}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtFechaCorta(item.fecha_vencimiento)}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{Number(item.existencia_sistema).toLocaleString('es-CO')}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_total)}</td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {puedeEditar ? (
-                        <input
-                          type="number" value={valorActual}
-                          onChange={(e) => setEditValues(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          style={{
-                            ...inputStyle,
-                            width: 90,
-                            fontFamily: 'monospace',
-                            ...(yaContado ? { background: '#132018', borderColor: '#2f6d3f', color: '#4ade80' } : {}),
-                          }}
-                        />
-                      ) : (
-                        <span title="Solo editor/admin pueden modificar cantidades ya contadas"
-                          style={{ color: yaContado ? '#4ade80' : 'var(--t-text-muted)', fontFamily: 'monospace' }}>
-                          {item.cantidad_fisica !== null && item.cantidad_fisica !== undefined ? fmtNum2(item.cantidad_fisica) : '—'} 🔒
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {diferencia === null ? (
-                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
-                      ) : diferencia === 0 ? (
-                        <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
-                      ) : (
-                        <div>
-                          <div style={{ marginBottom: 3, color: tipoDif === 'actualizacion' ? '#38bdf8' : '#f87171', fontWeight: 600 }}>
-                            {tipoDif === 'actualizacion' ? '🔄' : '⚠️'} {diferencia > 0 ? `+${fmtNum2(diferencia)}` : fmtNum2(diferencia)}
-                          </div>
-                          <div style={{ display: 'flex', gap: 3 }}>
-                            <button
-                              onClick={() => clasificarDiferencia(item, 'real')}
-                              title="Marcar como diferencia real (error de conteo/consumo)"
-                              style={{
-                                background: tipoDif === 'real' ? '#3a1d1d' : 'var(--t-bg-sidebar)',
-                                border: tipoDif === 'real' ? '1px solid #f87171' : '1px solid var(--t-border)',
-                                color: tipoDif === 'real' ? '#f87171' : 'var(--t-text-muted)',
-                                borderRadius: 4, padding: '2px 5px', fontSize: 10, cursor: 'pointer', fontWeight: tipoDif === 'real' ? 700 : 400,
-                              }}
-                            >
-                              ⚠️ Real
-                            </button>
-                            <button
-                              onClick={() => clasificarDiferencia(item, 'actualizacion')}
-                              title="Marcar como diferencia por actualización posterior del sistema"
-                              style={{
-                                background: tipoDif === 'actualizacion' ? '#132433' : 'var(--t-bg-sidebar)',
-                                border: tipoDif === 'actualizacion' ? '1px solid #38bdf8' : '1px solid var(--t-border)',
-                                color: tipoDif === 'actualizacion' ? '#38bdf8' : 'var(--t-text-muted)',
-                                borderRadius: 4, padding: '2px 5px', fontSize: 10, cursor: 'pointer', fontWeight: tipoDif === 'actualizacion' ? 700 : 400,
-                              }}
-                            >
-                              🔄 Actual.
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <input
-                          type="text"
-                          value={editNotas[item.id] !== undefined ? editNotas[item.id] : (item.notas || '')}
-                          onChange={(e) => setEditNotas(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          title="Observaciones (texto libre, no se borra al subir un Excel nuevo)"
-                          style={{ ...inputStyle, width: 130, fontSize: 12 }}
-                        />
-                        <button
-                          onClick={() => guardarNotas(item)}
-                          disabled={editNotas[item.id] === undefined || guardandoNotasId === item.id}
-                          title="Guardar nota"
-                          style={{
-                            background: editNotas[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: editNotas[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                            cursor: editNotas[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                          }}
-                        >
-                          {guardandoNotasId === item.id ? '…' : '💾'}
-                        </button>
-                      </div>
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <input
-                          type="number"
-                          value={editSobrante[item.id] !== undefined ? editSobrante[item.id] : fmtNum2(item.sobrante_libro)}
-                          onChange={(e) => setEditSobrante(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder="—"
-                          title="Registro manual: sobrante antiguo de antes del control de inventario (no se calcula solo)"
-                          style={{ ...inputStyle, width: 80, fontFamily: 'monospace' }}
-                        />
-                        <button
-                          onClick={() => guardarSobrante(item)}
-                          disabled={editSobrante[item.id] === undefined || guardandoSobranteId === item.id}
-                          title="Guardar sobrante en libro"
-                          style={{
-                            background: editSobrante[item.id] !== undefined ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: editSobrante[item.id] !== undefined ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12,
-                            cursor: editSobrante[item.id] !== undefined ? 'pointer' : 'not-allowed',
-                          }}
-                        >
-                          {guardandoSobranteId === item.id ? '…' : '💾'}
-                        </button>
-                      </div>
-                    </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      {item.sin_existencias && (
-                        <div style={{ marginBottom: 2 }}>
-                          <span style={{ background: '#2a2a35', color: '#94a3b8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-block' }}>
-                            🚫 Sin existencias
-                          </span>
-                          {item.sin_existencias_desde && (
-                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2 }}>
-                              desde {fmtFechaCorta(item.sin_existencias_desde)}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {yaContado ? (
-                        <div>
-                          <span style={{ background: '#1e2a1e', color: '#4ade80', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>✅ Contado</span>
-                          {item.contado_en && (
-                            <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2, whiteSpace: 'nowrap' }}>
-                              {fmtFechaHoraCO(item.contado_en)}
-                            </div>
-                          )}
-                          <div style={{ fontSize: 10, color: 'var(--t-text-secondary)', marginTop: 1 }}>
-                            Cant: <strong>{fmtNum2(item.cantidad_fisica)}</strong>
-                          </div>
-                        </div>
-                      ) : (
-                        <span style={{ background: 'var(--t-bg-sidebar)', color: '#fbbf24', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>⏳ Pendiente</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      {puedeEditar && (
-                        <button
-                          onClick={() => guardarConteo(item)}
-                          disabled={!enEdicion || guardandoId === item.id}
-                          title="Guardar conteo"
-                          style={{
-                            background: enEdicion ? 'var(--t-accent)' : 'var(--t-bg-sidebar)',
-                            color: enEdicion ? '#fff' : 'var(--t-text-muted)',
-                            border: 'none', borderRadius: 6, padding: '5px 8px', fontSize: 12, fontWeight: 500,
-                            cursor: enEdicion ? 'pointer' : 'not-allowed', marginRight: 4, minWidth: 30,
-                          }}
-                        >
-                          {guardandoId === item.id ? '…' : '💾'}
-                        </button>
-                      )}
-                      {yaContado && puedeEditarContado && (
-                        <button
-                          onClick={() => deshacerConteo(item)}
-                          title="Deshacer conteo"
-                          style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer', marginRight: 4 }}
-                        >
-                          ↺
-                        </button>
-                      )}
-                      {item.sin_existencias && puedeEditarContado && (
-                        <button
-                          onClick={() => eliminarItem(item)}
-                          title="Eliminar definitivamente (solo disponible para ítems sin existencias)"
-                          style={{ background: 'none', border: '1px solid #5c2626', borderRadius: 6, padding: '5px 8px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}
-                        >
-                          🗑️
-                        </button>
-                      )}
-                    </td>
+        <>
+          {/* Lista de sesiones de la bodega */}
+          {sesiones.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 30, color: 'var(--t-text-muted)', fontSize: 13 }}>
+              No hay sesiones de conteo para la bodega <strong>{bodega}</strong>. {isEditor ? 'Abre una subiendo el Excel de SIIS.' : 'Pídele a un editor que abra una.'}
+            </div>
+          ) : (
+            <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto', marginBottom: 16 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: 'var(--t-bg-sidebar)' }}>
+                    {['Sesión', 'Estado', 'Abierta', 'Excel', 'Valor del Excel', 'Ítems', 'Listas'].map(h => (
+                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      </>
+                </thead>
+                <tbody>
+                  {sesiones.map(x => (
+                    <tr
+                      key={x.id}
+                      onClick={() => setSesionSel({ id: x.id, bodega: x.bodega, estado: x.estado })}
+                      style={{ cursor: 'pointer', borderBottom: '1px solid #1a2234', background: sesionId === x.id ? 'rgba(59,130,246,0.15)' : undefined }}
+                    >
+                      <td style={{ padding: '8px 10px', fontWeight: 600 }}>#{x.id}</td>
+                      <td style={{ padding: '8px 10px' }}>{x.estado === 'activa' ? <span style={{ color: '#4ade80' }}>● Activa</span> : <span style={{ color: 'var(--t-text-muted)' }}>Archivada</span>}</td>
+                      <td style={{ padding: '8px 10px' }}>{fmtFechaHora(x.creado_en)}{x.creado_por_nombre ? <span style={{ color: 'var(--t-text-muted)' }}> · {x.creado_por_nombre}</span> : null}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--t-text-muted)' }}>{x.excel_nombre_archivo || '—'}</td>
+                      <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>{fmtPesos(Number(x.valor_total) || 0)}</td>
+                      <td style={{ padding: '8px 10px' }}>{x.total_items}</td>
+                      <td style={{ padding: '8px 10px' }}>{x.total_listas}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {listasViejas > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', background: 'var(--t-bg-card)', border: '1px dashed var(--t-border)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 }}>
+              <span>📁 Hay <strong>{listasViejas}</strong> lista(s) de conteo de esta bodega creadas antes de las sesiones. Se conservan tal cual.</span>
+              <button onClick={() => { setSesionSel({ legacy: true, bodega }); irAListas(); }} style={btn(false)}>Ver listas anteriores</button>
+            </div>
+          )}
+
+          {/* Detalle de la sesión elegida */}
+          {s && (
+            <div>
+              <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>
+                Sesión #{s.id} — bodega {s.bodega} · {activa ? <span style={{ color: '#4ade80' }}>Activa</span> : <span style={{ color: 'var(--t-text-muted)' }}>Archivada</span>}
+              </h3>
+
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+                <div style={cardStyle}>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: '#4ade80' }}>{fmtPesos(s.valor_total)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>Valor total del Excel</div>
+                </div>
+                <div style={cardStyle}>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtPesos(detalle.totales.despues)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>Valor después de ajustar</div>
+                </div>
+                <div style={cardStyle}>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: detalle.totales.diferencia === 0 ? 'var(--t-text-primary)' : (detalle.totales.diferencia > 0 ? '#3b82f6' : '#ef4444') }}>
+                    {detalle.totales.diferencia > 0 ? '+' : ''}{fmtPesos(detalle.totales.diferencia)}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>Diferencia (después − antes)</div>
+                </div>
+                <div style={cardStyle}>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{detalle.listas.length}</div>
+                  <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>Listas de conteo</div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
+                Excel cargado: <strong>{s.excel_nombre_archivo || '—'}</strong> · {fmtFechaHora(s.excel_subido_en)}
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+                <button onClick={irAListas} style={btn(true)}>📋 Listas de conteo de esta sesión</button>
+                <button onClick={descargarExcel} style={btn(false)}>⬇️ Descargar Excel</button>
+                {activa && isEditor && (
+                  <>
+                    <input ref={inputRefrescar} type="file" accept=".xls,.xlsx" onChange={(e) => subirExcel(e, s.id)} style={{ display: 'none' }} id="input-excel-sesion-refrescar" />
+                    <label htmlFor="input-excel-sesion-refrescar" title="Sube un Excel más reciente de la misma bodega sin perder lo ya contado" style={btn(false)}>
+                      🔄 {subiendo ? 'Procesando…' : 'Actualizar Excel'}
+                    </label>
+                    <button onClick={archivarSesion} style={{ ...btn(false), color: '#f87171', borderColor: '#5c2626' }}>🗄️ Archivar sesión</button>
+                  </>
+                )}
+                <button onClick={alternarItems} style={btn(false)}>{verItems ? 'Ocultar inventario cargado' : '👁️ Ver inventario cargado'}</button>
+              </div>
+
+              {/* Valor por cuenta contable: antes y después de ajustar */}
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Valor por cuenta contable — antes y después de ajustar</div>
+              <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto', marginBottom: 6 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--t-bg-sidebar)' }}>
+                      {['Cuenta contable', 'Antes (Excel)', 'Después (contado)', 'Diferencia'].map((h, i) => (
+                        <th key={h} style={{ padding: '8px 10px', textAlign: i === 0 ? 'left' : 'right', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detalle.resumen_cuentas.length === 0 ? (
+                      <tr><td colSpan={4} style={{ padding: 20, textAlign: 'center', color: 'var(--t-text-muted)' }}>Esta sesión todavía no tiene inventario cargado.</td></tr>
+                    ) : detalle.resumen_cuentas.map(f => (
+                      <tr key={f.cuenta} style={{ borderBottom: '1px solid #1a2234' }}>
+                        <td style={{ padding: '7px 10px' }}>{f.cuenta}</td>
+                        <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{fmtPesos(f.antes)}</td>
+                        <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{fmtPesos(f.despues)}</td>
+                        <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600, color: Math.round(f.diferencia) === 0 ? 'var(--t-text-muted)' : (f.diferencia > 0 ? '#3b82f6' : '#ef4444') }}>
+                          {f.diferencia > 0 ? '+' : ''}{fmtPesos(f.diferencia)}
+                        </td>
+                      </tr>
+                    ))}
+                    {detalle.resumen_cuentas.length > 0 && (
+                      <tr style={{ background: 'var(--t-bg-sidebar)', fontWeight: 700 }}>
+                        <td style={{ padding: '8px 10px' }}>TOTAL</td>
+                        <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{fmtPesos(detalle.totales.antes)}</td>
+                        <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{fmtPesos(detalle.totales.despues)}</td>
+                        <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{detalle.totales.diferencia > 0 ? '+' : ''}{fmtPesos(detalle.totales.diferencia)}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 18 }}>
+                "Después" toma lo contado en las listas <strong>cerradas</strong> de esta sesión (Conteo 2 si existe, si no Conteo 1); lo que aún no se ha contado y cerrado conserva el valor del Excel. Los productos agregados a mano suman a su cuenta.
+              </p>
+
+              {verItems && (
+                <div style={{ marginBottom: 18 }}>
+                  <input
+                    type="text" placeholder="Buscar por código, nombre, lote o cuenta…" value={busquedaItems}
+                    onChange={(e) => setBusquedaItems(e.target.value)}
+                    style={{ ...inputStyle, width: '100%', maxWidth: 420, marginBottom: 8 }}
+                  />
+                  {items === null ? (
+                    <div style={{ padding: 20, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                        Mostrando {Math.min(itemsFiltrados.length, 300)} de {itemsFiltrados.length} ítems{itemsFiltrados.length > 300 ? ' (afina la búsqueda para ver el resto)' : ''}
+                      </div>
+                      <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto', maxHeight: 460, overflowY: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ background: 'var(--t-bg-sidebar)', position: 'sticky', top: 0 }}>
+                              {['Código', 'Nombre', 'Lote', 'F. Venc.', 'Cuenta', 'Existencia', 'Costo unit.', 'Costo total'].map(h => (
+                                <th key={h} style={{ padding: '7px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {itemsFiltrados.slice(0, 300).map(it => (
+                              <tr key={it.id} style={{ borderBottom: '1px solid #1a2234', opacity: it.sin_existencias ? 0.5 : 1 }}>
+                                <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{it.codigo}</td>
+                                <td style={{ padding: '5px 8px' }}>{it.nombre}{it.sin_existencias ? ' 🚫' : ''}</td>
+                                <td style={{ padding: '5px 8px' }}>{it.lote || '—'}</td>
+                                <td style={{ padding: '5px 8px', whiteSpace: 'nowrap' }}>{fmtFechaDDMMAAAA(it.fecha_vencimiento)}</td>
+                                <td style={{ padding: '5px 8px' }}>{it.cuenta}</td>
+                                <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{fmtNum2(it.existencia_sistema)}</td>
+                                <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{fmtPesos(Number(it.costo_unitario))}</td>
+                                <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{fmtPesos(Number(it.costo_total))}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1271,7 +1254,13 @@ const LABEL_TIPO_LISTA = {
   grupo_conteo: 'Por grupo de conteo',
 };
 
-function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
+function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionSel, irASesiones }) {
+  // Cada lista pertenece a una sesión de conteo. sesionSel = { id, bodega, estado }
+  // (sesión elegida en la pestaña Sesiones) o { legacy: true } para ver las
+  // listas anteriores al modelo de sesiones (solo lectura de historial).
+  const sesionId = sesionSel && sesionSel.id ? sesionSel.id : null;
+  const esLegacy = !!(sesionSel && sesionSel.legacy);
+  const sesionActiva = !!(sesionSel && sesionSel.estado === 'activa');
   const [vistaInterna, setVistaInterna] = useState('listado'); // 'listado' | 'crear' | 'detalle'
   const [listas, setListas] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1338,32 +1327,38 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
 
 
   const cargarListas = useCallback(async () => {
+    if (!sesionId && !esLegacy) { setListas([]); setLoading(false); return; }
     setLoading(true);
     try {
-      const res = await api.get('/validador-inventario/listas-conteo', { params: { bodega } });
+      const params = sesionId ? { bodega, sesion_id: sesionId } : { bodega, sin_sesion: 1 };
+      const res = await api.get('/validador-inventario/listas-conteo', { params });
       setListas(res.data || []);
     } catch (e) {
       setError('No se pudieron cargar las listas de conteo');
     }
     setLoading(false);
-  }, [bodega]);
+  }, [bodega, sesionId, esLegacy]);
 
   useEffect(() => { cargarListas(); }, [cargarListas]);
+
+  // Al cambiar de sesión, se vuelve al listado de esa sesión
+  useEffect(() => { setVistaInterna('listado'); }, [sesionId, esLegacy]);
 
   useEffect(() => {
     if (formTipo === 'general') { setOpciones([]); setFormCriterio(''); return; }
     setFormCriterio(''); setFormSubcriterio(''); setOpcionesSubgrupo([]);
     setGruposSel([]); setGruposExpandidos({}); setSubgruposPorGrupo({});
+    if (!sesionId) { setOpciones([]); return; }
     if (formTipo === 'grupo_conteo') {
-      api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega } })
+      api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { sesion_id: sesionId } })
         .then(res => setOpciones(res.data || []))
         .catch(() => setOpciones([]));
       return;
     }
-    api.get('/validador-inventario/listas-conteo/opciones', { params: { bodega, tipo: formTipo } })
+    api.get('/validador-inventario/listas-conteo/opciones', { params: { sesion_id: sesionId, tipo: formTipo } })
       .then(res => setOpciones(res.data || []))
       .catch(() => setOpciones([]));
-  }, [formTipo, bodega]);
+  }, [formTipo, sesionId]);
 
   // Expande/colapsa un grupo en el checklist de "grupo_conteo" y carga sus
   // subgrupos (con conteo de ítems) la primera vez que se abre.
@@ -1371,7 +1366,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
     setGruposExpandidos(prev => ({ ...prev, [grupo]: !prev[grupo] }));
     if (!subgruposPorGrupo[grupo]) {
       try {
-        const res = await api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { bodega, grupo } });
+        const res = await api.get('/validador-inventario/clasificacion-conteo/opciones', { params: { sesion_id: sesionId, grupo } });
         setSubgruposPorGrupo(prev => ({ ...prev, [grupo]: res.data || [] }));
       } catch (e) {
         setSubgruposPorGrupo(prev => ({ ...prev, [grupo]: [] }));
@@ -1417,7 +1412,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
         const g = gruposSel[i];
         try {
           const res = await api.post('/validador-inventario/listas-conteo', {
-            bodega, tipo: 'grupo_conteo', criterio: g.grupo, subcriterio: g.subgrupo || null,
+            sesion_id: sesionId, tipo: 'grupo_conteo', criterio: g.grupo, subcriterio: g.subgrupo || null,
             subclasificar_presentacion: formSubclasificar, conteo1_nombre: formConteo1Nombre, conteo2_nombre: formConteo2Nombre,
           });
           ultimoId = res.data.id;
@@ -1443,7 +1438,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
     setCreando(true);
     try {
       const body = {
-        bodega, tipo: formTipo,
+        sesion_id: sesionId, tipo: formTipo,
         criterio: formTipo === 'general' ? null : (esMultiGrupo ? null : formCriterio),
         subcriterio: formTipo === 'grupo_conteo' && !esMultiGrupo ? (formSubcriterio || null) : null,
         subclasificar_presentacion: formSubclasificar, conteo1_nombre: formConteo1Nombre, conteo2_nombre: formConteo2Nombre,
@@ -1485,6 +1480,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
       setListaActual(res.data);
       setVistaInterna('detalle');
       cargarCruces(id);
+      cargarReporte(id); // Estado/Novedad/SIIS actual/Diferencias dependen de esto: se carga de una vez.
     } catch (e) {
       setError('No se pudo abrir la lista');
     }
@@ -1728,6 +1724,21 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
     setCerrando(false);
   }
 
+  // Solo un admin puede reabrir un conteo ya cerrado.
+  async function reabrirLista() {
+    if (!window.confirm('¿Reabrir esta lista de conteo? Volverá a quedar editable y usará la existencia de SIIS en vivo, no la que se congeló al cerrarla.')) return;
+    setCerrando(true);
+    try {
+      const res = await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/reabrir`);
+      setListaActual(prev => ({ ...prev, ...res.data }));
+      await cargarReporte(listaActual.id);
+      await cargarListas();
+    } catch (e) {
+      alert('Error reabriendo la lista: ' + (e.response?.data?.error || e.message));
+    }
+    setCerrando(false);
+  }
+
   async function descargarArchivo(tipo) {
     setDescargando(tipo);
     try {
@@ -1768,19 +1779,40 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
       <div>
         {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
 
-        <PanelesGerenciales bodega={bodega} fmtPesos={fmtPesos} inputStyle={inputStyle} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 14, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '10px 14px' }}>
+          <button onClick={irASesiones} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13 }}>← Sesiones</button>
+          <div style={{ fontSize: 13 }}>
+            {sesionId ? (
+              <>Sesión <strong>#{sesionId}</strong> · bodega <strong>{bodega}</strong> · {sesionActiva ? <span style={{ color: '#4ade80' }}>Activa</span> : <span style={{ color: 'var(--t-text-muted)' }}>Archivada (solo lectura)</span>}</>
+            ) : esLegacy ? (
+              <>Listas anteriores a las sesiones · bodega <strong>{bodega}</strong> <span style={{ color: 'var(--t-text-muted)' }}>(historial)</span></>
+            ) : (
+              <span style={{ color: 'var(--t-text-muted)' }}>Ninguna sesión elegida</span>
+            )}
+          </div>
+        </div>
 
-        <button
-          onClick={() => setVistaInterna('crear')}
-          style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', marginBottom: 16 }}
-        >
-          + Nuevo conteo
-        </button>
-        {loading ? (
+        {!sesionId && !esLegacy && (
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>
+            Elige o abre una sesión en la pestaña <strong>Sesiones</strong> para ver y crear sus listas de conteo.
+          </div>
+        )}
+
+        {(sesionId || esLegacy) && <PanelesGerenciales bodega={bodega} fmtPesos={fmtPesos} inputStyle={inputStyle} />}
+
+        {sesionId && sesionActiva && (
+          <button
+            onClick={() => setVistaInterna('crear')}
+            style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', marginBottom: 16 }}
+          >
+            + Nuevo conteo
+          </button>
+        )}
+        {(!sesionId && !esLegacy) ? null : loading ? (
           <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>Cargando…</div>
         ) : listas.length === 0 ? (
           <div style={{ textAlign: 'center', padding: 40, color: 'var(--t-text-muted)', fontSize: 13 }}>
-            No hay conteos registrados para la bodega <strong>{bodega}</strong> todavía.
+            {sesionId ? <>Esta sesión todavía no tiene listas de conteo.</> : <>No hay listas anteriores para la bodega <strong>{bodega}</strong>.</>}
           </div>
         ) : (
           <div style={{ background: 'var(--t-bg-card)', borderRadius: 10, border: '1px solid var(--t-border)', overflowX: 'auto' }}>
@@ -1840,7 +1872,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
     return (
       <div style={{ maxWidth: 640 }}>
         <button onClick={() => setVistaInterna('listado')} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13, marginBottom: 14 }}>← Volver</button>
-        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Nuevo conteo — bodega {bodega}</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Nuevo conteo — sesión #{sesionId} · bodega {bodega}</h3>
         {error && <div style={{ background: '#3a1d1d', color: '#f87171', border: '1px solid #5c2626', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>{error}</div>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1871,7 +1903,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                 Grupos y subgrupos <span style={{ opacity: 0.8 }}>(marca uno o varios — puedes combinar grupos completos con subgrupos sueltos de otros grupos)</span>
               </div>
               {opciones.length === 0 ? (
-                <p style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin grupos de conteo cargados para esta bodega. Cárgalos en Inventario → "Cargar Grupos de Conteo (Excel)", o en la pestaña Datos.</p>
+                <p style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>Sin grupos de conteo cargados para esta bodega. Cárgalos en Datos → "Cargar Grupos de Conteo (Excel)", o en la pestaña Datos.</p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 280, overflowY: 'auto', border: '1px solid var(--t-border)', borderRadius: 8, padding: 8 }}>
                   {opciones.map(g => (
@@ -2029,6 +2061,11 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
             {abierta && isEditor && (
               <button onClick={cerrarLista} disabled={cerrando} style={{ background: '#3a1d1d', border: '1px solid #5c2626', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#f87171', cursor: 'pointer' }}>
                 🔒 {cerrando ? 'Cerrando…' : 'Cerrar conteo'}
+              </button>
+            )}
+            {!abierta && isAdmin && (
+              <button onClick={reabrirLista} disabled={cerrando} title="Solo un administrador puede reabrir un conteo cerrado" style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-accent)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-accent)', cursor: 'pointer' }}>
+                🔓 {cerrando ? 'Reabriendo…' : 'Reabrir conteo'}
               </button>
             )}
             {abierta && (
@@ -2329,7 +2366,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos }) {
                       {sinDiferencia ? (
                         <span style={{ color: 'var(--t-text-muted)' }}>—</span>
                       ) : diferenciaItem > 0 ? (
-                        <span style={{ color: '#f97316', fontWeight: 700 }}>🟠 Sobrante</span>
+                        <span style={{ color: '#3b82f6', fontWeight: 700 }}>🔵 Sobrante</span>
                       ) : (
                         <span style={{ color: '#ef4444', fontWeight: 700 }}>🔴 Faltante</span>
                       )}
@@ -3260,4 +3297,3 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
-
