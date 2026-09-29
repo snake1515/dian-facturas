@@ -13,23 +13,6 @@ function truncar(valor, max) {
   return s.length > max ? s.substring(0, max) : s;
 }
 
-// ── Orden ÚNICO de los ítems de una lista de conteo ──────────────────────────
-// Primero los agregados a mano; luego alfabético por nombre y, cuando el nombre se repite (ej. muchos lotes del
-// mismo producto), desempata por vencimiento, lote, código y finalmente id.
-// Sin estos desempates Postgres devuelve los empatados en orden físico, que
-// CAMBIA cada vez que se guarda un conteo (el UPDATE reescribe la fila).
-// Se usa en pantalla, plantillas Excel y reportes para que todo salga igual.
-const _cmpTxt = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), 'es', { sensitivity: 'base', numeric: true });
-function compararItemsLista(a, b) {
-  // Los productos/lotes agregados a mano van SIEMPRE de primeros.
-  return ((b.origen === 'agregado') - (a.origen === 'agregado'))
-    || _cmpTxt(a.nombre, b.nombre)
-    || _cmpTxt(a.fecha_vencimiento, b.fecha_vencimiento)
-    || _cmpTxt(a.lote, b.lote)
-    || _cmpTxt(a.codigo, b.codigo)
-    || (Number(a.id) - Number(b.id));
-}
-
 // ── Registra un cambio de clasificación en el historial de auditoría ─────────
 async function registrarHistorialTipo(dbClient, concat, anterior, nuevoContable, nuevoCuenta, origen, userId) {
   await dbClient.query(
@@ -1062,10 +1045,9 @@ router.get('/listas-conteo/:id', authMiddleware, async (req, res) => {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const { rows: items } = await pool.query(
-      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY id`,
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`,
       [req.params.id]
     );
-    items.sort(compararItemsLista);
     res.json({ ...listaRows[0], items });
   } catch (err) {
     console.error('Error al obtener lista de conteo:', err);
@@ -1134,23 +1116,15 @@ function calcularDetalleReporte(lista, items) {
     const esAgregado = it.origen === 'agregado';
     const existenciaInicial = esAgregado ? 0 : Number(it.existencia_siis);
 
-    // Referencia de SIIS contra la que se compara:
-    //  - Lista CON sesión y ABIERTA: el Excel de la sesión se sube una vez y ya no
-    //    se mueve, así que la existencia "actual" es la del snapshot de la lista
-    //    (los campos *_actual se mantienen por compatibilidad y valen igual que
-    //    los *_inicial).
-    //  - Lista SIN sesión (anterior al modelo de sesiones) o ya CERRADA: se
-    //    conserva el cálculo original (existencia en vivo / congelada al cerrar)
-    //    para no alterar resultados históricos.
-    const referenciaUnica = lista.estado !== 'cerrada' && lista.sesion_id !== null && lista.sesion_id !== undefined;
     const existenciaActual = esAgregado
       ? 0
-      : (referenciaUnica
-        ? existenciaInicial
-        : (lista.estado === 'cerrada'
-          ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
-          : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null)));
+      : (lista.estado === 'cerrada'
+        ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
+        : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null));
 
+    // Un ítem agregado a mano no existe en el inventario, así que el cruce en
+    // vivo no devuelve nada: su existencia esperada es la del snapshot (0),
+    // no "desconocida" — si no, nunca mostraría el sobrante.
     const existenciaActualEfectiva = existenciaActual;
 
     // Ajuste por cambios de lote / referencias cruzadas: lo que el sistema
@@ -1202,23 +1176,20 @@ function calcularDetalleReporte(lista, items) {
 }
 
 async function obtenerItemsConActual(lista, listaId) {
-  let rows;
   if (lista.estado === 'cerrada') {
     const r = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1`, [listaId]);
-    rows = r.rows;
-  } else {
-    const r = await pool.query(
-      `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
-       FROM listas_conteo_items li
-       LEFT JOIN validador_inventario vi
-         ON vi.bodega = $2 AND vi.sesion_id IS NOT DISTINCT FROM $3::int
-            AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
-       WHERE li.lista_id = $1`,
-      [listaId, lista.bodega, lista.sesion_id ?? null]
-    );
-    rows = r.rows;
+    return r.rows;
   }
-  return rows.sort(compararItemsLista);
+  const r = await pool.query(
+    `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
+     FROM listas_conteo_items li
+     LEFT JOIN validador_inventario vi
+       ON vi.bodega = $2 AND vi.sesion_id IS NOT DISTINCT FROM $3::int
+          AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
+     WHERE li.lista_id = $1`,
+    [listaId, lista.bodega, lista.sesion_id ?? null]
+  );
+  return r.rows;
 }
 
 // ── GET /api/validador-inventario/listas-conteo/:id/reporte ──────────────────
@@ -1352,11 +1323,11 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const lista = listaRows[0];
+    const ordenPlantilla = lista.tipo === 'grupo_conteo' ? 'ORDER BY nombre ASC' : 'ORDER BY presentacion NULLS LAST, nombre ASC';
     const { rows: items } = await pool.query(
-      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY id`,
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ${ordenPlantilla}`,
       [req.params.id]
     );
-    items.sort(compararItemsLista);
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Conteo');
@@ -1436,7 +1407,10 @@ router.get('/listas-conteo/:id/plantilla-segundo-conteo', authMiddleware, async 
       return res.status(400).json({ error: 'No hay ítems con diferencia: nada que recontar' });
     }
 
-    items.sort(compararItemsLista);
+    const cmp = (a, b) => String(a || '').localeCompare(String(b || ''), 'es');
+    items.sort(lista.tipo === 'grupo_conteo'
+      ? (a, b) => cmp(a.nombre, b.nombre)
+      : (a, b) => ((a.presentacion == null) - (b.presentacion == null)) || cmp(a.presentacion, b.presentacion) || cmp(a.nombre, b.nombre));
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Segundo conteo');
@@ -1500,7 +1474,7 @@ router.get('/listas-conteo/:id/reporte-excel', authMiddleware, async (req, res) 
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const lista = listaRows[0];
     const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
-    itemsRaw.sort(compararItemsLista);
+    itemsRaw.sort((a, b) => (a.presentacion || '').localeCompare(b.presentacion || '') || a.nombre.localeCompare(b.nombre));
     const { resumen, items } = calcularDetalleReporte(lista, itemsRaw);
 
     const wb = new ExcelJS.Workbook();
@@ -1623,6 +1597,75 @@ router.patch('/listas-conteo/:id/items/:itemId/motivo', authMiddleware, async (r
   }
 });
 
+// ── GET /api/validador-inventario/listas-conteo/:id/documento-egreso ────────
+// ── GET /api/validador-inventario/listas-conteo/:id/documento-ingreso ───────
+// Documento de ajuste: los ítems marcados como egreso (o ingreso), con la
+// cantidad a ajustar (la diferencia actual) y su valor total en dinero.
+async function generarDocumentoAjuste(req, res, tipo) {
+  try {
+    const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
+    if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
+    const lista = listaRows[0];
+
+    const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
+    const { items: detalle } = calcularDetalleReporte(lista, itemsRaw);
+    const porId = new Map(detalle.map(d => [d.id, d]));
+    const items = itemsRaw
+      .map(it => ({ ...it, diferencia: porId.get(it.id)?.diferencia_cantidad_actual }))
+      .filter(it => it.diferencia !== null && it.diferencia !== undefined && Number(it.diferencia) !== 0)
+      .filter(it => tipo === 'ingreso' ? Number(it.diferencia) > 0 : Number(it.diferencia) < 0);
+
+    if (!items.length) {
+      return res.status(400).json({ error: tipo === 'egreso'
+        ? 'No hay faltantes por ajustar en esta lista (nada que generar como Egreso).'
+        : 'No hay sobrantes por ajustar en esta lista (nada que generar como Ingreso).' });
+    }
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(tipo === 'egreso' ? 'Egreso' : 'Ingreso');
+    ws.columns = [{ width: 16 }, { width: 42 }, { width: 16 }, { width: 13 }, { width: 14 }, { width: 16 }, { width: 16 }];
+    ws.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '4:4' };
+
+    ws.mergeCells('A1:G1');
+    ws.getCell('A1').value = `DOCUMENTO DE ${tipo === 'egreso' ? 'EGRESO' : 'INGRESO'} — Lista #${lista.id} — Bodega ${lista.bodega}`;
+    ws.getCell('A1').font = { bold: true, size: 14 };
+    ws.getCell('A2').value = 'Fecha:'; ws.getCell('B2').value = new Date().toLocaleDateString('es-CO');
+    ws.getCell('A2').font = { bold: true };
+
+    const filaEncabezado = 4;
+    ws.getRow(filaEncabezado).values = ['Código', 'Nombre', 'Lote', 'F. Venc.', 'Cantidad a ajustar', 'Costo unitario', 'Valor total'];
+    ws.getRow(filaEncabezado).font = { bold: true };
+    ws.getRow(filaEncabezado).eachCell(c => {
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+      c.border = { bottom: { style: 'thin' } };
+    });
+
+    let fila = filaEncabezado + 1;
+    let totalUnidades = 0, totalValor = 0;
+    for (const it of items) {
+      const cantidad = Math.abs(Number(it.diferencia));
+      const valor = cantidad * Number(it.costo_unitario || 0);
+      totalUnidades += cantidad;
+      totalValor += valor;
+      ws.getRow(fila).values = [it.codigo, it.nombre, it.lote || '', formatearFechaDDMMAAAA(it.fecha_vencimiento), cantidad, Number(it.costo_unitario || 0), valor];
+      fila++;
+    }
+    const filaTotal = ws.getRow(fila);
+    filaTotal.values = ['', '', '', '', totalUnidades, 'TOTAL', totalValor];
+    filaTotal.font = { bold: true };
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="documento_${tipo}_lista${lista.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error(`Error al generar documento de ${tipo}:`, err);
+    if (!res.headersSent) res.status(500).json({ error: 'Error interno del servidor' });
+  }
+}
+router.get('/listas-conteo/:id/documento-egreso', authMiddleware, (req, res) => generarDocumentoAjuste(req, res, 'egreso'));
+router.get('/listas-conteo/:id/documento-ingreso', authMiddleware, (req, res) => generarDocumentoAjuste(req, res, 'ingreso'));
+
 // ── GET /api/validador-inventario/dashboard?bodega=BV&desde=&hasta= ──────────
 // Vista gerencial de progreso: cuántos grupos existen vs cuántos se han
 // contado en el periodo, y la diferencia en valor acumulada de los conteos
@@ -1684,7 +1727,7 @@ router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
   try {
     const bodega = (req.query.bodega || '').toUpperCase();
     const { rows } = await pool.query(
-      `SELECT li.*, lc.sesion_id, lc.tipo, lc.criterio, lc.estado, lc.creado_en AS conteo_creado_en, lc.cerrado_en AS conteo_cerrado_en
+      `SELECT li.*, lc.tipo, lc.criterio, lc.estado, lc.creado_en AS conteo_creado_en, lc.cerrado_en AS conteo_cerrado_en
        FROM listas_conteo_items li
        JOIN listas_conteo lc ON lc.id = li.lista_id
        WHERE li.codigo = $1 AND ($2 = '' OR lc.bodega = $2)
@@ -1696,8 +1739,8 @@ router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
       const existenciaActual = it.origen === 'agregado'
         ? 0
         : (it.estado === 'cerrada'
-          ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
-          : (it.sesion_id !== null && it.sesion_id !== undefined ? Number(it.existencia_siis) : null));
+          ? (it.existencia_siis_cierre !== null ? Number(it.existencia_siis_cierre) : null)
+          : null);
       const diferencia = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
       return {
         lista_id: it.lista_id, tipo: it.tipo, criterio: it.criterio, estado: it.estado,
@@ -1980,28 +2023,21 @@ router.post('/listas-conteo/:id/cruces', authMiddleware, async (req, res) => {
     const destino = itemsRows.find(i => String(i.id) === String(item_destino_id));
     const tipo = origen.codigo === destino.codigo ? 'lote' : 'referencia';
 
-    // El ORIGEN es la fila con FALTANTE (el sistema esperaba unidades que no
-    // aparecieron contadas ahí, porque físicamente están en el destino). Por
-    // eso el tope de lo que se puede mover es el faltante del origen — la
-    // misma diferencia que muestra el reporte — y NO lo que se contó en él
-    // (en un cambio de lote típico el origen se cuenta en 0).
+    // No dejar mover más unidades de las que el origen realmente tiene
+    // disponibles: lo contado (definitivo) menos lo que ya se haya sacado por
+    // cruces anteriores (ajuste_cruce, que para el origen ya es negativo).
     const definitivoOrigen = conteoDefinitivo(origen);
     if (definitivoOrigen === null) {
       await client.query('ROLLBACK'); client.release();
-      return res.status(400).json({ error: 'El ítem origen todavía no tiene un conteo físico registrado (Conteo 1). Cuéntalo antes de registrar el cruce.' });
+      return res.status(400).json({ error: 'El ítem origen todavía no tiene un conteo físico registrado (Conteo 1). Cuéntalo antes de moverle unidades a otro ítem.' });
     }
-    const itemsRaw = await obtenerItemsConActual(lista, lista.id);
-    const { items: detalle } = calcularDetalleReporte(lista, itemsRaw);
-    const repOrigen = detalle.find(d => String(d.id) === String(origen.id));
-    const difOrigen = repOrigen
-      ? (repOrigen.diferencia_cantidad_actual ?? repOrigen.diferencia_cantidad_inicial)
-      : null;
-    const faltanteOrigen = difOrigen === null || difOrigen === undefined ? 0 : Math.max(0, -Number(difOrigen));
-    if (cant > faltanteOrigen + 0.0005) {
+    const disponibleOrigen = definitivoOrigen + Number(origen.ajuste_cruce || 0);
+    if (cant > disponibleOrigen) {
       await client.query('ROLLBACK'); client.release();
       return res.status(400).json({
-        error: `El ítem origen (${origen.codigo} · lote ${origen.lote || 'sin lote'}) tiene un faltante de ${faltanteOrigen} unidad(es) ` +
-               `(existencia esperada vs. contado). No se pueden mover ${cant}.`
+        error: `Solo hay ${disponibleOrigen} unidad(es) disponibles en el ítem origen (contadas: ${definitivoOrigen}` +
+               (origen.ajuste_cruce ? `, ya movidas por otro cruce: ${-origen.ajuste_cruce}` : '') +
+               `). No se pueden mover ${cant}.`
       });
     }
 
@@ -2459,6 +2495,243 @@ router.get('/sesiones-conteo/:id/excel', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
