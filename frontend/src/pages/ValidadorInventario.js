@@ -2264,6 +2264,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                 const diferenciaItem = rep ? rep.diferencia_cantidad_actual : null;
                 const sinDiferencia = diferenciaItem === null || diferenciaItem === undefined || diferenciaItem === 0;
                 const novedadFilaActiva = novedadAbierta && novedadAbierta.itemId === item.id ? novedadAbierta : null;
+                const crucesItem = cruces.filter(c => String(c.item_origen_id) === String(item.id) || String(c.item_destino_id) === String(item.id));
                 return (
                   <React.Fragment key={item.id}>
                   <tr className="fila-lista-conteo" style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : (item.origen === 'agregado' ? 'rgba(56,189,248,0.06)' : undefined), transition: 'background 0.3s' }}>
@@ -2363,8 +2364,27 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                       )}
                     </td>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                      {crucesItem.map(c => {
+                        const esOrigenC = String(c.item_origen_id) === String(item.id);
+                        const otroCodigo = esOrigenC ? c.destino_codigo : c.origen_codigo;
+                        const otroLote = (esOrigenC ? c.destino_lote : c.origen_lote) || 's/lote';
+                        const cantC = fmtNum2(c.cantidad);
+                        const esLote = c.tipo === 'lote';
+                        return (
+                          <div
+                            key={c.id}
+                            title={`${esLote ? 'Cambio de lote' : 'Referencia cruzada'}: ${esOrigenC ? 'salieron' : 'llegaron'} ${cantC} unidad(es) ${esOrigenC ? 'hacia' : 'desde'} ${otroCodigo} · lote ${otroLote}${c.motivo ? ' — ' + c.motivo : ''}`}
+                            style={{ color: esLote ? '#fbbf24' : '#c084fc', fontWeight: 700, fontSize: 11, marginBottom: 2 }}
+                          >
+                            {esLote
+                              ? `📦 Cambio de lote con ${otroLote}`
+                              : `🔀 Ref. cruzada con ${otroCodigo} (${otroLote})`}
+                            {' · '}{cantC} u.
+                          </div>
+                        );
+                      })}
                       {sinDiferencia ? (
-                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
+                        crucesItem.length === 0 && <span style={{ color: 'var(--t-text-muted)' }}>—</span>
                       ) : diferenciaItem > 0 ? (
                         <span style={{ color: '#3b82f6', fontWeight: 700 }}>🔵 Sobrante</span>
                       ) : (
@@ -3297,6 +3317,15 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
+
+
+
+
+
 
 
 
