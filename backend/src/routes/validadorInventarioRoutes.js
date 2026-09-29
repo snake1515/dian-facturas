@@ -1954,21 +1954,28 @@ router.post('/listas-conteo/:id/cruces', authMiddleware, async (req, res) => {
     const destino = itemsRows.find(i => String(i.id) === String(item_destino_id));
     const tipo = origen.codigo === destino.codigo ? 'lote' : 'referencia';
 
-    // No dejar mover más unidades de las que el origen realmente tiene
-    // disponibles: lo contado (definitivo) menos lo que ya se haya sacado por
-    // cruces anteriores (ajuste_cruce, que para el origen ya es negativo).
+    // El ORIGEN es la fila con FALTANTE (el sistema esperaba unidades que no
+    // aparecieron contadas ahí, porque físicamente están en el destino). Por
+    // eso el tope de lo que se puede mover es el faltante del origen — la
+    // misma diferencia que muestra el reporte — y NO lo que se contó en él
+    // (en un cambio de lote típico el origen se cuenta en 0).
     const definitivoOrigen = conteoDefinitivo(origen);
     if (definitivoOrigen === null) {
       await client.query('ROLLBACK'); client.release();
-      return res.status(400).json({ error: 'El ítem origen todavía no tiene un conteo físico registrado (Conteo 1). Cuéntalo antes de moverle unidades a otro ítem.' });
+      return res.status(400).json({ error: 'El ítem origen todavía no tiene un conteo físico registrado (Conteo 1). Cuéntalo antes de registrar el cruce.' });
     }
-    const disponibleOrigen = definitivoOrigen + Number(origen.ajuste_cruce || 0);
-    if (cant > disponibleOrigen) {
+    const itemsRaw = await obtenerItemsConActual(lista, lista.id);
+    const { items: detalle } = calcularDetalleReporte(lista, itemsRaw);
+    const repOrigen = detalle.find(d => String(d.id) === String(origen.id));
+    const difOrigen = repOrigen
+      ? (repOrigen.diferencia_cantidad_actual ?? repOrigen.diferencia_cantidad_inicial)
+      : null;
+    const faltanteOrigen = difOrigen === null || difOrigen === undefined ? 0 : Math.max(0, -Number(difOrigen));
+    if (cant > faltanteOrigen + 0.0005) {
       await client.query('ROLLBACK'); client.release();
       return res.status(400).json({
-        error: `Solo hay ${disponibleOrigen} unidad(es) disponibles en el ítem origen (contadas: ${definitivoOrigen}` +
-               (origen.ajuste_cruce ? `, ya movidas por otro cruce: ${-origen.ajuste_cruce}` : '') +
-               `). No se pueden mover ${cant}.`
+        error: `El ítem origen (${origen.codigo} · lote ${origen.lote || 'sin lote'}) tiene un faltante de ${faltanteOrigen} unidad(es) ` +
+               `(existencia esperada vs. contado). No se pueden mover ${cant}.`
       });
     }
 
@@ -2426,6 +2433,10 @@ router.get('/sesiones-conteo/:id/excel', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
 
 
 
