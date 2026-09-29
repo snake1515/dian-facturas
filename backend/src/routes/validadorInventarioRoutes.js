@@ -13,6 +13,23 @@ function truncar(valor, max) {
   return s.length > max ? s.substring(0, max) : s;
 }
 
+// ── Orden ÚNICO de los ítems de una lista de conteo ──────────────────────────
+// Primero los agregados a mano; luego alfabético por nombre y, cuando el nombre se repite (ej. muchos lotes del
+// mismo producto), desempata por vencimiento, lote, código y finalmente id.
+// Sin estos desempates Postgres devuelve los empatados en orden físico, que
+// CAMBIA cada vez que se guarda un conteo (el UPDATE reescribe la fila).
+// Se usa en pantalla, plantillas Excel y reportes para que todo salga igual.
+const _cmpTxt = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), 'es', { sensitivity: 'base', numeric: true });
+function compararItemsLista(a, b) {
+  // Los productos/lotes agregados a mano van SIEMPRE de primeros.
+  return ((b.origen === 'agregado') - (a.origen === 'agregado'))
+    || _cmpTxt(a.nombre, b.nombre)
+    || _cmpTxt(a.fecha_vencimiento, b.fecha_vencimiento)
+    || _cmpTxt(a.lote, b.lote)
+    || _cmpTxt(a.codigo, b.codigo)
+    || (Number(a.id) - Number(b.id));
+}
+
 // ── Registra un cambio de clasificación en el historial de auditoría ─────────
 async function registrarHistorialTipo(dbClient, concat, anterior, nuevoContable, nuevoCuenta, origen, userId) {
   await dbClient.query(
@@ -1045,9 +1062,10 @@ router.get('/listas-conteo/:id', authMiddleware, async (req, res) => {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const { rows: items } = await pool.query(
-      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`,
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY id`,
       [req.params.id]
     );
+    items.sort(compararItemsLista);
     res.json({ ...listaRows[0], items });
   } catch (err) {
     console.error('Error al obtener lista de conteo:', err);
@@ -1176,20 +1194,23 @@ function calcularDetalleReporte(lista, items) {
 }
 
 async function obtenerItemsConActual(lista, listaId) {
+  let rows;
   if (lista.estado === 'cerrada') {
     const r = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1`, [listaId]);
-    return r.rows;
+    rows = r.rows;
+  } else {
+    const r = await pool.query(
+      `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
+       FROM listas_conteo_items li
+       LEFT JOIN validador_inventario vi
+         ON vi.bodega = $2 AND vi.sesion_id IS NOT DISTINCT FROM $3::int
+            AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
+       WHERE li.lista_id = $1`,
+      [listaId, lista.bodega, lista.sesion_id ?? null]
+    );
+    rows = r.rows;
   }
-  const r = await pool.query(
-    `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
-     FROM listas_conteo_items li
-     LEFT JOIN validador_inventario vi
-       ON vi.bodega = $2 AND vi.sesion_id IS NOT DISTINCT FROM $3::int
-          AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
-     WHERE li.lista_id = $1`,
-    [listaId, lista.bodega, lista.sesion_id ?? null]
-  );
-  return r.rows;
+  return rows.sort(compararItemsLista);
 }
 
 // ── GET /api/validador-inventario/listas-conteo/:id/reporte ──────────────────
@@ -1323,11 +1344,11 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const lista = listaRows[0];
-    const ordenPlantilla = lista.tipo === 'grupo_conteo' ? 'ORDER BY nombre ASC' : 'ORDER BY presentacion NULLS LAST, nombre ASC';
     const { rows: items } = await pool.query(
-      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ${ordenPlantilla}`,
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY id`,
       [req.params.id]
     );
+    items.sort(compararItemsLista);
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Conteo');
@@ -1407,10 +1428,7 @@ router.get('/listas-conteo/:id/plantilla-segundo-conteo', authMiddleware, async 
       return res.status(400).json({ error: 'No hay ítems con diferencia: nada que recontar' });
     }
 
-    const cmp = (a, b) => String(a || '').localeCompare(String(b || ''), 'es');
-    items.sort(lista.tipo === 'grupo_conteo'
-      ? (a, b) => cmp(a.nombre, b.nombre)
-      : (a, b) => ((a.presentacion == null) - (b.presentacion == null)) || cmp(a.presentacion, b.presentacion) || cmp(a.nombre, b.nombre));
+    items.sort(compararItemsLista);
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Segundo conteo');
@@ -1474,7 +1492,7 @@ router.get('/listas-conteo/:id/reporte-excel', authMiddleware, async (req, res) 
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const lista = listaRows[0];
     const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
-    itemsRaw.sort((a, b) => (a.presentacion || '').localeCompare(b.presentacion || '') || a.nombre.localeCompare(b.nombre));
+    itemsRaw.sort(compararItemsLista);
     const { resumen, items } = calcularDetalleReporte(lista, itemsRaw);
 
     const wb = new ExcelJS.Workbook();
@@ -2433,6 +2451,11 @@ router.get('/sesiones-conteo/:id/excel', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
 
 
 
