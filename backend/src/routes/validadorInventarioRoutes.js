@@ -1134,15 +1134,23 @@ function calcularDetalleReporte(lista, items) {
     const esAgregado = it.origen === 'agregado';
     const existenciaInicial = esAgregado ? 0 : Number(it.existencia_siis);
 
+    // Referencia de SIIS contra la que se compara:
+    //  - Lista CON sesión y ABIERTA: el Excel de la sesión se sube una vez y ya no
+    //    se mueve, así que la existencia "actual" es la del snapshot de la lista
+    //    (los campos *_actual se mantienen por compatibilidad y valen igual que
+    //    los *_inicial).
+    //  - Lista SIN sesión (anterior al modelo de sesiones) o ya CERRADA: se
+    //    conserva el cálculo original (existencia en vivo / congelada al cerrar)
+    //    para no alterar resultados históricos.
+    const referenciaUnica = lista.estado !== 'cerrada' && lista.sesion_id !== null && lista.sesion_id !== undefined;
     const existenciaActual = esAgregado
       ? 0
-      : (lista.estado === 'cerrada'
-        ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
-        : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null));
+      : (referenciaUnica
+        ? existenciaInicial
+        : (lista.estado === 'cerrada'
+          ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
+          : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null)));
 
-    // Un ítem agregado a mano no existe en el inventario, así que el cruce en
-    // vivo no devuelve nada: su existencia esperada es la del snapshot (0),
-    // no "desconocida" — si no, nunca mostraría el sobrante.
     const existenciaActualEfectiva = existenciaActual;
 
     // Ajuste por cambios de lote / referencias cruzadas: lo que el sistema
@@ -1676,7 +1684,7 @@ router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
   try {
     const bodega = (req.query.bodega || '').toUpperCase();
     const { rows } = await pool.query(
-      `SELECT li.*, lc.tipo, lc.criterio, lc.estado, lc.creado_en AS conteo_creado_en, lc.cerrado_en AS conteo_cerrado_en
+      `SELECT li.*, lc.sesion_id, lc.tipo, lc.criterio, lc.estado, lc.creado_en AS conteo_creado_en, lc.cerrado_en AS conteo_cerrado_en
        FROM listas_conteo_items li
        JOIN listas_conteo lc ON lc.id = li.lista_id
        WHERE li.codigo = $1 AND ($2 = '' OR lc.bodega = $2)
@@ -1688,8 +1696,8 @@ router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
       const existenciaActual = it.origen === 'agregado'
         ? 0
         : (it.estado === 'cerrada'
-          ? (it.existencia_siis_cierre !== null ? Number(it.existencia_siis_cierre) : null)
-          : null);
+          ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
+          : (it.sesion_id !== null && it.sesion_id !== undefined ? Number(it.existencia_siis) : null));
       const diferencia = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
       return {
         lista_id: it.lista_id, tipo: it.tipo, criterio: it.criterio, estado: it.estado,
@@ -2451,6 +2459,9 @@ router.get('/sesiones-conteo/:id/excel', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
 
 
 
