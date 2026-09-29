@@ -121,20 +121,6 @@ function getTipoDiferencia(it) {
   return fueActualizadoDespuesDeContar(it) ? 'actualizacion' : 'real';
 }
 
-// Mismo orden que aplica el backend a las listas de conteo: agregados a mano
-// primero; luego alfabético por nombre y, si se repite, vencimiento → lote → código → id. Así un ítem
-// agregado a mano cae en su lugar de inmediato y no cambia al reabrir la lista.
-const _cmpTxt = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), 'es', { sensitivity: 'base', numeric: true });
-function compararItemsLista(a, b) {
-  // Los productos/lotes agregados a mano van SIEMPRE de primeros.
-  return ((b.origen === 'agregado') - (a.origen === 'agregado'))
-    || _cmpTxt(a.nombre, b.nombre)
-    || _cmpTxt(a.fecha_vencimiento, b.fecha_vencimiento)
-    || _cmpTxt(a.lote, b.lote)
-    || _cmpTxt(a.codigo, b.codigo)
-    || (Number(a.id) - Number(b.id));
-}
-
 export default function ValidadorInventario() {
   const { puede, isEditor, isAdmin } = useContext(AuthContext);
   const puedeEditarContado = isEditor || isAdmin; // solo editor/admin modifican cantidades ya guardadas
@@ -912,6 +898,7 @@ function SesionesConteo({ bodega, setBodega, BODEGAS, isEditor, isAdmin, inputSt
   const [subiendo, setSubiendo] = useState(false);
   const [alerta, setAlerta] = useState(null);
   const inputNueva = useRef(null);
+  const inputRefrescar = useRef(null);
 
   const fmtFechaHora = (f) => f ? new Date(f).toLocaleString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
   const hayActiva = sesiones.some(x => x.estado === 'activa');
@@ -1155,6 +1142,10 @@ function SesionesConteo({ bodega, setBodega, BODEGAS, isEditor, isAdmin, inputSt
                 <button onClick={descargarExcel} style={btn(false)}>⬇️ Descargar Excel</button>
                 {activa && isEditor && (
                   <>
+                    <input ref={inputRefrescar} type="file" accept=".xls,.xlsx" onChange={(e) => subirExcel(e, s.id)} style={{ display: 'none' }} id="input-excel-sesion-refrescar" />
+                    <label htmlFor="input-excel-sesion-refrescar" title="Sube un Excel más reciente de la misma bodega sin perder lo ya contado" style={btn(false)}>
+                      🔄 {subiendo ? 'Procesando…' : 'Actualizar Excel'}
+                    </label>
                     <button onClick={archivarSesion} style={{ ...btn(false), color: '#f87171', borderColor: '#5c2626' }}>🗄️ Archivar sesión</button>
                   </>
                 )}
@@ -1308,6 +1299,10 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
   // ── Novedad por fila (Sobrante/Faltante automático; Referencia cruzada / Cambio
   // de lote abren un mini-formulario inline en esa misma fila) ──
   const [novedadAbierta, setNovedadAbierta] = useState(null); // { itemId, tipo: 'referencia'|'lote', esOrigen }
+  // ── Validación de pendientes al "Guardar" (documentos de Egreso/Ingreso) ────
+  const [soloPendientes, setSoloPendientes] = useState(false);
+  const [modalGuardar, setModalGuardar] = useState(null); // { pendientes } | { pendientes: 0 } cuando ya se puede generar
+  const [generandoDoc, setGenerandoDoc] = useState('');
   const [busquedaContraparte, setBusquedaContraparte] = useState('');
   const [contraparteId, setContraparteId] = useState('');
   const [cantidadNovedad, setCantidadNovedad] = useState('');
@@ -1481,12 +1476,14 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
     setBusquedaLista('');
     setSoloNoCuadra(false);
     setNovedadAbierta(null);
+    setSoloPendientes(false);
+    setModalGuardar(null);
     setCruces([]);
     setReporteFinal(null);
     setMostrarReporteFinal(false);
     try {
       const res = await api.get(`/validador-inventario/listas-conteo/${id}`);
-      setListaActual({ ...res.data, items: [...(res.data.items || [])].sort(compararItemsLista) });
+      setListaActual(res.data);
       setVistaInterna('detalle');
       cargarCruces(id);
       cargarReporte(id); // Estado/Novedad/SIIS actual/Diferencias dependen de esto: se carga de una vez.
@@ -1513,7 +1510,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
         fecha_vencimiento: formAgregar.fecha_vencimiento.trim(), costo_unitario: formAgregar.costo_unitario || undefined,
         conteo_1: formAgregar.conteo_1 === '' ? undefined : parseNumCO(formAgregar.conteo_1),
       });
-      setListaActual(prev => ({ ...prev, items: [...prev.items, res.data].sort(compararItemsLista) }));
+      setListaActual(prev => ({ ...prev, items: [...prev.items, res.data] }));
       setFormAgregar({ codigo: '', nombre: '', lote: '', fecha_vencimiento: '', costo_unitario: '', conteo_1: '' });
       setMostrarFormAgregar(false);
       await cargarReporte(listaActual.id);
@@ -1539,7 +1536,40 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
     }
   }
 
-  // ── Novedad "Referencia cruzada" / "Cambio de lote" — se abre desde el
+  // Botón "Guardar": antes de poder generar los documentos de Egreso/Ingreso,
+  // valida que no queden ítems sin contar en toda la lista.
+  function abrirModalGuardar() {
+    const pendientes = listaActual.items.filter(it => {
+      const d = reporte?.items.find(r => r.id === it.id)?.diferencia_cantidad_actual;
+      return d === null || d === undefined;
+    }).length;
+    setModalGuardar({ pendientes });
+  }
+  function aceptarModalPendientes() {
+    setModalGuardar(null);
+    setSoloPendientes(true);
+    setSoloNoCuadra(false);
+    setBusquedaLista('');
+  }
+  async function descargarDocumentoAjuste(tipo) {
+    setGenerandoDoc(tipo);
+    try {
+      const url = `/validador-inventario/listas-conteo/${listaActual.id}/documento-${tipo}`;
+      const res = await api.get(url, { responseType: 'blob' });
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = blobUrl; a.download = `documento_${tipo}_lista${listaActual.id}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      let msg = e.message;
+      if (e.response?.data instanceof Blob) { try { msg = JSON.parse(await e.response.data.text()).error || msg; } catch (_) { /* se deja e.message */ } }
+      alert(`Error generando el documento de ${tipo === 'egreso' ? 'Egreso' : 'Ingreso'}: ` + msg);
+    }
+    setGenerandoDoc('');
+  }
+
+  // Novedad "Referencia cruzada" / "Cambio de lote" — se abre desde el
   // desplegable de la fila. La fila donde se abrió decide su rol automáticamente:
   // Faltante = origen (de donde "salió"), Sobrante = destino (a donde "llegó").
   // Igual que antes, esto neutraliza ambas diferencias en la cantidad cruzada.
@@ -1735,7 +1765,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
 
   // Solo un admin puede reabrir un conteo ya cerrado.
   async function reabrirLista() {
-    if (!window.confirm('¿Reabrir esta lista de conteo? Volverá a quedar editable.')) return;
+    if (!window.confirm('¿Reabrir esta lista de conteo? Volverá a quedar editable y usará la existencia de SIIS en vivo, no la que se congeló al cerrarla.')) return;
     setCerrando(true);
     try {
       const res = await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/reabrir`);
@@ -2026,9 +2056,13 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
         const dif = repPorId.get(it.id)?.diferencia_cantidad_actual;
         if (dif === null || dif === undefined || Number(dif) === 0) return false;
       }
+      if (soloPendientes) {
+        const dif = repPorId.get(it.id)?.diferencia_cantidad_actual;
+        if (dif !== null && dif !== undefined) return false;
+      }
       return true;
     });
-    const hayFiltroLista = terminosBusqueda.length > 0 || soloNoCuadra;
+    const hayFiltroLista = terminosBusqueda.length > 0 || soloNoCuadra || soloPendientes;
 
     return (
       <div>
@@ -2062,6 +2096,11 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
             <button onClick={() => cargarReporte(l.id)} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
               📊 Ver reporte de diferencias
             </button>
+            {abierta && (
+              <button onClick={abrirModalGuardar} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                💾 Guardar
+              </button>
+            )}
             {reporte && (
               <button onClick={() => descargarArchivo('reporte')} disabled={!!descargando} style={{ background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' }}>
                 📥 {descargando === 'reporte' ? 'Generando…' : 'Reporte Excel'}
@@ -2166,7 +2205,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
             ))}
           </div>
           <p style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 18 }}>
-            Diferencia = conteo menos la existencia del Excel de SIIS de esta sesión (ajustada por cambios de lote / referencias cruzadas). El Conteo 2 solo aplica cuando el Conteo 1 no cuadra y, si existe, es el definitivo.
+            "Inicial" = existencia SIIS de cuando se creó el conteo. "Actual" = {abierta ? 'existencia SIIS en vivo ahora mismo (la bodega sigue operando)' : 'existencia SIIS congelada al cerrar el conteo'}. La diferencia oficial es la de "actual".
           </p>
           </>
         )}
@@ -2216,10 +2255,59 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
             />
             ⚠️ Solo lo que no cuadra
           </label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input
+              type="checkbox"
+              checked={soloPendientes}
+              onChange={(e) => {
+                const marcado = e.target.checked;
+                setSoloPendientes(marcado);
+                if (marcado && !reporte) cargarReporte(l.id);
+              }}
+            />
+            🕓 Solo pendientes por contar
+          </label>
           <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
             Mostrando <strong>{itemsVisibles.length}</strong> de {l.items.length}
           </span>
         </div>
+
+        {modalGuardar && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+            <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, padding: 22, width: 420, maxWidth: '90vw' }}>
+              {modalGuardar.pendientes > 0 ? (
+                <>
+                  <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>⚠️ Hay ítems sin contar</div>
+                  <p style={{ fontSize: 13, color: 'var(--t-text-secondary)', marginBottom: 18 }}>
+                    Todavía hay <strong>{modalGuardar.pendientes}</strong> ítem(s) pendientes por contar en esta lista. Cuéntalos antes de generar los documentos de ajuste.
+                  </p>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <button onClick={() => setModalGuardar(null)} style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, color: 'var(--t-text-muted)', cursor: 'pointer' }}>Cancelar</button>
+                    <button onClick={aceptarModalPendientes} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Aceptar</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>✅ Todo contado</div>
+                  <p style={{ fontSize: 13, color: 'var(--t-text-secondary)', marginBottom: 18 }}>
+                    Genera los documentos de ajuste: Ingreso con los sobrantes, Egreso con los faltantes (según la diferencia actual de cada ítem).
+                  </p>
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+                    <button onClick={() => descargarDocumentoAjuste('egreso')} disabled={!!generandoDoc} style={{ flex: 1, background: 'var(--t-bg-sidebar)', border: '1px solid #5c2626', borderRadius: 6, padding: '10px 12px', fontSize: 13, color: '#f87171', cursor: 'pointer' }}>
+                      📤 {generandoDoc === 'egreso' ? 'Generando…' : 'Documento de Egreso'}
+                    </button>
+                    <button onClick={() => descargarDocumentoAjuste('ingreso')} disabled={!!generandoDoc} style={{ flex: 1, background: 'var(--t-bg-sidebar)', border: '1px solid #1e4a7a', borderRadius: 6, padding: '10px 12px', fontSize: 13, color: '#3b82f6', cursor: 'pointer' }}>
+                      📥 {generandoDoc === 'ingreso' ? 'Generando…' : 'Documento de Ingreso'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button onClick={() => setModalGuardar(null)} style={{ background: 'none', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, color: 'var(--t-text-muted)', cursor: 'pointer' }}>Cerrar</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         <style>{`
           .fila-lista-conteo:hover { background: rgba(250, 204, 21, 0.28) !important; }
@@ -2228,7 +2316,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                {['Código', 'Nombre', 'Cuenta', 'Grupo', 'Subgrupo', 'Presentación', 'Lote', 'F. Venc.', 'Costo Unit.', 'SIIS', 'Conteo 1', 'Dif. Conteo 1', 'Conteo 2', 'Dif. Conteo 2', 'Diferencia', 'Estado', 'Novedad', 'Motivo'].map(h => (
+                {['Código', 'Nombre', 'Cuenta', 'Grupo', 'Subgrupo', 'Presentación', 'Lote', 'F. Venc.', 'Costo Unit.', 'SIIS inicial', 'SIIS actual', 'Conteo 1', 'Conteo 2', 'Diferencia (inicial)', 'Diferencia (actual)', 'Estado', 'Novedad', 'Motivo'].map(h => (
                   <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -2236,29 +2324,6 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
             <tbody>
               {itemsVisibles.map(item => {
                 const rep = repPorId.get(item.id);
-                // Diferencia de CADA conteo contra SIIS (inicial y actual). Usa la misma
-                // base que la diferencia oficial: existencia SIIS + ajuste por cruces.
-                // Existencia SIIS realmente usada en la diferencia: en listas con sesión abiertas es la
-                // del Excel de la sesión; en listas sin sesión o cerradas puede ser la de cierre / en vivo.
-                const siisEfectivo = rep ? (rep.existencia_siis_actual ?? rep.existencia_siis_inicial) : null;
-                const difDeConteo = (conteo) => {
-                  if (!rep || conteo === null || conteo === undefined || conteo === '') return null;
-                  const esperado = Number(siisEfectivo) + Number(rep.ajuste_cruce || 0);
-                  return Number((Number(conteo) - esperado).toFixed(3));
-                };
-                const difC1 = difDeConteo(item.conteo_1);
-                const difC2 = difDeConteo(item.conteo_2);
-                const tieneC2 = item.conteo_2 !== null && item.conteo_2 !== undefined;
-                const celdaDifConteo = (d, esDefinitivo, tituloConteo) => {
-                  if (d === null) return <span style={{ color: 'var(--t-text-muted)' }}>—</span>;
-                  return (
-                    <div style={{ fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap', lineHeight: 1.35 }}
-                      title={`${tituloConteo} menos la existencia del Excel de SIIS de esta sesión (ajustada por cambios de lote / referencias cruzadas)${esDefinitivo ? ' · Es el conteo definitivo' : ''}`}>
-                      <span style={{ color: d === 0 ? '#4ade80' : '#f87171', fontWeight: 600 }}>{d > 0 ? '+' : ''}{fmtNum2(d)}</span>
-                      {esDefinitivo && tieneC2 && <div style={{ fontSize: 9, color: '#38bdf8', fontWeight: 600 }}>✓ definitivo</div>}
-                    </div>
-                  );
-                };
                 const campoInput = (campo, valorGuardado, guardadoPor) => {
                   const key = `${item.id}_${campo}`;
                   const yaTieneValor = valorGuardado !== null && valorGuardado !== undefined;
@@ -2296,7 +2361,6 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                 const diferenciaItem = rep ? rep.diferencia_cantidad_actual : null;
                 const sinDiferencia = diferenciaItem === null || diferenciaItem === undefined || diferenciaItem === 0;
                 const novedadFilaActiva = novedadAbierta && novedadAbierta.itemId === item.id ? novedadAbierta : null;
-                const crucesItem = cruces.filter(c => String(c.item_origen_id) === String(item.id) || String(c.item_destino_id) === String(item.id));
                 return (
                   <React.Fragment key={item.id}>
                   <tr className="fila-lista-conteo" style={{ borderBottom: '1px solid #1a2234', background: filaResaltada === item.id ? 'rgba(59,130,246,0.15)' : (item.origen === 'agregado' ? 'rgba(56,189,248,0.06)' : undefined), transition: 'background 0.3s' }}>
@@ -2353,12 +2417,15 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                     </td>
                     <td style={{ padding: '6px 8px', color: 'var(--t-text-secondary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtPesos(item.costo_unitario)}</td>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
-                      {fmtNum2(siisEfectivo !== null ? siisEfectivo : item.existencia_siis)}
-                      {rep && rep.existencia_siis_actual !== null && rep.existencia_siis_actual !== undefined && Number(rep.existencia_siis_actual) !== Number(rep.existencia_siis_inicial) ? (
-                        <div style={{ fontSize: 10, color: 'var(--t-text-muted)', whiteSpace: 'nowrap' }} title="Esta lista compara contra una existencia distinta a la del momento en que se creó (lista sin sesión o ya cerrada)">
-                          inicial: {fmtNum2(rep.existencia_siis_inicial)}
+                      {fmtNum2(item.existencia_siis)}
+                      {rep && rep.ajuste_cruce ? (
+                        <div style={{ fontSize: 10, color: rep.ajuste_cruce > 0 ? '#4ade80' : '#f87171', whiteSpace: 'nowrap' }} title="Ajuste por cambio de lote / referencia cruzada registrado en esta lista">
+                          🔀 {rep.ajuste_cruce > 0 ? '+' : ''}{fmtNum2(rep.ajuste_cruce)}
                         </div>
                       ) : null}
+                    </td>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
+                      {rep && rep.existencia_siis_actual !== null ? fmtNum2(rep.existencia_siis_actual) : <span style={{ color: 'var(--t-text-muted)' }}>—</span>}
                       {rep && rep.ajuste_cruce ? (
                         <div style={{ fontSize: 10, color: rep.ajuste_cruce > 0 ? '#4ade80' : '#f87171', whiteSpace: 'nowrap' }} title="Ajuste por cambio de lote / referencia cruzada registrado en esta lista">
                           🔀 {rep.ajuste_cruce > 0 ? '+' : ''}{fmtNum2(rep.ajuste_cruce)}
@@ -2366,12 +2433,21 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                       ) : null}
                     </td>
                     <td style={{ padding: '6px 8px' }}>{campoInput('conteo_1', item.conteo_1)}</td>
-                    <td style={{ padding: '6px 8px' }}>{celdaDifConteo(difC1, !tieneC2, 'Conteo 1')}</td>
                     <td style={{ padding: '6px 8px' }}>
                       {campoInput('conteo_2', item.conteo_2)}
                       {rep?.requiere_reconteo && <div style={{ fontSize: 10, color: '#fbbf24', fontWeight: 600, marginTop: 2 }}>⚠️ Reconteo sugerido</div>}
                     </td>
-                    <td style={{ padding: '6px 8px' }}>{celdaDifConteo(difC2, true, 'Conteo 2')}</td>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
+                      {!rep || rep.diferencia_cantidad_inicial === null ? (
+                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
+                      ) : rep.diferencia_cantidad_inicial === 0 ? (
+                        <span style={{ color: '#4ade80', fontWeight: 600 }}>0</span>
+                      ) : (
+                        <span style={{ color: '#9ca3af', fontWeight: 500 }}>
+                          {rep.diferencia_cantidad_inicial > 0 ? '+' : ''}{fmtNum2(rep.diferencia_cantidad_inicial)} ({fmtPesos(rep.diferencia_valor_inicial)})
+                        </span>
+                      )}
+                    </td>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
                       {!rep || rep.diferencia_cantidad_actual === null ? (
                         <span style={{ color: 'var(--t-text-muted)' }}>—</span>
@@ -2384,27 +2460,8 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                       )}
                     </td>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                      {crucesItem.map(c => {
-                        const esOrigenC = String(c.item_origen_id) === String(item.id);
-                        const otroCodigo = esOrigenC ? c.destino_codigo : c.origen_codigo;
-                        const otroLote = (esOrigenC ? c.destino_lote : c.origen_lote) || 's/lote';
-                        const cantC = fmtNum2(c.cantidad);
-                        const esLote = c.tipo === 'lote';
-                        return (
-                          <div
-                            key={c.id}
-                            title={`${esLote ? 'Cambio de lote' : 'Referencia cruzada'}: ${esOrigenC ? 'salieron' : 'llegaron'} ${cantC} unidad(es) ${esOrigenC ? 'hacia' : 'desde'} ${otroCodigo} · lote ${otroLote}${c.motivo ? ' — ' + c.motivo : ''}`}
-                            style={{ color: esLote ? '#fbbf24' : '#c084fc', fontWeight: 700, fontSize: 11, marginBottom: 2 }}
-                          >
-                            {esLote
-                              ? `📦 Cambio de lote con ${otroLote}`
-                              : `🔀 Ref. cruzada con ${otroCodigo} (${otroLote})`}
-                            {' · '}{cantC} u.
-                          </div>
-                        );
-                      })}
                       {sinDiferencia ? (
-                        crucesItem.length === 0 && <span style={{ color: 'var(--t-text-muted)' }}>—</span>
+                        <span style={{ color: 'var(--t-text-muted)' }}>—</span>
                       ) : diferenciaItem > 0 ? (
                         <span style={{ color: '#3b82f6', fontWeight: 700 }}>🔵 Sobrante</span>
                       ) : (
@@ -3264,7 +3321,7 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
             ) : (
               <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
                 <thead>
-                  <tr>{['Conteo #', 'Criterio', 'Estado', 'Conteo 1', 'Conteo 2', 'SIIS', 'Diferencia', 'Motivo'].map(h => (
+                  <tr>{['Conteo #', 'Criterio', 'Estado', 'Conteo 1', 'Conteo 2', 'SIIS inicial', 'SIIS actual', 'Diferencia', 'Motivo'].map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                   ))}</tr>
                 </thead>
@@ -3277,6 +3334,7 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
                       <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.conteo_1 ?? '—'}</td>
                       <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.conteo_2 ?? '—'}</td>
                       <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.existencia_siis_inicial}</td>
+                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{h.existencia_siis_actual ?? '—'}</td>
                       <td style={{ padding: '4px 6px', fontFamily: 'monospace', color: h.diferencia ? '#f87171' : '#4ade80' }}>{h.diferencia ?? '—'}</td>
                       <td style={{ padding: '4px 6px' }}>{h.motivo_diferencia || '—'}</td>
                     </tr>
@@ -3307,7 +3365,7 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
               </div>
               {consolidado.items.length > 0 && (
                 <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                  <thead><tr>{['Conteo #', 'Código', 'Nombre', 'Definitivo', 'SIIS', 'Dif.'].map(h => (
+                  <thead><tr>{['Conteo #', 'Código', 'Nombre', 'Definitivo', 'SIIS actual', 'Dif.'].map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '4px 6px', color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                   ))}</tr></thead>
                   <tbody>
@@ -3336,32 +3394,3 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
