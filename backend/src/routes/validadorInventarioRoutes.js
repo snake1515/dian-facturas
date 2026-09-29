@@ -49,37 +49,82 @@ router.get('/', authMiddleware, async (req, res) => {
 // Sube o actualiza el Excel del sistema (SIIS). UPSERT por (bodega, codigo, lote,
 // fecha_vencimiento): solo actualiza nombre y existencia_sistema — NUNCA toca
 // cantidad_fisica/contado, así no se pierde el avance de lo ya contado.
+// Sube (o refresca) el Excel de SIIS DENTRO de una sesión de conteo. Reemplaza
+// al viejo modelo de "inventario vivo por bodega": ahora cada fila queda
+// atada a una sesión (sesion_id), así que subir un Excel nuevo nunca pisa los
+// datos de una sesión distinta, aunque sea de la misma bodega.
 router.post('/importar', authMiddleware, async (req, res) => {
-  const { bodega, items } = req.body;
-  if (!bodega || !Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: 'bodega e items son requeridos' });
+  const { items, nombre_archivo } = req.body;
+  let sesion_id = req.body.sesion_id;
+  const bodegaNueva = String(req.body.bodega || '').toUpperCase().trim();
+  if ((!sesion_id && !bodegaNueva) || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items y (sesion_id o bodega) son requeridos' });
   }
-  const bod = String(bodega).toUpperCase();
-
-  // Ítems válidos (con código) tal como quedarán guardados, para luego saber
-  // cuáles NO vinieron en esta carga y marcarlos como sin_existencias
-  const clavesCargadas = items
-    .filter(it => it.codigo)
-    .map(it => `${truncar(it.codigo, 50)}|${truncar(it.lote, 100)}|${truncar(it.fecha_vencimiento, 20)}`);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    let sesion;
+    if (sesion_id) {
+      // Refrescar el Excel de una sesión que ya está abierta
+      const { rows: sesionRows } = await client.query(
+        `SELECT * FROM sesiones_conteo WHERE id = $1 AND estado = 'activa' FOR UPDATE`,
+        [sesion_id]
+      );
+      if (!sesionRows.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'La sesión no existe o ya está archivada' });
+      }
+      sesion = sesionRows[0];
+      if (bodegaNueva && bodegaNueva !== sesion.bodega) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `El Excel es de la bodega ${bodegaNueva}, pero esta sesión es de la bodega ${sesion.bodega}` });
+      }
+    } else {
+      // Abrir sesión nueva: se crea aquí mismo, en la misma transacción que la
+      // carga del Excel — si el Excel falla, no queda una sesión vacía.
+      if (!req.user || !['admin', 'editor'].includes(req.user.rol)) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Solo un editor o administrador puede abrir una sesión de conteo' });
+      }
+      const { rows: activa } = await client.query(
+        `SELECT id FROM sesiones_conteo WHERE bodega = $1 AND estado = 'activa'`, [bodegaNueva]
+      );
+      if (activa.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Ya hay una sesión activa para la bodega ${bodegaNueva} (#${activa[0].id}). Archívala antes de abrir una nueva.` });
+      }
+      const { rows: nueva } = await client.query(
+        `INSERT INTO sesiones_conteo (bodega, creado_por) VALUES ($1, $2) RETURNING *`,
+        [bodegaNueva, req.user.id]
+      );
+      sesion = nueva[0];
+      sesion_id = sesion.id;
+    }
+    const bod = sesion.bodega;
 
-    // Claves que YA existían en esta bodega antes de esta carga — lo que no
+    // Ítems válidos (con código) tal como quedarán guardados, para luego saber
+    // cuáles NO vinieron en esta carga y marcarlos como sin_existencias
+    const clavesCargadas = items
+      .filter(it => it.codigo)
+      .map(it => `${truncar(it.codigo, 50)}|${truncar(it.lote, 100)}|${truncar(it.fecha_vencimiento, 20)}`);
+
+    // Claves que YA existían en esta sesión antes de esta carga — lo que no
     // esté aquí pero sí en clavesCargadas es "nuevo" (para la alerta de abajo).
     const { rows: existentesRows } = await client.query(
-      `SELECT (codigo || '|' || lote || '|' || fecha_vencimiento) AS clave FROM validador_inventario WHERE bodega = $1`,
-      [bod]
+      `SELECT (codigo || '|' || lote || '|' || fecha_vencimiento) AS clave FROM validador_inventario WHERE sesion_id = $1`,
+      [sesion_id]
     );
     const clavesExistentes = new Set(existentesRows.map(r => r.clave));
 
+    let valorTotal = 0;
     for (const it of items) {
       if (!it.codigo) continue;
+      valorTotal += Number(it.costo_total || (Number(it.existencia_sistema || 0) * Number(it.costo_unitario || 0)));
       await client.query(
-        `INSERT INTO validador_inventario (bodega, codigo, nombre, lote, fecha_vencimiento, existencia_sistema, costo_unitario, costo_total, sin_existencias, sin_existencias_desde, ultima_carga)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, NULL, NOW())
-         ON CONFLICT (bodega, codigo, lote, fecha_vencimiento)
+        `INSERT INTO validador_inventario (sesion_id, bodega, codigo, nombre, lote, fecha_vencimiento, existencia_sistema, costo_unitario, costo_total, sin_existencias, sin_existencias_desde, ultima_carga)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, NULL, NOW())
+         ON CONFLICT (sesion_id, codigo, lote, fecha_vencimiento)
          DO UPDATE SET
            nombre                = EXCLUDED.nombre,
            existencia_sistema    = EXCLUDED.existencia_sistema,
@@ -89,11 +134,11 @@ router.post('/importar', authMiddleware, async (req, res) => {
            sin_existencias_desde = NULL,
            ultima_carga          = NOW(),
            actualizado_en        = NOW()`,
-        [bod, truncar(it.codigo, 50), truncar(it.nombre, 300), truncar(it.lote, 100), truncar(it.fecha_vencimiento, 20), it.existencia_sistema || 0, it.costo_unitario || 0, it.costo_total || 0]
+        [sesion_id, bod, truncar(it.codigo, 50), truncar(it.nombre, 300), truncar(it.lote, 100), truncar(it.fecha_vencimiento, 20), it.existencia_sistema || 0, it.costo_unitario || 0, it.costo_total || 0]
       );
     }
 
-    // Marca como sin_existencias los ítems de esta bodega que NO vinieron en
+    // Marca como sin_existencias los ítems de esta SESIÓN que NO vinieron en
     // el Excel recién cargado (no se borran, conservan su conteo/historial).
     // sin_existencias_desde solo se fija si aún no tenía fecha, así conserva
     // el momento exacto en que desapareció por primera vez.
@@ -102,31 +147,31 @@ router.post('/importar', authMiddleware, async (req, res) => {
         `UPDATE validador_inventario
          SET sin_existencias = true,
              sin_existencias_desde = COALESCE(sin_existencias_desde, NOW())
-         WHERE bodega = $1
+         WHERE sesion_id = $1
            AND (codigo || '|' || lote || '|' || fecha_vencimiento) <> ALL($2::text[])`,
-        [bod, clavesCargadas]
+        [sesion_id, clavesCargadas]
       );
     }
 
     // Productos/lotes que se habían agregado a mano en alguna lista de conteo
-    // y que AHORA sí vienen en el Excel: el ajuste ya se reflejó en SIIS, así
-    // que dejan de aparecer como pendientes de inclusión.
+    // DE ESTA MISMA SESIÓN y que AHORA sí vienen en el Excel: el ajuste ya se
+    // reflejó en SIIS, así que dejan de aparecer como pendientes de inclusión.
     await client.query(
       `UPDATE listas_conteo_items li
        SET incluido_en_siis = true
        FROM listas_conteo lc
-       WHERE lc.id = li.lista_id AND lc.bodega = $1
+       WHERE lc.id = li.lista_id AND lc.sesion_id = $1
          AND li.origen = 'agregado' AND li.incluido_en_siis = false
          AND EXISTS (
            SELECT 1 FROM validador_inventario vi
-           WHERE vi.bodega = lc.bodega AND vi.codigo = li.codigo
+           WHERE vi.sesion_id = $1 AND vi.codigo = li.codigo
              AND COALESCE(vi.lote,'') = COALESCE(li.lote,'')
          )`,
-      [bod]
+      [sesion_id]
     );
 
     // Ítems (código+lote+fecha) que son NUEVOS en esta carga — no estaban
-    // antes en esta bodega — para avisar cuáles llegan sin cuenta contable o
+    // antes en esta sesión — para avisar cuáles llegan sin cuenta contable o
     // sin grupo de conteo asignado y así no se cuelen sin clasificar.
     const clavesNuevas = clavesCargadas.filter(c => !clavesExistentes.has(c));
     let nuevosSinClasificar = { total_nuevos: clavesNuevas.length, sin_cuenta: [], sin_grupo_conteo: [] };
@@ -136,8 +181,8 @@ router.post('/importar', authMiddleware, async (req, res) => {
          FROM validador_inventario vi
          LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
          LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
-         WHERE vi.bodega = $1 AND (vi.codigo || '|' || vi.lote || '|' || vi.fecha_vencimiento) = ANY($2::text[])`,
-        [bod, clavesNuevas]
+         WHERE vi.sesion_id = $1 AND (vi.codigo || '|' || vi.lote || '|' || vi.fecha_vencimiento) = ANY($2::text[])`,
+        [sesion_id, clavesNuevas]
       );
       const sinCuenta = new Set(), sinGrupo = new Set();
       for (const r of nuevosRows) {
@@ -148,6 +193,15 @@ router.post('/importar', authMiddleware, async (req, res) => {
       nuevosSinClasificar.sin_grupo_conteo = [...sinGrupo];
     }
 
+    // Guarda el Excel (ya parseado) colgado en la sesión, para poder
+    // descargarlo después, junto con el valor total en dinero.
+    await client.query(
+      `UPDATE sesiones_conteo
+          SET excel_datos = $1, excel_nombre_archivo = $2, excel_subido_por = $3, excel_subido_en = NOW(), valor_total = $4
+        WHERE id = $5`,
+      [JSON.stringify(items), truncar(nombre_archivo || 'excel_siis.xlsx', 255), req.user.id, valorTotal, sesion_id]
+    );
+
     await client.query('COMMIT');
 
     const { rows } = await pool.query(
@@ -157,11 +211,11 @@ router.post('/importar', authMiddleware, async (req, res) => {
        LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
        LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
        LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
-       WHERE vi.bodega = $1
+       WHERE vi.sesion_id = $1
        ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`,
-      [bod]
+      [sesion_id]
     );
-    res.json({ items: rows, nuevos_sin_clasificar: nuevosSinClasificar });
+    res.json({ sesion_id, items: rows, nuevos_sin_clasificar: nuevosSinClasificar, valor_total: valorTotal });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error al importar validador de inventario:', err);
@@ -619,8 +673,8 @@ router.patch('/clasificacion-conteo/:codigo', authMiddleware, editorOrAdmin, asy
 // Con 'grupo': lista de subgrupos dentro de ese grupo (incluye "SIN SUBGRUPO").
 router.get('/clasificacion-conteo/opciones', authMiddleware, async (req, res) => {
   try {
-    const bodega = (req.query.bodega || '').toUpperCase();
-    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const bodega = parseInt(req.query.sesion_id, 10); // id de la sesión (se conserva el nombre de la variable)
+    if (!bodega) return res.status(400).json({ error: 'sesion_id requerido' });
     const grupo = req.query.grupo;
 
     if (!grupo) {
@@ -628,7 +682,7 @@ router.get('/clasificacion-conteo/opciones', authMiddleware, async (req, res) =>
         `SELECT cc.grupo AS valor, COUNT(*)::int AS items
          FROM validador_inventario vi
          JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
-         WHERE vi.bodega = $1 AND cc.grupo IS NOT NULL AND cc.grupo <> ''
+         WHERE vi.sesion_id = $1 AND cc.grupo IS NOT NULL AND cc.grupo <> ''
          GROUP BY cc.grupo ORDER BY cc.grupo`,
         [bodega]
       );
@@ -639,7 +693,7 @@ router.get('/clasificacion-conteo/opciones', authMiddleware, async (req, res) =>
       `SELECT COALESCE(NULLIF(cc.subgrupo, ''), 'SIN SUBGRUPO') AS valor, COUNT(*)::int AS items
        FROM validador_inventario vi
        JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
-       WHERE vi.bodega = $1 AND cc.grupo = $2
+       WHERE vi.sesion_id = $1 AND cc.grupo = $2
        GROUP BY 1 ORDER BY 1`,
       [bodega, grupo]
     );
@@ -797,32 +851,32 @@ function diasParaVencer(fechaStr) {
 // ítems que caerían en cada uno), para poblar el selector en el frontend.
 router.get('/listas-conteo/opciones', authMiddleware, async (req, res) => {
   try {
-    const bodega = (req.query.bodega || '').toUpperCase();
+    const sesionId = parseInt(req.query.sesion_id, 10);
     const tipo = req.query.tipo;
-    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    if (!sesionId) return res.status(400).json({ error: 'sesion_id requerido' });
 
     let sql;
     if (tipo === 'cuenta_contable') {
       sql = `SELECT COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS valor, COUNT(*)::int AS items
              FROM validador_inventario vi
              LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
-             WHERE vi.bodega = $1
+             WHERE vi.sesion_id = $1
              GROUP BY 1 ORDER BY 1`;
     } else if (tipo === 'grupo_inventario') {
       sql = `SELECT grupo_inventario(vi.codigo) AS valor, COUNT(*)::int AS items
              FROM validador_inventario vi
-             WHERE vi.bodega = $1
+             WHERE vi.sesion_id = $1
              GROUP BY 1 ORDER BY 1`;
     } else if (tipo === 'presentacion') {
       sql = `SELECT COALESCE(pi.presentacion, 'SIN PRESENTACIÓN') AS valor, COUNT(*)::int AS items
              FROM validador_inventario vi
              LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
-             WHERE vi.bodega = $1
+             WHERE vi.sesion_id = $1
              GROUP BY 1 ORDER BY 1`;
     } else {
       return res.status(400).json({ error: "tipo debe ser 'cuenta_contable', 'grupo_inventario' o 'presentacion'" });
     }
-    const { rows } = await pool.query(sql, [bodega]);
+    const { rows } = await pool.query(sql, [sesionId]);
     res.json(rows);
   } catch (err) {
     console.error('Error al listar opciones de lista de conteo:', err);
@@ -839,10 +893,15 @@ router.get('/listas-conteo/opciones', authMiddleware, async (req, res) => {
 // para combinar VARIOS grupos/subgrupos en una sola lista (unión / OR entre
 // ellos) — esto es lo que usa el checklist multi-selección del formulario.
 router.post('/listas-conteo', authMiddleware, async (req, res) => {
-  const { bodega, tipo, criterio, subcriterio, criteriosGrupo, subclasificar_presentacion, conteo1_nombre, conteo2_nombre } = req.body;
-  if (!bodega || !TIPOS_LISTA.includes(tipo)) {
-    return res.status(400).json({ error: 'bodega y tipo válido son requeridos' });
+  const { sesion_id, tipo, criterio, subcriterio, criteriosGrupo, subclasificar_presentacion, conteo1_nombre, conteo2_nombre } = req.body;
+  if (!sesion_id || !TIPOS_LISTA.includes(tipo)) {
+    return res.status(400).json({ error: 'sesion_id y tipo válido son requeridos' });
   }
+  const { rows: sesionRows } = await pool.query(`SELECT * FROM sesiones_conteo WHERE id = $1 AND estado = 'activa'`, [sesion_id]);
+  if (!sesionRows.length) {
+    return res.status(400).json({ error: 'La sesión no existe o ya está archivada: abre una sesión nueva para crear listas' });
+  }
+  const bodega = sesionRows[0].bodega;
 
   const multiGrupos = tipo === 'grupo_conteo' && Array.isArray(criteriosGrupo) && criteriosGrupo.length > 0
     ? criteriosGrupo
@@ -867,16 +926,16 @@ router.post('/listas-conteo', authMiddleware, async (req, res) => {
     await client.query('BEGIN');
 
     const { rows: listaRows } = await client.query(
-      `INSERT INTO listas_conteo (bodega, tipo, criterio, subcriterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre, creado_por)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO listas_conteo (bodega, sesion_id, tipo, criterio, subcriterio, subclasificar_presentacion, conteo1_nombre, conteo2_nombre, creado_por)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [bod, tipo, criterioGuardado, subcriterioGuardado,
+      [bod, sesion_id, tipo, criterioGuardado, subcriterioGuardado,
        !!subclasificar_presentacion, truncar(conteo1_nombre, 100), truncar(conteo2_nombre, 100), req.user.id]
     );
     const lista = listaRows[0];
 
     let filtroSql = '';
-    const params = [bod];
+    const params = [sesion_id];
     if (multiGrupos && multiGrupos.length > 0) {
       const condiciones = [];
       for (const c of multiGrupos) {
@@ -919,14 +978,14 @@ router.post('/listas-conteo', authMiddleware, async (req, res) => {
        LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
        LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
        LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
-       WHERE vi.bodega = $1 AND vi.sin_existencias = false ${filtroSql}
+       WHERE vi.sesion_id = $1 AND vi.sin_existencias = false ${filtroSql}
        ${ordenSql}`,
       params
     );
 
     if (items.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'No hay ítems que cumplan ese criterio en esta bodega' });
+      return res.status(400).json({ error: 'No hay ítems que cumplan ese criterio en esta sesión' });
     }
 
     for (const it of items) {
@@ -954,8 +1013,11 @@ router.get('/listas-conteo', authMiddleware, async (req, res) => {
   try {
     const bodega = (req.query.bodega || '').toUpperCase();
     const params = [];
-    let where = '';
-    if (bodega) { where = 'WHERE lc.bodega = $1'; params.push(bodega); }
+    const cond = [];
+    if (bodega) { params.push(bodega); cond.push(`lc.bodega = $${params.length}`); }
+    if (req.query.sesion_id) { params.push(parseInt(req.query.sesion_id, 10)); cond.push(`lc.sesion_id = $${params.length}`); }
+    else if (req.query.sin_sesion === '1') cond.push('lc.sesion_id IS NULL'); // listas anteriores al modelo de sesiones
+    const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
     const { rows } = await pool.query(
       `SELECT lc.*,
               COUNT(li.id)::int AS total_items,
@@ -1122,9 +1184,10 @@ async function obtenerItemsConActual(lista, listaId) {
     `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
      FROM listas_conteo_items li
      LEFT JOIN validador_inventario vi
-       ON vi.bodega = $2 AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
+       ON vi.bodega = $2 AND vi.sesion_id IS NOT DISTINCT FROM $3::int
+          AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
      WHERE li.lista_id = $1`,
-    [listaId, lista.bodega]
+    [listaId, lista.bodega, lista.sesion_id ?? null]
   );
   return r.rows;
 }
@@ -1174,8 +1237,9 @@ router.post('/listas-conteo/:id/cerrar', authMiddleware, editorOrAdmin, async (r
        FROM validador_inventario vi
        WHERE li.lista_id = $1
          AND COALESCE(li.origen, 'snapshot') <> 'agregado'
-         AND vi.bodega = $2 AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento`,
-      [req.params.id, lista.bodega]
+         AND vi.bodega = $2 AND vi.sesion_id IS NOT DISTINCT FROM $3::int
+         AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento`,
+      [req.params.id, lista.bodega, lista.sesion_id ?? null]
     );
     // Los productos agregados a mano nunca existen en SIIS: se congelan en 0.
     await client.query(
@@ -1192,6 +1256,46 @@ router.post('/listas-conteo/:id/cerrar', authMiddleware, editorOrAdmin, async (r
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error al cerrar lista de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── POST /api/validador-inventario/listas-conteo/:id/reabrir ─────────────────
+// Solo un admin puede reabrir un conteo cerrado. Vuelve el estado a 'abierta'
+// y limpia el congelado de cierre (existencia_siis_cierre) de cada ítem, para
+// que el reporte vuelva a usar la existencia de SIIS en vivo, como en un
+// conteo abierto normal. No borra nada de lo ya contado (Conteo 1/2, motivos,
+// cruces): solo reabre la edición.
+router.post('/listas-conteo/:id/reabrir', authMiddleware, adminOnly, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: listaRows } = await client.query(
+      `SELECT * FROM listas_conteo WHERE id = $1 AND estado = 'cerrada' FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!listaRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Lista no encontrada o ya estaba abierta' });
+    }
+
+    await client.query(
+      `UPDATE listas_conteo_items SET existencia_siis_cierre = NULL WHERE lista_id = $1`,
+      [req.params.id]
+    );
+    const { rows } = await client.query(
+      `UPDATE listas_conteo
+          SET estado = 'abierta', reabierto_por = $1, reabierto_en = NOW()
+        WHERE id = $2 RETURNING *`,
+      [req.user.id, req.params.id]
+    );
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al reabrir lista de conteo:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   } finally {
     client.release();
@@ -1716,8 +1820,8 @@ router.post('/listas-conteo/:id/items', authMiddleware, async (req, res) => {
        LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
        LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
        LEFT JOIN presentaciones_inventario pi ON pi.codigo = vi.codigo
-       WHERE vi.bodega = $1 AND vi.codigo = $2 LIMIT 1`,
-      [lista.bodega, cod]
+       WHERE vi.bodega = $1 AND vi.sesion_id IS NOT DISTINCT FROM $3::int AND vi.codigo = $2 LIMIT 1`,
+      [lista.bodega, cod, lista.sesion_id ?? null]
     );
     const ref = refRows[0] || {};
 
@@ -2079,7 +2183,8 @@ router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
        WHERE lc.bodega = $1 AND li.origen = 'agregado' AND li.incluido_en_siis = false
          AND NOT EXISTS (
            SELECT 1 FROM validador_inventario vi
-           WHERE vi.bodega = lc.bodega AND vi.codigo = li.codigo
+           WHERE vi.bodega = lc.bodega AND vi.sesion_id IS NOT DISTINCT FROM lc.sesion_id
+             AND vi.codigo = li.codigo
              AND COALESCE(vi.lote,'') = COALESCE(li.lote,'')
          )
        ORDER BY lc.creado_en DESC`,
@@ -2092,5 +2197,235 @@ router.get('/pendientes-inclusion-siis', authMiddleware, async (req, res) => {
   }
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// SESIONES DE CONTEO
+// Una sesión = una auditoría de UNA bodega: se abre subiendo el Excel de SIIS
+// (queda guardado y descargable) y de ahí salen sus listas de conteo. Solo
+// puede haber una sesión activa por bodega; para empezar otra hay que archivar
+// la actual, y la nueva exige su propio Excel.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/validador-inventario/sesiones-conteo?bodega=FP ──────────────────
+router.get('/sesiones-conteo', authMiddleware, async (req, res) => {
+  try {
+    const bodega = (req.query.bodega || '').toUpperCase();
+    const params = [];
+    let where = '';
+    if (bodega) { where = 'WHERE s.bodega = $1'; params.push(bodega); }
+    const { rows } = await pool.query(
+      `SELECT s.id, s.bodega, s.estado, s.excel_nombre_archivo, s.excel_subido_en, s.valor_total,
+              s.creado_en, s.cerrado_en, uc.nombre AS creado_por_nombre,
+              (SELECT COUNT(*)::int FROM listas_conteo lc WHERE lc.sesion_id = s.id) AS total_listas,
+              (SELECT COUNT(*)::int FROM validador_inventario vi WHERE vi.sesion_id = s.id AND vi.sin_existencias = false) AS total_items
+       FROM sesiones_conteo s
+       LEFT JOIN usuarios uc ON uc.id = s.creado_por
+       ${where}
+       ORDER BY s.creado_en DESC`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar sesiones de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/sesiones-conteo ───────────────────────────
+// Abre una sesión vacía para una bodega. Después el frontend sube el Excel con
+// POST /importar { sesion_id, items }. Falla si ya hay una sesión activa.
+router.post('/sesiones-conteo', authMiddleware, editorOrAdmin, async (req, res) => {
+  try {
+    const bodega = String(req.body.bodega || '').toUpperCase().trim();
+    if (!bodega) return res.status(400).json({ error: 'bodega requerida' });
+    const { rows: activa } = await pool.query(
+      `SELECT id FROM sesiones_conteo WHERE bodega = $1 AND estado = 'activa'`, [bodega]
+    );
+    if (activa.length) {
+      return res.status(400).json({ error: `Ya hay una sesión activa para la bodega ${bodega} (#${activa[0].id}). Archívala antes de abrir una nueva.` });
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO sesiones_conteo (bodega, creado_por) VALUES ($1, $2) RETURNING *`,
+      [bodega, req.user.id]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Ya hay una sesión activa para esa bodega' });
+    console.error('Error al crear sesión de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/sesiones-conteo/:id ────────────────────────
+// Detalle: datos de la sesión, sus listas y el resumen por cuenta contable
+// ANTES (Excel subido) y DESPUÉS de ajustar (lo contado en las listas CERRADAS
+// de la sesión; lo no contado conserva el valor del Excel).
+router.get('/sesiones-conteo/:id', authMiddleware, async (req, res) => {
+  try {
+    const { rows: sRows } = await pool.query(
+      `SELECT s.id, s.bodega, s.estado, s.excel_nombre_archivo, s.excel_subido_en, s.valor_total,
+              s.creado_en, s.cerrado_en, uc.nombre AS creado_por_nombre
+       FROM sesiones_conteo s LEFT JOIN usuarios uc ON uc.id = s.creado_por
+       WHERE s.id = $1`, [req.params.id]
+    );
+    if (!sRows.length) return res.status(404).json({ error: 'Sesión no encontrada' });
+    const sesion = sRows[0];
+
+    const { rows: listas } = await pool.query(
+      `SELECT lc.id, lc.tipo, lc.criterio, lc.subcriterio, lc.estado, lc.creado_en, lc.cerrado_en,
+              COUNT(li.id)::int AS total_items
+       FROM listas_conteo lc LEFT JOIN listas_conteo_items li ON li.lista_id = lc.id
+       WHERE lc.sesion_id = $1 GROUP BY lc.id ORDER BY lc.creado_en DESC`, [req.params.id]
+    );
+
+    // Ítems del Excel de la sesión: antes = existencia × costo; después = lo
+    // contado (definitivo = Conteo 2 si existe, si no Conteo 1) en la lista
+    // cerrada más reciente que lo cubrió.
+    const { rows: porCuenta } = await pool.query(
+      `WITH base AS (
+         SELECT vi.codigo, vi.lote, vi.fecha_vencimiento, vi.existencia_sistema, vi.costo_unitario,
+                COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta
+         FROM validador_inventario vi
+         LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+         WHERE vi.sesion_id = $1 AND vi.sin_existencias = false
+       ), contados AS (
+         SELECT DISTINCT ON (li.codigo, li.lote, li.fecha_vencimiento)
+                li.codigo, li.lote, li.fecha_vencimiento, COALESCE(li.conteo_2, li.conteo_1) AS definitivo
+         FROM listas_conteo_items li JOIN listas_conteo lc ON lc.id = li.lista_id
+         WHERE lc.sesion_id = $1 AND lc.estado = 'cerrada' AND COALESCE(li.conteo_2, li.conteo_1) IS NOT NULL
+         ORDER BY li.codigo, li.lote, li.fecha_vencimiento, lc.cerrado_en DESC
+       )
+       SELECT b.cuenta,
+              SUM(b.existencia_sistema * b.costo_unitario)::float8 AS antes,
+              SUM(COALESCE(c.definitivo, b.existencia_sistema) * b.costo_unitario)::float8 AS despues
+       FROM base b
+       LEFT JOIN contados c ON c.codigo = b.codigo AND c.lote = b.lote AND c.fecha_vencimiento = b.fecha_vencimiento
+       GROUP BY b.cuenta`, [req.params.id]
+    );
+    // Productos/lotes agregados a mano que NO están en el Excel: antes = 0,
+    // después = lo contado × su costo.
+    const { rows: agregados } = await pool.query(
+      `SELECT cuenta, SUM(definitivo * costo_unitario)::float8 AS despues FROM (
+         SELECT DISTINCT ON (li.codigo, li.lote, li.fecha_vencimiento)
+                COALESCE(li.cuenta, 'SIN CLASIFICAR') AS cuenta, li.costo_unitario,
+                COALESCE(li.conteo_2, li.conteo_1) AS definitivo
+         FROM listas_conteo_items li JOIN listas_conteo lc ON lc.id = li.lista_id
+         WHERE lc.sesion_id = $1 AND lc.estado = 'cerrada' AND li.origen = 'agregado'
+           AND COALESCE(li.conteo_2, li.conteo_1) IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM validador_inventario vi WHERE vi.sesion_id = $1
+                           AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento)
+         ORDER BY li.codigo, li.lote, li.fecha_vencimiento, lc.cerrado_en DESC
+       ) x GROUP BY cuenta`, [req.params.id]
+    );
+
+    const mapa = new Map();
+    for (const r of porCuenta) mapa.set(r.cuenta, { cuenta: r.cuenta, antes: r.antes || 0, despues: r.despues || 0 });
+    for (const a of agregados) {
+      const f = mapa.get(a.cuenta) || { cuenta: a.cuenta, antes: 0, despues: 0 };
+      f.despues += a.despues || 0;
+      mapa.set(a.cuenta, f);
+    }
+    const resumen_cuentas = [...mapa.values()]
+      .map(f => ({ ...f, diferencia: f.despues - f.antes }))
+      .sort((a, b) => a.cuenta.localeCompare(b.cuenta, 'es'));
+    const total_antes = resumen_cuentas.reduce((t, f) => t + f.antes, 0);
+    const total_despues = resumen_cuentas.reduce((t, f) => t + f.despues, 0);
+
+    res.json({
+      sesion: { ...sesion, valor_total: Number(sesion.valor_total) },
+      listas,
+      resumen_cuentas,
+      totales: { antes: total_antes, despues: total_despues, diferencia: total_despues - total_antes },
+    });
+  } catch (err) {
+    console.error('Error al obtener sesión de conteo:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/sesiones-conteo/:id/items ──────────────────
+// Ítems del Excel cargado en la sesión (solo lectura).
+router.get('/sesiones-conteo/:id/items', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT vi.id, vi.codigo, vi.nombre, vi.lote, vi.fecha_vencimiento, vi.existencia_sistema, vi.costo_unitario,
+              vi.costo_total, vi.sin_existencias, COALESCE(ti.cuenta, 'SIN CLASIFICAR') AS cuenta,
+              cc.grupo AS grupo_conteo, cc.subgrupo AS subgrupo_conteo
+       FROM validador_inventario vi
+       LEFT JOIN tipos_inventario ti ON ti.concat = concat_tipo_inventario(vi.codigo)
+       LEFT JOIN clasificacion_conteo cc ON cc.codigo = vi.codigo
+       WHERE vi.sesion_id = $1
+       ORDER BY vi.nombre ASC, vi.fecha_vencimiento ASC`, [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error al listar ítems de la sesión:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── POST /api/validador-inventario/sesiones-conteo/:id/cerrar ────────────────
+// Archiva la sesión (queda de solo lectura; sus listas y su Excel se conservan)
+// y libera la bodega para abrir una sesión nueva.
+router.post('/sesiones-conteo/:id/cerrar', authMiddleware, editorOrAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE sesiones_conteo SET estado = 'archivada', cerrado_por = $1, cerrado_en = NOW()
+       WHERE id = $2 AND estado = 'activa' RETURNING id, bodega, estado, cerrado_en`,
+      [req.user.id, req.params.id]
+    );
+    if (!rows.length) return res.status(400).json({ error: 'Sesión no encontrada o ya archivada' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error al archivar sesión:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── GET /api/validador-inventario/sesiones-conteo/:id/excel ──────────────────
+// Descarga un Excel equivalente al que se subió (mismas columnas y valores,
+// regenerado desde los datos guardados; no es el archivo binario original).
+router.get('/sesiones-conteo/:id/excel', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT bodega, excel_datos, excel_nombre_archivo, excel_subido_en FROM sesiones_conteo WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Sesión no encontrada' });
+    const ses = rows[0];
+    const datos = Array.isArray(ses.excel_datos) ? ses.excel_datos : [];
+    if (!datos.length) return res.status(400).json({ error: 'Esta sesión todavía no tiene un Excel cargado' });
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(`Bodega ${ses.bodega}`);
+    ws.columns = [
+      { header: 'CODIGO', width: 16 }, { header: 'NOMBRE', width: 50 }, { header: 'FECHA VENCIMIENTO', width: 18 },
+      { header: 'LOTE', width: 18 }, { header: 'EXISTENCIA', width: 14 }, { header: 'COSTO UNITARIO', width: 16 },
+      { header: 'COSTO TOTAL', width: 18 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    let total = 0;
+    for (const it of datos) {
+      const ct = Number(it.costo_total || (Number(it.existencia_sistema || 0) * Number(it.costo_unitario || 0)));
+      total += ct;
+      ws.addRow([it.codigo, it.nombre, formatearFechaDDMMAAAA(it.fecha_vencimiento), it.lote || '',
+                 Number(it.existencia_sistema || 0), Number(it.costo_unitario || 0), ct]);
+    }
+    const filaTotal = ws.addRow(['TOTAL', '', '', '', '', '', total]);
+    filaTotal.font = { bold: true };
+    ['F', 'G'].forEach(c => { ws.getColumn(c).numFmt = '#,##0.00'; });
+
+    const base = String(ses.excel_nombre_archivo || `sesion_${req.params.id}`).replace(/\.[^.]+$/, '').replace(/[^\w\-]+/g, '_');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${base}_sesion${req.params.id}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error al descargar Excel de la sesión:', err);
+    if (!res.headersSent) res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 module.exports = router;
+
+
 
