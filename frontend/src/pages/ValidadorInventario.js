@@ -121,6 +121,20 @@ function getTipoDiferencia(it) {
   return fueActualizadoDespuesDeContar(it) ? 'actualizacion' : 'real';
 }
 
+// Mismo orden que aplica el backend a las listas de conteo: agregados a mano
+// primero; luego alfabético por nombre y, si se repite, vencimiento → lote → código → id. Así un ítem
+// agregado a mano cae en su lugar de inmediato y no cambia al reabrir la lista.
+const _cmpTxt = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), 'es', { sensitivity: 'base', numeric: true });
+function compararItemsLista(a, b) {
+  // Los productos/lotes agregados a mano van SIEMPRE de primeros.
+  return ((b.origen === 'agregado') - (a.origen === 'agregado'))
+    || _cmpTxt(a.nombre, b.nombre)
+    || _cmpTxt(a.fecha_vencimiento, b.fecha_vencimiento)
+    || _cmpTxt(a.lote, b.lote)
+    || _cmpTxt(a.codigo, b.codigo)
+    || (Number(a.id) - Number(b.id));
+}
+
 export default function ValidadorInventario() {
   const { puede, isEditor, isAdmin } = useContext(AuthContext);
   const puedeEditarContado = isEditor || isAdmin; // solo editor/admin modifican cantidades ya guardadas
@@ -1477,7 +1491,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
     setMostrarReporteFinal(false);
     try {
       const res = await api.get(`/validador-inventario/listas-conteo/${id}`);
-      setListaActual(res.data);
+      setListaActual({ ...res.data, items: [...(res.data.items || [])].sort(compararItemsLista) });
       setVistaInterna('detalle');
       cargarCruces(id);
       cargarReporte(id); // Estado/Novedad/SIIS actual/Diferencias dependen de esto: se carga de una vez.
@@ -1504,7 +1518,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
         fecha_vencimiento: formAgregar.fecha_vencimiento.trim(), costo_unitario: formAgregar.costo_unitario || undefined,
         conteo_1: formAgregar.conteo_1 === '' ? undefined : parseNumCO(formAgregar.conteo_1),
       });
-      setListaActual(prev => ({ ...prev, items: [...prev.items, res.data] }));
+      setListaActual(prev => ({ ...prev, items: [...prev.items, res.data].sort(compararItemsLista) }));
       setFormAgregar({ codigo: '', nombre: '', lote: '', fecha_vencimiento: '', costo_unitario: '', conteo_1: '' });
       setMostrarFormAgregar(false);
       await cargarReporte(listaActual.id);
@@ -3317,6 +3331,10 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
 
 
 
