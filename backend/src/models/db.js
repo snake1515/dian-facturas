@@ -307,6 +307,66 @@ const initDB = async () => {
       );
       CREATE INDEX IF NOT EXISTS idx_vi_bodega ON validador_inventario(bodega);
 
+      -- ── Sesiones de conteo ────────────────────────────────────────────────
+      -- Reemplaza el modelo de "inventario vivo por bodega, se actualiza cada
+      -- vez que subes un Excel" por "sesión de auditoría": abres una sesión
+      -- para una bodega, subes el Excel de SIIS una vez (queda guardado y se
+      -- puede volver a descargar), y de ahí salen las listas de conteo de esa
+      -- sesión. Solo puede haber UNA sesión activa por bodega a la vez.
+      CREATE TABLE IF NOT EXISTS sesiones_conteo (
+        id                    SERIAL PRIMARY KEY,
+        bodega                VARCHAR(10) NOT NULL,
+        estado                VARCHAR(10) NOT NULL DEFAULT 'activa', -- activa | archivada
+        excel_nombre_archivo  VARCHAR(255),
+        excel_datos           JSONB,        -- filas parseadas del último Excel subido, para poder regenerarlo
+        excel_subido_por      INTEGER REFERENCES usuarios(id),
+        excel_subido_en       TIMESTAMP,
+        valor_total           NUMERIC(18,2) DEFAULT 0, -- Σ existencia × costo_unitario del Excel subido
+        creado_por            INTEGER REFERENCES usuarios(id),
+        creado_en             TIMESTAMP DEFAULT NOW(),
+        cerrado_por           INTEGER REFERENCES usuarios(id),
+        cerrado_en            TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_sesiones_conteo_bodega_activa
+        ON sesiones_conteo (bodega) WHERE estado = 'activa';
+      CREATE INDEX IF NOT EXISTS idx_sesiones_conteo_bodega ON sesiones_conteo(bodega);
+
+      ALTER TABLE validador_inventario ADD COLUMN IF NOT EXISTS sesion_id INTEGER REFERENCES sesiones_conteo(id);
+      CREATE INDEX IF NOT EXISTS idx_vi_sesion ON validador_inventario(sesion_id);
+
+      -- Migración: la restricción única original era (bodega, codigo, lote,
+      -- fecha_vencimiento). Ahora cada fila pertenece a una sesión, así que la
+      -- unicidad pasa a ser (sesion_id, codigo, lote, fecha_vencimiento). Se
+      -- busca el nombre real de la restricción vieja (por su conjunto de
+      -- columnas, no por nombre fijo) para no fallar si Postgres la nombró
+      -- distinto. Los datos de sesiones anteriores a este cambio quedan con
+      -- sesion_id NULL y no se tocan (cada NULL cuenta aparte para Postgres,
+      -- así que nunca chocan entre sí ni con las filas nuevas).
+      DO $$
+      DECLARE
+        nombre_constraint text;
+      BEGIN
+        SELECT con.conname INTO nombre_constraint
+        FROM pg_constraint con
+        WHERE con.conrelid = 'validador_inventario'::regclass AND con.contype = 'u'
+          AND (
+            SELECT array_agg(attname ORDER BY attname)
+            FROM pg_attribute
+            WHERE attrelid = con.conrelid AND attnum = ANY(con.conkey)
+          ) = ARRAY['bodega','codigo','fecha_vencimiento','lote']::name[]
+        LIMIT 1;
+        IF nombre_constraint IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE validador_inventario DROP CONSTRAINT %I', nombre_constraint);
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'validador_inventario_sesion_key'
+        ) THEN
+          ALTER TABLE validador_inventario
+            ADD CONSTRAINT validador_inventario_sesion_key UNIQUE (sesion_id, codigo, lote, fecha_vencimiento);
+        END IF;
+      END $$;
+
       -- Migraciones para instancias existentes (agrega columnas si no existen)
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='validador_inventario' AND column_name='costo_unitario') THEN
@@ -688,6 +748,15 @@ const initDB = async () => {
       -- blanco, el conteo cubre TODO el grupo, todos los subgrupos).
       ALTER TABLE listas_conteo ADD COLUMN IF NOT EXISTS subcriterio VARCHAR(150);
 
+      -- Auditoría de reapertura (solo admin puede reabrir un conteo cerrado).
+      ALTER TABLE listas_conteo ADD COLUMN IF NOT EXISTS reabierto_por INTEGER REFERENCES usuarios(id);
+      ALTER TABLE listas_conteo ADD COLUMN IF NOT EXISTS reabierto_en TIMESTAMP;
+
+      -- Sesión de conteo a la que pertenece esta lista. NULL en listas creadas
+      -- antes de este cambio (se dejan tal cual, fuera del modelo de sesiones).
+      ALTER TABLE listas_conteo ADD COLUMN IF NOT EXISTS sesion_id INTEGER REFERENCES sesiones_conteo(id);
+      CREATE INDEX IF NOT EXISTS idx_listas_conteo_sesion ON listas_conteo(sesion_id);
+
       -- Snapshot de grupo/subgrupo de conteo por ítem (igual patrón que
       -- 'cuenta' y 'presentacion': se congela al crear la lista).
       ALTER TABLE listas_conteo_items ADD COLUMN IF NOT EXISTS grupo_conteo VARCHAR(100);
@@ -705,6 +774,10 @@ const initDB = async () => {
 };
 
 module.exports = { pool, initDB };
+
+
+
+
 
 
 
