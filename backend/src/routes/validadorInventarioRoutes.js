@@ -13,6 +13,23 @@ function truncar(valor, max) {
   return s.length > max ? s.substring(0, max) : s;
 }
 
+// ── Orden ÚNICO de los ítems de una lista de conteo ──────────────────────────
+// Primero los agregados a mano; luego alfabético por nombre y, cuando el nombre se repite (ej. muchos lotes del
+// mismo producto), desempata por vencimiento, lote, código y finalmente id.
+// Sin estos desempates Postgres devuelve los empatados en orden físico, que
+// CAMBIA cada vez que se guarda un conteo (el UPDATE reescribe la fila).
+// Se usa en pantalla, plantillas Excel y reportes para que todo salga igual.
+const _cmpTxt = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), 'es', { sensitivity: 'base', numeric: true });
+function compararItemsLista(a, b) {
+  // Los productos/lotes agregados a mano van SIEMPRE de primeros.
+  return ((b.origen === 'agregado') - (a.origen === 'agregado'))
+    || _cmpTxt(a.nombre, b.nombre)
+    || _cmpTxt(a.fecha_vencimiento, b.fecha_vencimiento)
+    || _cmpTxt(a.lote, b.lote)
+    || _cmpTxt(a.codigo, b.codigo)
+    || (Number(a.id) - Number(b.id));
+}
+
 // ── Registra un cambio de clasificación en el historial de auditoría ─────────
 async function registrarHistorialTipo(dbClient, concat, anterior, nuevoContable, nuevoCuenta, origen, userId) {
   await dbClient.query(
@@ -784,6 +801,24 @@ const LABEL_TIPO = {
 // Valor que cuenta como "definitivo" para el reporte de diferencias: Conteo 2
 // si existe (doble conteo = verificación), si no Conteo 1, si no hay ninguno
 // el ítem sigue pendiente.
+// Existencia de SIIS contra la que se compara un ítem:
+//  - Lista CON sesión y ABIERTA: el Excel de la sesión se sube una vez y ya no se
+//    mueve, así que la referencia es la del snapshot de la lista (existencia_siis).
+//  - Lista SIN sesión (anterior al modelo de sesiones) o ya CERRADA: se conserva el
+//    cálculo original (existencia en vivo / congelada al cerrar) para no alterar
+//    resultados históricos.
+// Devuelve null si no hay referencia disponible. La usan el reporte, el cruce y los
+// documentos de Egreso/Ingreso, para que TODO compare contra la misma base.
+function existenciaSiisReferencia(lista, it) {
+  if (it.origen === 'agregado') return 0; // su existencia siempre es 0
+  const referenciaUnica = lista.estado !== 'cerrada' && lista.sesion_id !== null && lista.sesion_id !== undefined;
+  if (referenciaUnica) return Number(it.existencia_siis);
+  if (lista.estado === 'cerrada') {
+    return it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null;
+  }
+  return it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null;
+}
+
 function conteoDefinitivo(item) {
   if (item.conteo_2 !== null && item.conteo_2 !== undefined) return Number(item.conteo_2);
   if (item.conteo_1 !== null && item.conteo_1 !== undefined) return Number(item.conteo_1);
@@ -1045,9 +1080,10 @@ router.get('/listas-conteo/:id', authMiddleware, async (req, res) => {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const { rows: items } = await pool.query(
-      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY presentacion NULLS LAST, nombre ASC`,
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY id`,
       [req.params.id]
     );
+    items.sort(compararItemsLista);
     res.json({ ...listaRows[0], items });
   } catch (err) {
     console.error('Error al obtener lista de conteo:', err);
@@ -1105,11 +1141,7 @@ router.patch('/listas-conteo/:id/items/:itemId', authMiddleware, async (req, res
 function diferenciaOriginalSinCruce(lista, it) {
   const definitivo = conteoDefinitivo(it);
   if (definitivo === null) return null;
-  const esAgregado = it.origen === 'agregado';
-  if (esAgregado) return definitivo; // su existencia siempre es 0
-  const existenciaActual = lista.estado === 'cerrada'
-    ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
-    : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null);
+  const existenciaActual = existenciaSiisReferencia(lista, it);
   if (existenciaActual === null) return null;
   return definitivo - existenciaActual;
 }
@@ -1128,15 +1160,8 @@ function calcularDetalleReporte(lista, items) {
     const esAgregado = it.origen === 'agregado';
     const existenciaInicial = esAgregado ? 0 : Number(it.existencia_siis);
 
-    const existenciaActual = esAgregado
-      ? 0
-      : (lista.estado === 'cerrada'
-        ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
-        : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null));
+    const existenciaActual = existenciaSiisReferencia(lista, it);
 
-    // Un ítem agregado a mano no existe en el inventario, así que el cruce en
-    // vivo no devuelve nada: su existencia esperada es la del snapshot (0),
-    // no "desconocida" — si no, nunca mostraría el sobrante.
     const existenciaActualEfectiva = existenciaActual;
 
     // Ajuste por cambios de lote / referencias cruzadas: lo que el sistema
@@ -1188,20 +1213,23 @@ function calcularDetalleReporte(lista, items) {
 }
 
 async function obtenerItemsConActual(lista, listaId) {
+  let rows;
   if (lista.estado === 'cerrada') {
     const r = await pool.query(`SELECT * FROM listas_conteo_items WHERE lista_id = $1`, [listaId]);
-    return r.rows;
+    rows = r.rows;
+  } else {
+    const r = await pool.query(
+      `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
+       FROM listas_conteo_items li
+       LEFT JOIN validador_inventario vi
+         ON vi.bodega = $2 AND vi.sesion_id IS NOT DISTINCT FROM $3::int
+            AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
+       WHERE li.lista_id = $1`,
+      [listaId, lista.bodega, lista.sesion_id ?? null]
+    );
+    rows = r.rows;
   }
-  const r = await pool.query(
-    `SELECT li.*, vi.existencia_sistema AS existencia_actual_live
-     FROM listas_conteo_items li
-     LEFT JOIN validador_inventario vi
-       ON vi.bodega = $2 AND vi.sesion_id IS NOT DISTINCT FROM $3::int
-          AND vi.codigo = li.codigo AND vi.lote = li.lote AND vi.fecha_vencimiento = li.fecha_vencimiento
-     WHERE li.lista_id = $1`,
-    [listaId, lista.bodega, lista.sesion_id ?? null]
-  );
-  return r.rows;
+  return rows.sort(compararItemsLista);
 }
 
 // ── GET /api/validador-inventario/listas-conteo/:id/reporte ──────────────────
@@ -1335,11 +1363,11 @@ router.get('/listas-conteo/:id/plantilla', authMiddleware, async (req, res) => {
     const { rows: listaRows } = await pool.query(`SELECT * FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const lista = listaRows[0];
-    const ordenPlantilla = lista.tipo === 'grupo_conteo' ? 'ORDER BY nombre ASC' : 'ORDER BY presentacion NULLS LAST, nombre ASC';
     const { rows: items } = await pool.query(
-      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ${ordenPlantilla}`,
+      `SELECT * FROM listas_conteo_items WHERE lista_id = $1 ORDER BY id`,
       [req.params.id]
     );
+    items.sort(compararItemsLista);
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Conteo');
@@ -1419,10 +1447,7 @@ router.get('/listas-conteo/:id/plantilla-segundo-conteo', authMiddleware, async 
       return res.status(400).json({ error: 'No hay ítems con diferencia: nada que recontar' });
     }
 
-    const cmp = (a, b) => String(a || '').localeCompare(String(b || ''), 'es');
-    items.sort(lista.tipo === 'grupo_conteo'
-      ? (a, b) => cmp(a.nombre, b.nombre)
-      : (a, b) => ((a.presentacion == null) - (b.presentacion == null)) || cmp(a.presentacion, b.presentacion) || cmp(a.nombre, b.nombre));
+    items.sort(compararItemsLista);
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Segundo conteo');
@@ -1486,7 +1511,7 @@ router.get('/listas-conteo/:id/reporte-excel', authMiddleware, async (req, res) 
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     const lista = listaRows[0];
     const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
-    itemsRaw.sort((a, b) => (a.presentacion || '').localeCompare(b.presentacion || '') || a.nombre.localeCompare(b.nombre));
+    itemsRaw.sort(compararItemsLista);
     const { resumen, items } = calcularDetalleReporte(lista, itemsRaw);
 
     const wb = new ExcelJS.Workbook();
@@ -1740,7 +1765,7 @@ router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
   try {
     const bodega = (req.query.bodega || '').toUpperCase();
     const { rows } = await pool.query(
-      `SELECT li.*, lc.tipo, lc.criterio, lc.estado, lc.creado_en AS conteo_creado_en, lc.cerrado_en AS conteo_cerrado_en
+      `SELECT li.*, lc.sesion_id, lc.tipo, lc.criterio, lc.estado, lc.creado_en AS conteo_creado_en, lc.cerrado_en AS conteo_cerrado_en
        FROM listas_conteo_items li
        JOIN listas_conteo lc ON lc.id = li.lista_id
        WHERE li.codigo = $1 AND ($2 = '' OR lc.bodega = $2)
@@ -1752,8 +1777,8 @@ router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
       const existenciaActual = it.origen === 'agregado'
         ? 0
         : (it.estado === 'cerrada'
-          ? (it.existencia_siis_cierre !== null ? Number(it.existencia_siis_cierre) : null)
-          : null);
+          ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
+          : (it.sesion_id !== null && it.sesion_id !== undefined ? Number(it.existencia_siis) : null));
       const diferencia = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
       return {
         lista_id: it.lista_id, tipo: it.tipo, criterio: it.criterio, estado: it.estado,
@@ -2519,6 +2544,15 @@ router.get('/sesiones-conteo/:id/excel', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
 
 
 
