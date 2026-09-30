@@ -1102,6 +1102,18 @@ router.patch('/listas-conteo/:id/items/:itemId', authMiddleware, async (req, res
 // Calcula el detalle de diferencias para una lista ya con sus items cargados
 // (cerrada: usa existencia_siis_cierre; abierta: usa existencia_actual_live).
 // Compartido entre el reporte JSON y el export a Excel.
+function diferenciaOriginalSinCruce(lista, it) {
+  const definitivo = conteoDefinitivo(it);
+  if (definitivo === null) return null;
+  const esAgregado = it.origen === 'agregado';
+  if (esAgregado) return definitivo; // su existencia siempre es 0
+  const existenciaActual = lista.estado === 'cerrada'
+    ? (it.existencia_siis_cierre !== null && it.existencia_siis_cierre !== undefined ? Number(it.existencia_siis_cierre) : null)
+    : (it.existencia_actual_live !== null && it.existencia_actual_live !== undefined ? Number(it.existencia_actual_live) : null);
+  if (existenciaActual === null) return null;
+  return definitivo - existenciaActual;
+}
+
 function calcularDetalleReporte(lista, items) {
   let valorTotalInicial = 0, valorTotalActual = 0;
   let conDiferencia = 0, contados = 0, requierenReconteo = 0;
@@ -1608,10 +1620,11 @@ async function generarDocumentoAjuste(req, res, tipo) {
     const lista = listaRows[0];
 
     const itemsRaw = await obtenerItemsConActual(lista, req.params.id);
-    const { items: detalle } = calcularDetalleReporte(lista, itemsRaw);
-    const porId = new Map(detalle.map(d => [d.id, d]));
+    // Diferencia ORIGINAL de cada lote, sin restar lo cruzado: aunque un
+    // cambio de lote / referencia cruzada explique el descuadre, cada lote
+    // sigue necesitando su propio movimiento completo en SIIS.
     const items = itemsRaw
-      .map(it => ({ ...it, diferencia: porId.get(it.id)?.diferencia_cantidad_actual }))
+      .map(it => ({ ...it, diferencia: diferenciaOriginalSinCruce(lista, it) }))
       .filter(it => it.diferencia !== null && it.diferencia !== undefined && Number(it.diferencia) !== 0)
       .filter(it => tipo === 'ingreso' ? Number(it.diferencia) > 0 : Number(it.diferencia) < 0);
 
@@ -2009,35 +2022,46 @@ router.post('/listas-conteo/:id/cruces', authMiddleware, async (req, res) => {
   try {
     const { item_origen_id, item_destino_id, cantidad, motivo } = req.body;
     const cant = Number(cantidad);
-    if (!item_origen_id || !item_destino_id) { client.release(); return res.status(400).json({ error: 'item_origen_id e item_destino_id son requeridos' }); }
-    if (String(item_origen_id) === String(item_destino_id)) { client.release(); return res.status(400).json({ error: 'El origen y el destino no pueden ser el mismo ítem' }); }
-    if (!cant || cant <= 0) { client.release(); return res.status(400).json({ error: 'La cantidad debe ser mayor que cero' }); }
+    if (!item_origen_id || !item_destino_id) { return res.status(400).json({ error: 'item_origen_id e item_destino_id son requeridos' }); }
+    if (String(item_origen_id) === String(item_destino_id)) { return res.status(400).json({ error: 'El origen y el destino no pueden ser el mismo ítem' }); }
+    if (!cant || cant <= 0) { return res.status(400).json({ error: 'La cantidad debe ser mayor que cero' }); }
 
     await client.query('BEGIN');
     const { rows: itemsRows } = await client.query(
       `SELECT * FROM listas_conteo_items WHERE id = ANY($1::int[]) AND lista_id = $2`,
       [[item_origen_id, item_destino_id], lista.id]
     );
-    if (itemsRows.length !== 2) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ error: 'Ítems no encontrados en esta lista' }); }
+    if (itemsRows.length !== 2) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ítems no encontrados en esta lista' }); }
     const origen = itemsRows.find(i => String(i.id) === String(item_origen_id));
     const destino = itemsRows.find(i => String(i.id) === String(item_destino_id));
     const tipo = origen.codigo === destino.codigo ? 'lote' : 'referencia';
 
-    // No dejar mover más unidades de las que el origen realmente tiene
-    // disponibles: lo contado (definitivo) menos lo que ya se haya sacado por
-    // cruces anteriores (ajuste_cruce, que para el origen ya es negativo).
-    const definitivoOrigen = conteoDefinitivo(origen);
-    if (definitivoOrigen === null) {
-      await client.query('ROLLBACK'); client.release();
+    // No dejar cruzar más unidades de las que TODAVÍA hay por explicar en
+    // cada lado — no el conteo físico crudo, sino lo que aún falta (origen) o
+    // sobra (destino) después de descontar cruces ya registrados antes de
+    // este. Se reutiliza la misma fórmula que ya usa el reporte (con la
+    // existencia EN VIVO de SIIS, por eso se pasa por obtenerItemsConActual y
+    // no las filas crudas), para que el tope sea exactamente consistente con
+    // lo que se ve en pantalla.
+    const itemsConActual = await obtenerItemsConActual(lista, lista.id);
+    const { items: chequeo } = calcularDetalleReporte(lista, itemsConActual);
+    const diferenciaOrigen = chequeo.find(d => d.id === origen.id)?.diferencia_cantidad_actual;
+    const diferenciaDestino = chequeo.find(d => d.id === destino.id)?.diferencia_cantidad_actual;
+    if (diferenciaOrigen === null || diferenciaOrigen === undefined) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'El ítem origen todavía no tiene un conteo físico registrado (Conteo 1). Cuéntalo antes de moverle unidades a otro ítem.' });
     }
-    const disponibleOrigen = definitivoOrigen + Number(origen.ajuste_cruce || 0);
-    if (cant > disponibleOrigen) {
-      await client.query('ROLLBACK'); client.release();
+    if (diferenciaDestino === null || diferenciaDestino === undefined) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'El ítem destino todavía no tiene un conteo físico registrado (Conteo 1). Cuéntalo antes de moverle unidades desde otro ítem.' });
+    }
+    const disponibleOrigen = Math.abs(Number(diferenciaOrigen));
+    const disponibleDestino = Math.abs(Number(diferenciaDestino));
+    const disponible = Math.min(disponibleOrigen, disponibleDestino);
+    if (cant > disponible) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
-        error: `Solo hay ${disponibleOrigen} unidad(es) disponibles en el ítem origen (contadas: ${definitivoOrigen}` +
-               (origen.ajuste_cruce ? `, ya movidas por otro cruce: ${-origen.ajuste_cruce}` : '') +
-               `). No se pueden mover ${cant}.`
+        error: `Solo se pueden cruzar ${disponible} unidad(es) como máximo — lo que todavía falta por explicar en el origen (${disponibleOrigen}) o sobra en el destino (${disponibleDestino}), lo que sea menor. No se pueden mover ${cant}.`
       });
     }
 
@@ -2495,250 +2519,6 @@ router.get('/sesiones-conteo/:id/excel', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
