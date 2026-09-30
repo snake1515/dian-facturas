@@ -135,6 +135,10 @@ function compararItemsLista(a, b) {
     || (Number(a.id) - Number(b.id));
 }
 
+// Fondo gris neutro (con transparencia, sirve en tema oscuro y claro) para resaltar
+// la columna de la DIFERENCIA FINAL, la del conteo definitivo.
+const FONDO_DIFERENCIA_FINAL = 'rgba(148, 163, 184, 0.25)';
+
 export default function ValidadorInventario() {
   const { puede, isEditor, isAdmin } = useContext(AuthContext);
   const puedeEditarContado = isEditor || isAdmin; // solo editor/admin modifican cantidades ya guardadas
@@ -1512,6 +1516,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
   // ── Agregar producto/lote encontrado físicamente en bodega ──────────────────
   async function agregarItem() {
     if (!formAgregar.codigo.trim()) { alert('El código es requerido'); return; }
+    if (formAgregar.conteo_1 !== '' && parseNumCO(formAgregar.conteo_1) < 0) { alert('El conteo no puede ser negativo.'); return; }
     setAgregandoItem(true);
     try {
       const res = await api.post(`/validador-inventario/listas-conteo/${listaActual.id}/items`, {
@@ -1669,6 +1674,11 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
     const key = `${item.id}_${campo}`;
     const valor = editConteo[key];
     if (valor === undefined || valor === '') return;
+    // El conteo físico no puede ser negativo.
+    if (String(valor).trim().startsWith('-') || parseNumCO(valor) < 0) {
+      alert('El conteo no puede ser negativo.');
+      return;
+    }
     setGuardandoConteoKey(key);
     try {
       const res = await api.patch(`/validador-inventario/listas-conteo/${listaActual.id}/items/${item.id}`, { campo, valor: parseNumCO(valor) });
@@ -1682,6 +1692,22 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
       alert('Error guardando el conteo: ' + (e.response?.data?.error || e.message));
     }
     setGuardandoConteoKey(null);
+  }
+
+  // Tab / Shift+Tab en un campo de conteo: salta a la fila siguiente / anterior
+  // en la MISMA columna (Conteo 1 → Conteo 1, Conteo 2 → Conteo 2), guardando de
+  // paso lo que se haya escrito. Las celdas no editables (ya contadas y bloqueadas)
+  // no tienen input, así que se saltan solas. En la primera/última fila se deja el
+  // comportamiento normal del navegador.
+  function manejarTabConteo(e, item, campo) {
+    const inputs = Array.from((e.currentTarget.closest('table') || document).querySelectorAll(`input[data-conteo-campo="${campo}"]`));
+    const i = inputs.indexOf(e.currentTarget);
+    const destino = inputs[i + (e.shiftKey ? -1 : 1)];
+    if (!destino) return;
+    e.preventDefault();
+    guardarConteoItem(item, campo); // no hace nada si no hay un valor nuevo escrito
+    destino.focus();
+    destino.select();
   }
 
   // ── Reclasificar un ítem "SIN CLASIFICAR" (o cambiar su cuenta) directo
@@ -2167,7 +2193,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                 <input type="number" value={formAgregar.costo_unitario} onChange={e => setFormAgregar(p => ({ ...p, costo_unitario: e.target.value }))} style={{ ...inputStyle, width: 100, display: 'block', marginTop: 3 }} />
               </label>
               <label style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Conteo 1
-                <input type="number" value={formAgregar.conteo_1} onChange={e => setFormAgregar(p => ({ ...p, conteo_1: e.target.value }))} style={{ ...inputStyle, width: 80, display: 'block', marginTop: 3 }} />
+                <input type="number" min="0" value={formAgregar.conteo_1} onChange={e => { const v = e.target.value; setFormAgregar(p => ({ ...p, conteo_1: v.includes('-') ? v.replace(/-/g, '') : v })); }} onKeyDown={e => { if (['-', '+', 'e', 'E'].includes(e.key)) e.preventDefault(); }} style={{ ...inputStyle, width: 80, display: 'block', marginTop: 3 }} />
               </label>
               <button onClick={agregarItem} disabled={agregandoItem} style={{ background: 'var(--t-accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
                 {agregandoItem ? 'Agregando…' : 'Agregar'}
@@ -2326,7 +2352,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
             <thead>
               <tr style={{ background: 'var(--t-bg-sidebar)' }}>
                 {['Código', 'Nombre', 'Cuenta', 'Grupo', 'Subgrupo', 'Presentación', 'Lote', 'F. Venc.', 'Costo Unit.', 'SIIS', 'Conteo 1', 'Dif. Conteo 1', 'Conteo 2', 'Dif. Conteo 2', 'Diferencia', 'Estado', 'Novedad', 'Motivo'].map(h => (
-                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', whiteSpace: 'nowrap' }}>{h}</th>
+                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, borderBottom: '1px solid var(--t-border)', whiteSpace: 'nowrap', background: h === 'Diferencia' ? FONDO_DIFERENCIA_FINAL : undefined }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -2366,8 +2392,14 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                         type="number"
                         ref={(el) => { conteoInputRefs.current[key] = el; }}
                         value={editConteo[key] !== undefined ? editConteo[key] : (yaTieneValor ? fmtNum2(valorGuardado) : '')}
-                        onChange={(e) => setEditConteo(prev => ({ ...prev, [key]: e.target.value }))}
-                        onKeyDown={(e) => { if (e.key === 'Enter') guardarConteoItem(item, campo); }}
+                        data-conteo-campo={campo}
+                        min="0"
+                        onChange={(e) => { const v = e.target.value; setEditConteo(prev => ({ ...prev, [key]: v.includes('-') ? v.replace(/-/g, '') : v })); }}
+                        onKeyDown={(e) => {
+                          if (['-', '+', 'e', 'E'].includes(e.key)) { e.preventDefault(); return; } // sin negativos ni notación científica
+                          if (e.key === 'Enter') guardarConteoItem(item, campo);
+                          else if (e.key === 'Tab') manejarTabConteo(e, item, campo);
+                        }}
                         placeholder="—"
                         style={{ ...inputStyle, width: 75, fontFamily: 'monospace' }}
                       />
@@ -2469,7 +2501,7 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                       {rep?.requiere_reconteo && <div style={{ fontSize: 10, color: '#fbbf24', fontWeight: 600, marginTop: 2 }}>⚠️ Reconteo sugerido</div>}
                     </td>
                     <td style={{ padding: '6px 8px' }}>{celdaDifConteo(difC2, true, 'Conteo 2')}</td>
-                    <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
+                    <td style={{ padding: '6px 8px', fontFamily: 'monospace', background: FONDO_DIFERENCIA_FINAL }}>
                       {!rep || rep.diferencia_cantidad_actual === null ? (
                         <span style={{ color: 'var(--t-text-muted)' }}>—</span>
                       ) : rep.diferencia_cantidad_actual === 0 ? (
@@ -3433,6 +3465,13 @@ function PanelesGerenciales({ bodega, fmtPesos, inputStyle }) {
 
 const miniBtn = { background: 'var(--t-bg-sidebar)', border: '1px solid var(--t-border)', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: 'var(--t-text-primary)', cursor: 'pointer' };
 const miniBtnAccent = { background: 'var(--t-accent)', border: 'none', borderRadius: 6, padding: '7px 12px', fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 };
+
+
+
+
+
+
+
 
 
 
