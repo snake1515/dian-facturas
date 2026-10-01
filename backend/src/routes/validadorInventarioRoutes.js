@@ -1105,6 +1105,11 @@ router.patch('/listas-conteo/:id/items/:itemId', authMiddleware, async (req, res
     if (valor === undefined || valor === null || valor === '') {
       return res.status(400).json({ error: 'valor requerido' });
     }
+    // Un conteo físico no puede ser negativo (ni un valor no numérico).
+    const cantidadNum = Number(valor);
+    if (!Number.isFinite(cantidadNum) || cantidadNum < 0) {
+      return res.status(400).json({ error: 'El conteo debe ser un número mayor o igual a 0' });
+    }
     const { rows: listaRows } = await pool.query(`SELECT estado FROM listas_conteo WHERE id = $1`, [req.params.id]);
     if (!listaRows.length) return res.status(404).json({ error: 'Lista no encontrada' });
     if (listaRows[0].estado === 'cerrada') {
@@ -1781,7 +1786,7 @@ router.get('/historial-codigo/:codigo', authMiddleware, async (req, res) => {
           : (it.sesion_id !== null && it.sesion_id !== undefined ? Number(it.existencia_siis) : null));
       const diferencia = (definitivo === null || existenciaActual === null) ? null : Number((definitivo - existenciaActual).toFixed(3));
       return {
-        lista_id: it.lista_id, tipo: it.tipo, criterio: it.criterio, estado: it.estado,
+        lista_id: it.lista_id, sesion_id: it.sesion_id ?? null, tipo: it.tipo, criterio: it.criterio, estado: it.estado,
         creado_en: it.conteo_creado_en, cerrado_en: it.conteo_cerrado_en,
         conteo_1: it.conteo_1 !== null ? Number(it.conteo_1) : null,
         conteo_2: it.conteo_2 !== null ? Number(it.conteo_2) : null,
@@ -1917,6 +1922,10 @@ router.post('/listas-conteo/:id/items', authMiddleware, async (req, res) => {
     const { codigo, nombre, lote, fecha_vencimiento, costo_unitario, conteo_1 } = req.body;
     const cod = truncar(codigo, 50);
     if (!cod) return res.status(400).json({ error: 'codigo requerido' });
+    if (conteo_1 !== undefined && conteo_1 !== null && conteo_1 !== '') {
+      const c1 = Number(conteo_1);
+      if (!Number.isFinite(c1) || c1 < 0) return res.status(400).json({ error: 'El conteo debe ser un número mayor o igual a 0' });
+    }
 
     // Se completa lo que ya se sepa del código: nombre/costo desde el
     // inventario de la bodega, y su clasificación desde los maestros.
@@ -2544,6 +2553,15 @@ router.get('/sesiones-conteo/:id/excel', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+
+
+
+
+
+
 
 
 
