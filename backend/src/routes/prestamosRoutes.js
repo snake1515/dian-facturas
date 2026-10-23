@@ -79,7 +79,11 @@ router.get('/soporte/*', async (req, res) => {
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `inline; filename="${path.basename(filepath)}"`);
     res.send(buffer);
-  } catch (e) { res.status(404).json({ error: 'Archivo no encontrado' }); }
+  } catch (e) {
+    // Se incluye el detalle real (p. ej. HTTP 402 = Storage restringido por cuota)
+    console.error('❌ Soporte préstamos', req.params[0], e.message);
+    res.status(404).json({ error: 'Archivo no encontrado', detalle: e.message });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
