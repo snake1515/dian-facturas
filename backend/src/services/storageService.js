@@ -72,7 +72,11 @@ const descargarArchivo = async (filename) => {
         if (res.statusCode === 200) {
           resolve(Buffer.concat(chunks));
         } else {
-          reject(new Error(`Storage download error ${res.statusCode}`));
+          // Se adjunta el código HTTP y el cuerpo para poder diagnosticar
+          // (404 = archivo no existe en el bucket; 402/403 = cuota/restricción de Supabase)
+          const err = new Error(`Storage download error ${res.statusCode}: ${Buffer.concat(chunks).toString('utf-8').slice(0, 300)}`);
+          err.statusCode = res.statusCode;
+          reject(err);
         }
       });
     });

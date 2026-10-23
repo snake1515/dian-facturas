@@ -3,6 +3,7 @@ const { reenviarFactura } = require('../services/emailService');
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
 const { descargarArchivo } = require('../services/storageService');
+const { recuperarPdfDesdeGmail } = require('../services/gmailService');
 
 const router = express.Router();
 
@@ -460,10 +461,50 @@ router.get('/:id', authMiddleware, async (req, res) => {
 router.get('/:id/pdf', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT pdf_path, numero FROM facturas WHERE id = $1', [id]);
-    if (!result.rows.length || !result.rows[0].pdf_path) return res.status(404).json({ error: 'PDF no disponible' });
-    const buffer = await descargarArchivo(result.rows[0].pdf_path);
-    const filename = `factura_${result.rows[0].numero || id}.pdf`;
+    const result = await pool.query('SELECT pdf_path, numero, origen, gmail_message_id FROM facturas WHERE id = $1', [id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
+    const f = result.rows[0];
+
+    let buffer = null;
+    let motivo = null;
+
+    // 1) Intento normal: leer de Supabase Storage
+    if (f.pdf_path) {
+      try {
+        buffer = await descargarArchivo(f.pdf_path);
+      } catch (err) {
+        console.error(`❌ PDF factura ${id} (${f.pdf_path}):`, err.message);
+        if (err.statusCode === 402 || err.statusCode === 403 || err.statusCode === 429) {
+          motivo = `Supabase Storage rechazó la descarga (HTTP ${err.statusCode}). Revise la cuota/egress del proyecto en Supabase.`;
+        } else if (err.statusCode === 400 || err.statusCode === 404) {
+          motivo = 'El PDF registrado ya no existe en Supabase Storage.';
+        } else {
+          motivo = `Error leyendo el PDF en Storage${err.statusCode ? ` (HTTP ${err.statusCode})` : ''}.`;
+        }
+      }
+    } else {
+      motivo = 'La factura no tiene PDF asociado (el correo no lo traía o falló su subida al sincronizar).';
+    }
+
+    // 2) Respaldo: si vino de Gmail, recuperar el PDF desde el correo original
+    if (!buffer && f.gmail_message_id && !(motivo || '').startsWith('Supabase Storage rechazó')) {
+      try {
+        const rec = await recuperarPdfDesdeGmail(f.gmail_message_id);
+        if (rec) {
+          buffer = rec.buffer;
+          await pool.query('UPDATE facturas SET pdf_path = $1 WHERE id = $2', [rec.filename, id]);
+        } else {
+          motivo = 'El correo original de Gmail no contiene un PDF (ni dentro del ZIP). Súbalo manualmente con "Subir PDF DIAN".';
+        }
+      } catch (err) {
+        console.error(`❌ Recuperando PDF de Gmail para factura ${id}:`, err.message);
+        motivo = `${motivo} No se pudo recuperar desde Gmail: ${err.message}`;
+      }
+    }
+
+    if (!buffer) return res.status(404).json({ error: motivo || 'PDF no disponible' });
+
+    const filename = `factura_${f.numero || id}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Length', buffer.length);

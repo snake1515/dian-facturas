@@ -333,7 +333,69 @@ const obtenerPartes = (payload, partes = []) => {
   return partes;
 };
 
-module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos };
+// ── Recuperación de PDF desde Gmail ──────────────────────────────────────────
+// Se usa cuando una factura de origen Gmail quedó sin pdf_path (p. ej. falló la
+// subida a Storage durante la sincronización) o el archivo ya no está en el bucket.
+// Vuelve a leer el correo original, extrae el PDF (adjunto directo, dentro de ZIP
+// o de un ZIP anidado), lo sube a Storage y devuelve el nombre guardado.
+const extraerPdfDeZip = (buffer, profundidad = 0) => {
+  if (profundidad > 2) return null;
+  try {
+    const zip = new AdmZip(buffer);
+    for (const entry of zip.getEntries()) {
+      const nombre = entry.entryName.toLowerCase();
+      if (nombre.endsWith('.pdf')) return { data: entry.getData(), nombre: entry.entryName };
+    }
+    for (const entry of zip.getEntries()) {
+      if (entry.entryName.toLowerCase().endsWith('.zip')) {
+        const r = extraerPdfDeZip(entry.getData(), profundidad + 1);
+        if (r) return r;
+      }
+    }
+  } catch (e) {
+    console.error('❌ Error leyendo ZIP en recuperación de PDF:', e.message);
+  }
+  return null;
+};
+
+const recuperarPdfDesdeGmail = async (messageId) => {
+  const auth = await getAuthenticatedClient();
+  const gmail = google.gmail({ version: 'v1', auth });
+  const msgRes = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
+  const parts = obtenerPartes(msgRes.data.payload);
+
+  let encontrado = null;
+  for (const part of parts) {
+    const filename = (part.filename || '').toLowerCase();
+    const mimeType = part.mimeType || '';
+    const esPdf = filename.endsWith('.pdf') || mimeType === 'application/pdf';
+    const esZip = filename.endsWith('.zip') || mimeType.includes('zip');
+    if (!esPdf && !esZip) continue;
+
+    let data;
+    if (part.body?.attachmentId) {
+      const attRes = await gmail.users.messages.attachments.get({
+        userId: 'me', messageId, id: part.body.attachmentId,
+      });
+      data = Buffer.from(attRes.data.data, 'base64');
+    } else if (part.body?.data) {
+      data = Buffer.from(part.body.data, 'base64');
+    } else continue;
+
+    if (esPdf) { encontrado = { data, nombre: part.filename }; break; }
+    const r = extraerPdfDeZip(data);
+    if (r) { encontrado = r; break; }
+  }
+
+  if (!encontrado) return null;
+  const nombreBase = encontrado.nombre.split('/').pop();
+  const pdfFilename = `${messageId}_${nombreBase}`;
+  await subirArchivo(encontrado.data, pdfFilename, 'application/pdf');
+  console.log(`☁️ PDF recuperado desde Gmail: ${pdfFilename}`);
+  return { filename: pdfFilename, buffer: encontrado.data };
+};
+
+module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos, recuperarPdfDesdeGmail };
 
 
 

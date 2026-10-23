@@ -17,7 +17,12 @@ const descargarArchivo = async (id, tipo) => {
   const url = base + '/facturas/' + id + '/' + tipo;
   try {
     const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
-    if (!res.ok) { alert('Archivo no disponible'); return; }
+    if (!res.ok) {
+      let msg = 'Archivo no disponible';
+      try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}
+      alert(msg + ' (HTTP ' + res.status + ')');
+      return;
+    }
     const blob = await res.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
