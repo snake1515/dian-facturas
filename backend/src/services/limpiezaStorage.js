@@ -103,4 +103,86 @@ const ejecutar = async (anio, incluirManuales = false) => {
   return { anio, borrados, fallidos, bytesLiberados, error };
 };
 
-module.exports = { analizar, ejecutar };
+// ── Análisis completo del bucket y archivos huérfanos ────────────────────────
+// Un archivo es "huérfano" si ninguna columna de la base de datos lo referencia
+// (p. ej. quedó al borrar facturas, que no borran sus archivos). Se detectan
+// automáticamente todas las columnas tipo ruta/URL de las tablas públicas.
+const obtenerReferencias = async () => {
+  const cols = await pool.query(`
+    SELECT table_name, column_name FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND data_type IN ('character varying', 'text')
+      AND column_name <> 'xml_raw'
+      AND (column_name ILIKE '%path%' OR column_name ILIKE '%url%'
+           OR column_name ILIKE '%archivo%' OR column_name ILIKE '%soporte%'
+           OR column_name ILIKE '%pdf%' OR column_name ILIKE '%xml%')
+  `);
+  if (!cols.rows.length) return { sql: 'SELECT NULL::text AS ref WHERE false', columnas: [] };
+  const partes = cols.rows.map(c =>
+    `SELECT "${c.column_name}"::text AS ref FROM public."${c.table_name}" WHERE "${c.column_name}" IS NOT NULL`
+  );
+  // Si alguna referencia es una URL completa, se queda solo con la ruta dentro del bucket
+  const sql = `SELECT DISTINCT regexp_replace(ref, '^.*/${BUCKET}/', '') AS ref FROM (${partes.join(' UNION ALL ')}) t`;
+  return { sql, columnas: cols.rows.map(c => `${c.table_name}.${c.column_name}`) };
+};
+
+const analizarBucket = async () => {
+  const { sql, columnas } = await obtenerReferencias();
+  const base = `
+    WITH refs AS (${sql}),
+    obj AS (
+      SELECT o.name, COALESCE((o.metadata->>'size')::bigint, 0) AS size, o.created_at,
+             CASE WHEN position('/' in o.name) > 0 THEN split_part(o.name, '/', 1) ELSE '(raíz)' END AS carpeta,
+             lower(substring(o.name from '\\.([^./]+)$')) AS ext,
+             EXISTS (SELECT 1 FROM refs r WHERE r.ref = o.name) AS referenciado
+      FROM storage.objects o WHERE o.bucket_id = $1
+    )`;
+  const tot = await pool.query(`${base}
+    SELECT referenciado, COUNT(*)::int AS n, COALESCE(SUM(size),0)::bigint AS bytes FROM obj GROUP BY referenciado`, [BUCKET]);
+  const porCarpeta = await pool.query(`${base}
+    SELECT carpeta, COALESCE(ext,'?') AS ext, referenciado, COUNT(*)::int AS n, SUM(size)::bigint AS bytes
+    FROM obj GROUP BY 1,2,3 ORDER BY bytes DESC LIMIT 30`, [BUCKET]);
+  const huerfanosPorMes = await pool.query(`${base}
+    SELECT to_char(created_at, 'YYYY-MM') AS mes, COUNT(*)::int AS n, SUM(size)::bigint AS bytes
+    FROM obj WHERE NOT referenciado GROUP BY 1 ORDER BY 1`, [BUCKET]);
+  const borrables = await pool.query(`${base}
+    SELECT COUNT(*)::int AS n, COALESCE(SUM(size),0)::bigint AS bytes FROM obj
+    WHERE NOT referenciado AND created_at < NOW() - INTERVAL '24 hours'`, [BUCKET]);
+
+  const r = { referenciados: { n: 0, bytes: 0 }, huerfanos: { n: 0, bytes: 0 } };
+  tot.rows.forEach(x => { r[x.referenciado ? 'referenciados' : 'huerfanos'] = { n: x.n, bytes: Number(x.bytes) }; });
+  return {
+    total: { n: r.referenciados.n + r.huerfanos.n, bytes: r.referenciados.bytes + r.huerfanos.bytes },
+    ...r,
+    huerfanosBorrables: { n: borrables.rows[0].n, bytes: Number(borrables.rows[0].bytes) },
+    porCarpeta: porCarpeta.rows.map(x => ({ ...x, bytes: Number(x.bytes) })),
+    huerfanosPorMes: huerfanosPorMes.rows.map(x => ({ ...x, bytes: Number(x.bytes) })),
+    columnasRevisadas: columnas,
+  };
+};
+
+const borrarHuerfanos = async () => {
+  const { sql } = await obtenerReferencias();
+  const { rows } = await pool.query(`
+    WITH refs AS (${sql})
+    SELECT o.name, COALESCE((o.metadata->>'size')::bigint, 0) AS size
+    FROM storage.objects o
+    WHERE o.bucket_id = $1 AND o.created_at < NOW() - INTERVAL '24 hours'
+      AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.ref = o.name)`, [BUCKET]);
+  let borrados = 0, fallidos = 0, bytesLiberados = 0, error = null;
+  for (let i = 0; i < rows.length; i += 100) {
+    const lote = rows.slice(i, i + 100);
+    try {
+      const ok = await borrarLote(lote.map(o => o.name));
+      for (const o of lote) { if (ok.has(o.name)) { borrados++; bytesLiberados += Number(o.size); } else fallidos++; }
+    } catch (e) {
+      console.error(`❌ Borrado huérfanos lote ${i / 100 + 1}:`, e.message);
+      fallidos += lote.length; error = e.message;
+      if (/restricted|402/i.test(e.message)) break;
+    }
+  }
+  console.log(`🧹 Huérfanos: ${borrados} borrados, ${fallidos} fallidos`);
+  return { borrados, fallidos, bytesLiberados, error };
+};
+
+module.exports = { analizar, ejecutar, analizarBucket, borrarHuerfanos };

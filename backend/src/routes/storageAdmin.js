@@ -1,6 +1,6 @@
 const express = require('express');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
-const { analizar, ejecutar } = require('../services/limpiezaStorage');
+const { analizar, ejecutar, analizarBucket, borrarHuerfanos } = require('../services/limpiezaStorage');
 
 const router = express.Router();
 
@@ -33,6 +33,20 @@ router.post('/liberar', authMiddleware, adminOnly, async (req, res) => {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// GET /api/storage-admin/analisis — qué ocupa el bucket y cuánto es huérfano
+router.get('/analisis', authMiddleware, adminOnly, async (req, res) => {
+  try { res.json(await analizarBucket()); }
+  catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/storage-admin/borrar-huerfanos  { confirmacion: 'BORRAR' }
+router.post('/borrar-huerfanos', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    if (req.body?.confirmacion !== 'BORRAR') return res.status(400).json({ error: 'Confirmación requerida' });
+    res.json(await borrarHuerfanos());
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
 module.exports = router;
