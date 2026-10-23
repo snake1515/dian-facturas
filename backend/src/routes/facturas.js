@@ -522,9 +522,16 @@ router.get('/:id/pdf', authMiddleware, async (req, res) => {
 router.get('/:id/xml', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT xml_path, numero FROM facturas WHERE id = $1', [id]);
-    if (!result.rows.length || !result.rows[0].xml_path) return res.status(404).json({ error: 'XML no disponible' });
-    const buffer = await descargarArchivo(result.rows[0].xml_path);
+    const result = await pool.query('SELECT xml_path, xml_raw, numero FROM facturas WHERE id = $1', [id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
+    let buffer = null;
+    if (result.rows[0].xml_path) {
+      try { buffer = await descargarArchivo(result.rows[0].xml_path); }
+      catch (err) { console.error(`❌ XML factura ${id} (${result.rows[0].xml_path}):`, err.message); }
+    }
+    // Respaldo: el contenido del XML también se guarda en la columna xml_raw
+    if (!buffer && result.rows[0].xml_raw) buffer = Buffer.from(result.rows[0].xml_raw, 'utf-8');
+    if (!buffer) return res.status(404).json({ error: 'XML no disponible' });
     const filename = `factura_${result.rows[0].numero || id}.xml`;
     res.setHeader('Content-Type', 'application/xml');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
