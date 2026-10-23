@@ -487,12 +487,15 @@ router.get('/:id/pdf', authMiddleware, async (req, res) => {
     }
 
     // 2) Respaldo: si vino de Gmail, recuperar el PDF desde el correo original
-    if (!buffer && f.gmail_message_id && !(motivo || '').startsWith('Supabase Storage rechazó')) {
+    // (Gmail no depende de Supabase, así que se intenta aunque Storage esté bloqueado)
+    if (!buffer && f.gmail_message_id) {
       try {
         const rec = await recuperarPdfDesdeGmail(f.gmail_message_id);
         if (rec) {
           buffer = rec.buffer;
-          await pool.query('UPDATE facturas SET pdf_path = $1 WHERE id = $2', [rec.filename, id]);
+          if (rec.filename) {
+            await pool.query('UPDATE facturas SET pdf_path = $1 WHERE id = $2', [rec.filename, id]);
+          }
         } else {
           motivo = 'El correo original de Gmail no contiene un PDF (ni dentro del ZIP). Súbalo manualmente con "Subir PDF DIAN".';
         }

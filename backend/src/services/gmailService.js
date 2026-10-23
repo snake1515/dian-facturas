@@ -390,9 +390,16 @@ const recuperarPdfDesdeGmail = async (messageId) => {
   if (!encontrado) return null;
   const nombreBase = encontrado.nombre.split('/').pop();
   const pdfFilename = `${messageId}_${nombreBase}`;
-  await subirArchivo(encontrado.data, pdfFilename, 'application/pdf');
-  console.log(`☁️ PDF recuperado desde Gmail: ${pdfFilename}`);
-  return { filename: pdfFilename, buffer: encontrado.data };
+  // Si Storage falla (p. ej. cuota excedida), igual se devuelve el PDF para
+  // entregarlo al usuario; solo no queda guardado (filename = null).
+  try {
+    await subirArchivo(encontrado.data, pdfFilename, 'application/pdf');
+    console.log(`☁️ PDF recuperado desde Gmail: ${pdfFilename}`);
+    return { filename: pdfFilename, buffer: encontrado.data };
+  } catch (err) {
+    console.error(`⚠️ PDF recuperado de Gmail pero no se pudo guardar en Storage: ${err.message}`);
+    return { filename: null, buffer: encontrado.data };
+  }
 };
 
 module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos, recuperarPdfDesdeGmail };
