@@ -1,5 +1,6 @@
 // v2.1
 import React, { useState, useEffect } from 'react';
+import LimpiezaStorage from '../components/LimpiezaStorage';
 import { obtenerConfig, guardarConfig, gmailAuthUrl, gmailSync, gmailDisconnect, reiniciarCron, listarContactos, crearContacto, eliminarContacto } from '../services/api';
 
 export default function Configuracion() {
@@ -122,6 +123,7 @@ export default function Configuracion() {
     { id: 'contactos', label: '👥 Contactos' },
     { id: 'notificaciones', label: '🔔 Notificaciones' },
     { id: 'seguridad', label: '🔒 Seguridad' },
+    { id: 'storage', label: '🗄️ Storage' },
   ];
 
   if (loading) return <div style={{ padding: 24, color: '#64748b' }}>Cargando configuración...</div>;
@@ -323,13 +325,16 @@ export default function Configuracion() {
           </div>
         )}
 
+        {/* LIMPIEZA DE STORAGE */}
+        {tab === 'storage' && <LimpiezaStorage />}
+
         {/* Botón guardar global */}
-        <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid #2a3348', display: 'flex', alignItems: 'center', gap: 12 }}>
+        {tab !== 'storage' && <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid #2a3348', display: 'flex', alignItems: 'center', gap: 12 }}>
           <button style={btnPrimary} onClick={guardar} disabled={saving}>
             {saving ? 'Guardando...' : '💾 Guardar configuración'}
           </button>
           {saved && <span style={{ fontSize: 12, color: '#4ade80' }}>✓ Guardado correctamente</span>}
-        </div>
+        </div>}
       </div>
     </div>
   );

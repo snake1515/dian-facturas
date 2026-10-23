@@ -61,6 +61,7 @@ app.use('/api/pendientes', pendientesRoutes);
 app.use('/api/coincidencias', coincidenciasRoutes);
 app.use('/api/validador-inventario', validadorInventarioRoutes);
 app.use('/api/documentos-soporte', documentosSoporteRoutes);
+app.use('/api/storage-admin', require('./routes/storageAdmin'));
 
 // Health check
 app.get('/api/health', (req, res) => {
