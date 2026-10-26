@@ -55,6 +55,18 @@ export default function VersionWatcher({ children }) {
     };
   }, [checkVersion]);
 
+  // Al actualizar se cierra la sesión y se carga la raíz del sitio ("/"), que
+  // siempre existe en Render. Recargar la ruta actual (p. ej. /cruce-dian)
+  // devolvía "Not Found" porque el sitio estático no conoce las rutas internas.
+  // Sin sesión, la app redirige sola a la pantalla de login.
+  const irAlLogin = () => {
+    try {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+    } catch (e) { /* sin acceso a localStorage: igual se recarga */ }
+    window.location.replace('/?v=' + Date.now());
+  };
+
   if (isStale) {
     return (
       <div style={overlayStyle}>
@@ -63,10 +75,10 @@ export default function VersionWatcher({ children }) {
           <p style={{ margin: '0 0 20px', lineHeight: 1.5, color: '#475569' }}>
             Esta pestaña está usando una versión anterior de la aplicación.
             Para evitar errores o inconsistencias en los datos, actualiza
-            antes de continuar trabajando.
+            antes de continuar trabajando. Deberás iniciar sesión de nuevo.
           </p>
-          <button style={buttonStyle} onClick={() => window.location.reload()}>
-            Actualizar ahora
+          <button style={buttonStyle} onClick={irAlLogin}>
+            Actualizar e iniciar sesión
           </button>
         </div>
       </div>
