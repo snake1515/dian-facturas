@@ -71,7 +71,7 @@ export default function LimpiezaStorage() {
 
   return (
     <div>
-      <h3 style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0', marginBottom: 8, marginTop: 0 }}>Análisis del Storage</h3>
+      <h3 style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0', marginBottom: 8, marginTop: 0 }}>Análisis del Storage de Supabase (archivos antiguos)</h3>
       <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
         Muestra qué ocupa el Storage y cuántos archivos son <b>huérfanos</b>: archivos que ninguna factura,
         préstamo o soporte usa (por ejemplo, de facturas que se borraron).
