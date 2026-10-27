@@ -768,12 +768,51 @@ const initDB = async () => {
     await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos', 'contable')");
 
     console.log('✅ Base de datos inicializada correctamente');
+    // RLS ahora y otra vez a los 2 minutos (algunos módulos crean tablas al arrancar)
+    await protegerTablas();
+    setTimeout(protegerTablas, 2 * 60 * 1000);
   } finally {
     client.release();
   }
 };
 
-module.exports = { pool, initDB };
+// ── Seguridad: Row-Level Security en todas las tablas públicas ──────────────
+// Supabase expone las tablas del esquema "public" por su API REST (con la
+// anon key). Sin RLS, cualquiera con la URL del proyecto podría leerlas o
+// modificarlas. Esta app NO usa esa API: el backend entra directo a Postgres
+// con DATABASE_URL como dueño de las tablas, y el dueño no está sujeto a RLS
+// (no se usa FORCE). Activar RLS sin políticas cierra la API pública sin
+// afectar a la app. Solo se aplica a tablas cuyo dueño es el usuario actual
+// (o si tiene BYPASSRLS), para no bloquearle nunca el acceso a la app.
+const protegerTablas = async () => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT t.tablename,
+             (t.tableowner = current_user
+              OR (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user)) AS seguro
+      FROM pg_tables t
+      WHERE t.schemaname = 'public' AND NOT t.rowsecurity
+    `);
+    let activadas = 0;
+    for (const r of rows) {
+      if (!r.seguro) {
+        console.warn(`⚠️ RLS no activado en "${r.tablename}": el usuario de la app no es su dueño`);
+        continue;
+      }
+      try {
+        await pool.query(`ALTER TABLE public."${r.tablename.replace(/"/g, '""')}" ENABLE ROW LEVEL SECURITY`);
+        activadas++;
+      } catch (e) {
+        console.warn(`⚠️ No se pudo activar RLS en "${r.tablename}":`, e.message);
+      }
+    }
+    if (activadas) console.log(`🔒 RLS activado en ${activadas} tabla(s) públicas`);
+  } catch (e) {
+    console.error('⚠️ Error revisando RLS:', e.message);
+  }
+};
+
+module.exports = { pool, initDB, protegerTablas };
 
 
 
