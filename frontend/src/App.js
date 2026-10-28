@@ -61,7 +61,7 @@ function Layout({ children }) {
     textDecoration: 'none', transition: 'all .15s',
   });
 
-  const rolLabel = { admin: 'Administrador', editor: 'Editor', lector: 'Lector', obra: 'Obra', regente: 'Regente' }[user?.rol] || user?.rol;
+  const rolLabel = { admin: 'Administrador', editor: 'Editor', lector: 'Consulta', consulta: 'Consulta', obra: 'Obra', regente: 'Regente', contable: 'Contable' }[user?.rol] || user?.rol;
 
   const Sidebar = () => (
     <aside style={{

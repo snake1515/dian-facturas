@@ -85,7 +85,7 @@ export function AuthProvider({ children }) {
     reenviarFacturas:       isLector && !esRegente,
     asignarResponsables:    isEditor,
     editarNotas:            isObra,                    // obra, editor, admin
-    editarNotasInfraestructura: ['admin', 'editor', 'consulta'].includes(rol), // consulta, editor, admin
+    editarNotasInfraestructura: ['admin', 'editor', 'consulta', 'lector'].includes(rol), // consulta (y su nombre antiguo 'lector'), editor, admin
     editarDocIngreso:       isObra,                    // obra, editor, admin
     elegirFlujo:            isObra,                    // obra puede elegir OC/CM y cambiar
     editarEstadoContable:   isEditor,                  // solo editor/admin avanzan pasos

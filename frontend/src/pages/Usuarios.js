@@ -25,7 +25,7 @@ export default function Usuarios() {
   useEffect(() => { cargar(); }, []);
 
   const abrirNuevo = () => {
-    setForm({ nombre: '', email: '', password: '', rol: 'lector', activo: true });
+    setForm({ nombre: '', email: '', password: '', rol: 'consulta', activo: true, alias: '' });
     setEditId(null); setError(''); setModal('form');
   };
 
@@ -85,7 +85,7 @@ export default function Usuarios() {
     catch (err) { alert(err.response?.data?.error || 'Error'); }
   };
 
-  const rolLabel = (r) => ({ admin: 'Administrador', editor: 'Editor', lector: 'Lector', consulta: 'Consulta', obra: 'Obra', regente: 'Regente', contable: 'Contable' }[r] || r);
+  const rolLabel = (r) => ({ admin: 'Administrador', editor: 'Editor', lector: 'Consulta', consulta: 'Consulta', obra: 'Obra', regente: 'Regente', contable: 'Contable' }[r] || r);
   const rolColor = (r) => ({ admin: badgeBlue, editor: badgePurple, lector: badgeGray, consulta: badgeGray, obra: badgeOrange, regente: badgeTeal, contable: badgeGreen }[r] || badgeGray);
 
   return (
