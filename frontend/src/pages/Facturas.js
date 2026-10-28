@@ -1015,7 +1015,7 @@ function ExportModal({ facturas, tipo, onClose }) {
       return ESTADOS[f.estado_contable] || f.estado_contable || '';
     };
     const headers = ['Tipo','Número','Proveedor','NIT','Fecha Emisión','Subtotal','IVA','Total',
-      'Estado','Estado Contable','Doc. Ingreso','Responsables','Reenviado a','CUFE'];
+      'Estado','Estado Contable','Doc. Ingreso','Responsables','Reenviado a','CUFE','Notas infraestructura'];
     const rows = filtered.map(f => [
       f.tipo, f.numero, f.proveedor_nombre, f.proveedor_nit,
       f.fecha_emision ? String(f.fecha_emision).substring(0,10) : '',
@@ -1024,6 +1024,7 @@ function ExportModal({ facturas, tipo, onClose }) {
       f.documento_ingreso || '',
       (f.responsables || []).map(r => typeof r === 'string' ? r : (r.nombre ? r.nombre+' <'+r.email+'>' : r.email)).join('; '),
       f.reenviado_a || '', f.cufe || '',
+      f.notas_infraestructura || '',
     ]);
 
     // Build CSV with BOM for Excel spanish encoding
@@ -1069,7 +1070,7 @@ function ExportModal({ facturas, tipo, onClose }) {
         </div>
       </div>
       <div style={{ background: 'var(--t-bg-app)', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: 'var(--t-text-muted)' }}>
-        📋 Se exportarán <strong style={{ color: 'var(--t-text-primary)' }}>{filtered.length}</strong> registros con todas las columnas: tipo, número, proveedor, NIT, fecha, subtotal, IVA, total, estado, estado contable, documento de ingreso, responsables, CUFE.
+        📋 Se exportarán <strong style={{ color: 'var(--t-text-primary)' }}>{filtered.length}</strong> registros con todas las columnas: tipo, número, proveedor, NIT, fecha, subtotal, IVA, total, estado, estado contable, documento de ingreso, responsables, CUFE, notas infraestructura.
       </div>
     </Modal>
   );
