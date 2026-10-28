@@ -64,6 +64,7 @@ router.get('/', authMiddleware, async (req, res) => {
         OR f.documento_ingreso ILIKE $${i}
         OR f.proveedor_nit ILIKE $${i}
         OR f.notas ILIKE $${i}
+        OR f.notas_infraestructura ILIKE $${i}
         OR f.total::text ILIKE $${i}
         OR EXISTS (
           SELECT 1 FROM productos_factura pf
@@ -99,6 +100,7 @@ router.get('/', authMiddleware, async (req, res) => {
         f.xml_path,
         f.gmail_message_id,
         f.notas,
+        f.notas_infraestructura,
         f.es_contrato,
         f.forma_pago,
         f.origen,
@@ -337,7 +339,8 @@ router.post('/:id/reemplazar-con-gmail', authMiddleware, async (req, res) => {
         flujo_tipo         = $2,
         documento_ingreso  = $3,
         notas              = $4,
-        es_contrato        = $5
+        es_contrato        = $5,
+        notas_infraestructura = $7
       WHERE id = $6
     `, [
       manual.estado_contable,
@@ -346,6 +349,7 @@ router.post('/:id/reemplazar-con-gmail', authMiddleware, async (req, res) => {
       manual.notas,
       manual.es_contrato,
       gmailFacturaId,
+      manual.notas_infraestructura || null,
     ]);
 
     // Mover responsables de la manual a la de Gmail
@@ -594,6 +598,24 @@ router.put('/:id/documento-ingreso', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al actualizar documento de ingreso' });
+  }
+});
+
+// ── PUT /api/facturas/:id/notas-infraestructura ──────────────────────────────
+// Solo pueden editarla los roles admin, editor y consulta.
+const ROLES_NOTAS_INFRA = ['admin', 'editor', 'consulta'];
+router.put('/:id/notas-infraestructura', authMiddleware, async (req, res) => {
+  try {
+    if (!ROLES_NOTAS_INFRA.includes(req.user?.rol)) {
+      return res.status(403).json({ error: 'Su perfil no puede editar las notas de infraestructura' });
+    }
+    const { id } = req.params;
+    const valor = (req.body?.notas_infraestructura ?? '').toString().trim();
+    await pool.query('UPDATE facturas SET notas_infraestructura = $1 WHERE id = $2', [valor || null, id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al actualizar notas de infraestructura' });
   }
 });
 

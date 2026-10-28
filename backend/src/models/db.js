@@ -86,6 +86,7 @@ const initDB = async () => {
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS notas TEXT;
+      ALTER TABLE facturas ADD COLUMN IF NOT EXISTS notas_infraestructura TEXT;
       -- constraint manejado por Supabase directamente
       
       ALTER TABLE responsables_factura ADD COLUMN IF NOT EXISTS nombre VARCHAR(150);

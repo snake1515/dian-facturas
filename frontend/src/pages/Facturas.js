@@ -426,6 +426,7 @@ export default function Facturas({ tipo = 'FE' }) {
                   {thSort('documento_ingreso', 'Doc. ingreso')}
                   {thSort('estado_contable', 'Est. contable')}
                   <th style={th}>Notas</th>
+                  <th style={th}>Notas infraestructura</th>
                   <th style={th}>Forma pago</th>
                   <th style={th}>Acciones</th>
                 </tr>
@@ -472,6 +473,9 @@ export default function Facturas({ tipo = 'FE' }) {
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <NotasInput factura={f} onUpdate={cargar} canEdit={puede.editarNotas} />
+                    </td>
+                    <td style={td} onClick={e => e.stopPropagation()}>
+                      <NotasInfraInput factura={f} onUpdate={cargar} canEdit={puede.editarNotasInfraestructura} />
                     </td>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
                       {f.forma_pago
@@ -544,6 +548,11 @@ export default function Facturas({ tipo = 'FE' }) {
           {activeF.notas && (
             <Section title="Notas">
               <div style={{ fontSize: 13, color: 'var(--t-text-secondary)', whiteSpace: 'pre-wrap' }}>{activeF.notas}</div>
+            </Section>
+          )}
+          {activeF.notas_infraestructura && (
+            <Section title="Notas infraestructura">
+              <div style={{ fontSize: 13, color: 'var(--t-text-secondary)', whiteSpace: 'pre-wrap' }}>{activeF.notas_infraestructura}</div>
             </Section>
           )}
           {/* Toggle contrato */}
@@ -674,6 +683,40 @@ export default function Facturas({ tipo = 'FE' }) {
       )}
     </div>
   );
+}
+
+// ── Notas Infraestructura Input ──────────────────────────────────────────────
+// Igual que NotasInput pero sobre el campo notas_infraestructura.
+// Editable por consulta, editor y admin; los demás perfiles solo la ven.
+function NotasInfraInput({ factura, onUpdate, canEdit }) {
+  const [editing, setEditing] = React.useState(false);
+  const [val, setVal] = React.useState(factura.notas_infraestructura || '');
+  const [saving, setSaving] = React.useState(false);
+  const texto = factura.notas_infraestructura;
+
+  React.useEffect(() => { if (!editing) setVal(factura.notas_infraestructura || ''); }, [factura.notas_infraestructura, editing]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.put(`/facturas/${factura.id}/notas-infraestructura`, { notas_infraestructura: val });
+      await onUpdate(); setEditing(false);
+    } catch (err) { alert(err.response?.data?.error || 'Error al guardar notas de infraestructura'); }
+    finally { setSaving(false); }
+  };
+
+  if (!canEdit) return <span style={{ fontSize: 12, color: texto ? 'var(--t-text-primary)' : 'var(--t-text-muted)' }}>{texto || '—'}</span>;
+
+  if (editing) return (
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+      <input autoFocus value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setEditing(false); }}
+        style={{ width: 130, background: 'var(--t-bg-card)', border: '1px solid #3b82f6', borderRadius: 4, padding: '2px 6px', color: 'var(--t-text-primary)', fontSize: 12 }} placeholder="Nota infraestructura..." />
+      <button onClick={handleSave} disabled={saving} style={{ background: '#3b82f6', border: 'none', borderRadius: 4, color: '#fff', padding: '2px 6px', fontSize: 11, cursor: 'pointer' }}>✓</button>
+      <button onClick={() => setEditing(false)} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13 }}>✕</button>
+    </div>
+  );
+
+  return <span onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ fontSize: 12, color: texto ? 'var(--t-text-primary)' : 'var(--t-text-muted)', cursor: 'pointer', padding: '2px 4px', borderRadius: 4 }} title="Clic para editar">{texto || '+ Agregar'}</span>;
 }
 
 // ── Notas Input ───────────────────────────────────────────────────────────────
