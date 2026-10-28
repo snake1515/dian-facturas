@@ -13,6 +13,12 @@ export default function LimpiezaStorage() {
   const [analisis, setAnalisis] = useState(null);
   const [resHuerfanos, setResHuerfanos] = useState(null);
   const [analizando, setAnalizando] = useState(false);
+  const [consumo, setConsumo] = useState(null);
+
+  const verConsumo = async () => {
+    try { const res = await api.get('/storage-admin/consumo-bd'); setConsumo(res.data); }
+    catch (err) { alert(err.response?.data?.error || err.message); }
+  };
 
   const analizarTodo = async () => {
     setAnalizando(true); setResHuerfanos(null);
@@ -71,7 +77,38 @@ export default function LimpiezaStorage() {
 
   return (
     <div>
-      <h3 style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0', marginBottom: 8, marginTop: 0 }}>Análisis del Storage de Supabase (archivos antiguos)</h3>
+      <h3 style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0', marginBottom: 8, marginTop: 0 }}>Consumo de la base de datos (egress)</h3>
+      <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+        Cuántos datos ha traído cada pantalla desde la base de datos desde el último reinicio del servidor.
+        Es una estimación para saber qué consume más egress en Supabase.
+      </p>
+      <button onClick={verConsumo}
+        style={{ background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 13, cursor: 'pointer', marginBottom: 12 }}>
+        📈 Ver consumo
+      </button>
+      {consumo && (
+        <div style={caja}>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>
+            Desde {new Date(consumo.desde).toLocaleString('es-CO')} · Total: <b style={{ color: '#e2e8f0' }}>{mb(consumo.total)}</b>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>{['Ruta', 'Veces', 'Total', 'Por vez', 'Máx.'].map(h => <th key={h} style={{ ...td, color: '#64748b', textAlign: 'left' }}>{h}</th>)}</tr></thead>
+            <tbody>
+              {consumo.filas.slice(0, 25).map(f => (
+                <tr key={f.ruta} style={{ borderTop: '1px solid #1e2535' }}>
+                  <td style={{ ...td, wordBreak: 'break-all' }}>{f.ruta}</td>
+                  <td style={td}>{f.llamadas || f.consultas}</td>
+                  <td style={{ ...td, color: '#e2e8f0' }}>{mb(f.bytes)}</td>
+                  <td style={td}>{mb(f.bytes / Math.max(1, f.llamadas || f.consultas))}</td>
+                  <td style={td}>{mb(f.max)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h3 style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0', marginBottom: 8, marginTop: 24, paddingTop: 16, borderTop: '1px solid #2a3348' }}>Análisis del Storage de Supabase (archivos antiguos)</h3>
       <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
         Muestra qué ocupa el Storage y cuántos archivos son <b>huérfanos</b>: archivos que ninguna factura,
         préstamo o soporte usa (por ejemplo, de facturas que se borraron).

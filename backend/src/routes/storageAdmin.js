@@ -49,4 +49,9 @@ router.post('/borrar-huerfanos', authMiddleware, adminOnly, async (req, res) => 
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/storage-admin/consumo-bd — datos devueltos por la BD, por ruta
+router.get('/consumo-bd', authMiddleware, adminOnly, (req, res) => {
+  res.json(require('../services/medidorEgress').reporte());
+});
+
 module.exports = router;

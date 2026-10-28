@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const cron = require('node-cron');
 const path = require('path');
 
+const medidorEgress = require('./services/medidorEgress'); // debe cargarse antes que la BD
 const { initDB, pool } = require('./models/db');
 const { sincronizarCorreos } = require('./services/gmailService');
 
@@ -48,6 +49,9 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Medición de consumo de la base de datos por ruta
+app.use(medidorEgress.middleware);
 
 // Rutas
 app.use('/api/auth', authRoutes);
