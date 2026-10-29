@@ -385,9 +385,10 @@ export default function Facturas({ tipo = 'FE' }) {
             try {
               const fd = new FormData();
               fd.append('pdf', file);
-              await api.post('/facturas/subir-pdf', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+              const resp = await api.post('/facturas/subir-pdf', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
               await cargar();
-              alert('✅ Factura subida correctamente');
+              if (resp.data?.sinPdf) alert('⚠️ ' + resp.data.mensaje);
+              else alert(resp.data?.pdfAdjuntado ? '📎 ' + resp.data.mensaje : '✅ Factura subida correctamente');
             } catch (err) {
               const msg = err.response?.data?.mensaje || err.response?.data?.error || err.message;
               if (err.response?.status === 409) { alert('⚠️ ' + msg); }

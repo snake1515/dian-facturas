@@ -31,12 +31,31 @@ router.post('/subir-pdf', authMiddleware, upload.single('pdf'), async (req, res)
 
     // Verificar duplicado por número + NIT
     const existente = await pool.query(
-      'SELECT id, origen FROM facturas WHERE numero = $1 AND proveedor_nit = $2',
+      'SELECT id, origen, pdf_path FROM facturas WHERE numero = $1 AND proveedor_nit = $2',
       [datos.numero, datos.proveedorNit]
     );
 
     if (existente.rows.length > 0) {
       const dup = existente.rows[0];
+
+      // La factura ya existe pero quedó SIN PDF (p. ej. falló el Storage al subirla):
+      // en vez de rechazarla como duplicado, se le adjunta este PDF.
+      if (!dup.pdf_path) {
+        const nombre = `manual_${Date.now()}_${req.file.originalname}`;
+        try {
+          await subirArchivo(pdfBuffer, nombre, 'application/pdf');
+        } catch (storageErr) {
+          console.error('Error adjuntando PDF a factura existente:', storageErr.message);
+          return res.status(500).json({ error: `La factura ${datos.numero} ya existe y no tiene PDF, pero no se pudo guardar el archivo: ${storageErr.message}` });
+        }
+        await pool.query('UPDATE facturas SET pdf_path = $1 WHERE id = $2', [nombre, dup.id]);
+        console.log(`📎 PDF adjuntado a factura existente ${datos.numero} (id ${dup.id})`);
+        return res.json({
+          ok: true, facturaId: dup.id, pdfAdjuntado: true,
+          mensaje: `La factura ${datos.numero} ya existía sin PDF: se le adjuntó este archivo.`,
+        });
+      }
+
       return res.status(409).json({
         error: 'duplicado',
         facturaId: dup.id,
@@ -48,11 +67,13 @@ router.post('/subir-pdf', authMiddleware, upload.single('pdf'), async (req, res)
     // Subir PDF al storage
     const pdfFilename = `manual_${Date.now()}_${req.file.originalname}`;
     let pdfPath = null;
+    let avisoStorage = null;
     try {
       await subirArchivo(pdfBuffer, pdfFilename, 'application/pdf');
       pdfPath = pdfFilename;
     } catch (storageErr) {
       console.error('Error subiendo PDF al storage:', storageErr.message);
+      avisoStorage = `La factura se registró, pero el PDF no se pudo guardar (${storageErr.message}). Vuelva a subir el mismo PDF más tarde para adjuntarlo.`;
     }
 
     // Insertar factura
@@ -90,7 +111,7 @@ router.post('/subir-pdf', authMiddleware, upload.single('pdf'), async (req, res)
     }
 
     console.log(`✅ Factura PDF manual ${datos.numero} de ${datos.proveedorNombre} guardada`);
-    res.json({ ok: true, facturaId, datos });
+    res.json({ ok: true, facturaId, datos, ...(avisoStorage ? { mensaje: avisoStorage, sinPdf: true } : {}) });
   } catch (err) {
     console.error('Error subiendo PDF:', err);
     res.status(500).json({ error: err.message });
