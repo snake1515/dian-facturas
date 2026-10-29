@@ -31,7 +31,10 @@ router.get('/', authMiddleware, async (req, res) => {
       valores.push(estado_contable);
     }
 
-    if (origen) {
+    if (origen === 'pdf_manual_sin_pdf') {
+      // Facturas manuales que quedaron sin PDF (p. ej. falló el Storage al subirlas)
+      condiciones.push(`(f.origen = 'pdf_manual' AND f.pdf_path IS NULL)`);
+    } else if (origen) {
       condiciones.push(`f.origen = $${i++}`);
       valores.push(origen);
     }

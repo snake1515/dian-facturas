@@ -351,6 +351,7 @@ export default function Facturas({ tipo = 'FE' }) {
           <option value="">Todos los orígenes</option>
           <option value="gmail">📧 Gmail</option>
           <option value="pdf_manual">📄 PDF Manual</option>
+          <option value="pdf_manual_sin_pdf">⚠️ Manuales sin PDF</option>
         </select>
         <select style={{ ...inputSt, flex: '0 1 140px' }} value={filterMes} onChange={e => setFilterMes(e.target.value)}>
           <option value="">Todos los meses</option>
