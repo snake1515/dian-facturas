@@ -2634,15 +2634,23 @@ function ListasConteo({ bodega, isEditor, isAdmin, inputStyle, fmtPesos, sesionS
                         </select>
                       )}
                     </td>
-                    <td style={{ padding: '6px 8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <input
-                          type="text"
-                          value={editMotivo[item.id] !== undefined ? editMotivo[item.id] : (item.motivo_diferencia || rep?.motivo_diferencia || '')}
-                          onChange={(e) => setEditMotivo(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          placeholder={rep && rep.diferencia_cantidad_actual ? 'Ej: producto vencido dado de baja' : '—'}
-                          style={{ ...inputStyle, width: 140, fontSize: 12, ...(rep && rep.diferencia_cantidad_actual && !(item.motivo_diferencia || rep.motivo_diferencia) ? { borderColor: '#fbbf24' } : {}) }}
-                        />
+                    <td style={{ padding: '6px 8px', minWidth: 280 }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+                        {(() => {
+                          // Textarea que crece con el texto: se ve completo lo que se escriba
+                          const valorMotivo = editMotivo[item.id] !== undefined ? editMotivo[item.id] : (item.motivo_diferencia || rep?.motivo_diferencia || '');
+                          const filas = Math.min(8, Math.max(1, valorMotivo.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / 32)), 0)));
+                          return (
+                            <textarea
+                              rows={filas}
+                              value={valorMotivo}
+                              title={valorMotivo}
+                              onChange={(e) => setEditMotivo(prev => ({ ...prev, [item.id]: e.target.value }))}
+                              placeholder={rep && rep.diferencia_cantidad_actual ? 'Ej: producto vencido dado de baja' : '—'}
+                              style={{ ...inputStyle, width: 240, fontSize: 12, lineHeight: 1.4, resize: 'vertical', fontFamily: 'inherit', whiteSpace: 'pre-wrap', wordBreak: 'break-word', ...(rep && rep.diferencia_cantidad_actual && !(item.motivo_diferencia || rep.motivo_diferencia) ? { borderColor: '#fbbf24' } : {}) }}
+                            />
+                          );
+                        })()}
                         <button
                           onClick={() => guardarMotivo(item)}
                           disabled={editMotivo[item.id] === undefined || guardandoMotivoId === item.id}
