@@ -1427,23 +1427,39 @@ function FormEditarMovimiento({ movimiento, clinicas, productos, onSaved, onCanc
     setBusqProd('');
   }
 
+  // Cantidad y precio se guardan como texto mientras se escriben (para poder
+  // dejar el campo vacío y usar coma o punto decimal); se convierten a número
+  // al calcular el total y al guardar.
   function actualizarItem(codigo, campo, val) {
-    setItems(prev => prev.map(i => i.codigo === codigo
-      ? { ...i, [campo]: campo === 'cantidad' || campo === 'precio_unitario' ? Number(val) : val }
-      : i));
+    setItems(prev => prev.map(i => i.codigo === codigo ? { ...i, [campo]: val } : i));
   }
+  const aNumero = v => {
+    const t = String(v ?? '').trim().replace(/\s/g, '');
+    if (t === '') return NaN;
+    // "36.589,69" o "36589,69" → coma decimal; "36589.69" → punto decimal;
+    // "1.829.484" (varios puntos, sin coma) → puntos de miles
+    const norm = t.includes(',') ? t.replace(/\./g, '').replace(',', '.')
+      : ((t.match(/\./g) || []).length > 1 ? t.replace(/\./g, '') : t);
+    return Number(norm);
+  };
 
   function quitarItem(codigo) {
     setItems(prev => prev.filter(i => i.codigo !== codigo));
   }
 
-  const total = items.reduce((s, i) => s + Number(i.cantidad || 0) * Number(i.precio_unitario || 0), 0);
+  const total = items.reduce((s, i) => s + (aNumero(i.cantidad) || 0) * (aNumero(i.precio_unitario) || 0), 0);
 
   async function guardar() {
     setError('');
     if (!fecha)       return setError('La fecha es requerida');
     if (!docContable) return setError('El documento contable es requerido');
     if (items.length === 0) return setError('Debe haber al menos un producto');
+    for (const it of items) {
+      const c = aNumero(it.cantidad), pu = aNumero(it.precio_unitario);
+      if (!Number.isFinite(c) || c <= 0) return setError(`Cantidad inválida en ${it.codigo}`);
+      if (!Number.isFinite(pu) || pu < 0) return setError(`Precio unitario inválido en ${it.codigo}`);
+    }
+    const itemsNum = items.map(it => ({ ...it, cantidad: aNumero(it.cantidad), precio_unitario: aNumero(it.precio_unitario) }));
 
     setSaving(true);
     try {
@@ -1462,7 +1478,7 @@ function FormEditarMovimiento({ movimiento, clinicas, productos, onSaved, onCanc
           fecha,
           documento_contable: docContable,
           observaciones,
-          items,
+          items: itemsNum,
         }),
       });
       onSaved();
@@ -1553,14 +1569,14 @@ function FormEditarMovimiento({ movimiento, clinicas, productos, onSaved, onCanc
                     style={{ width: '100%', padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
                 </td>
                 <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
-                  <input type='number' min={1} value={item.cantidad} onChange={e => actualizarItem(item.codigo, 'cantidad', e.target.value)}
+                  <input type='text' inputMode='decimal' value={item.cantidad ?? ''} onChange={e => actualizarItem(item.codigo, 'cantidad', e.target.value)}
                     style={{ width: 65, padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
                 </td>
                 <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
-                  <input type='number' min={0} value={item.precio_unitario} onChange={e => actualizarItem(item.codigo, 'precio_unitario', e.target.value)}
+                  <input type='text' inputMode='decimal' value={item.precio_unitario ?? ''} onChange={e => actualizarItem(item.codigo, 'precio_unitario', e.target.value)}
                     style={{ width: 90, padding: '4px 7px', border: '1px solid var(--t-border)', borderRadius: 6, fontSize: 12, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
                 </td>
-                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{fmt(item.cantidad * item.precio_unitario)}</td>
+                <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontWeight: 500 }}>{fmt((aNumero(item.cantidad) || 0) * (aNumero(item.precio_unitario) || 0))}</td>
                 <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--t-border)' }}>
                   <button onClick={() => quitarItem(item.codigo)}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t-text-muted)', fontSize: 16 }}>✕</button>
