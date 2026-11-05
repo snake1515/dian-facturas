@@ -163,50 +163,58 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
 
   const qp = qProd.trim().toLowerCase();
   const itemOk = i => !qp || String(i.codigo || '').toLowerCase().includes(qp) || String(i.nombre || '').toLowerCase().includes(qp);
-  const medida = i => (modo === 'cantidad' ? Number(i.cantidad || 0) : Number(i.cantidad || 0) * Number(i.precio_unitario || 0));
-
-  // ── Agregación principal ──────────────────────────────────────────────
-  const datos = useMemo(() => {
-    const porTer = {};   // k -> { k, nombre, epo, idp, ipe, ed, docs:[] , prods:{} }
+  // ── Agregación principal (valor y unidades a la vez; "modo" solo elige qué se muestra) ──
+  const base = useMemo(() => {
+    const porTer = {};
     const porMes = {};
+    const lineas = [];   // detalle a nivel de producto, para el Excel
     const enRango = movs.filter(p => {
       const f = fechaDe(p);
       return (!ini || f >= ini) && f <= fin && (tercero === 'todos' || claveTercero(p) === tercero);
     });
+    const cero = () => ({ epo: 0, idp: 0, ipe: 0, ed: 0 });
     enRango.forEach(p => {
       const t = TIPOS[p.tipo];
       const k = claveTercero(p);
-      if (!porTer[k]) porTer[k] = { k, nombre: nomDe(k, p), epo: 0, idp: 0, ipe: 0, ed: 0, docs: [], prods: {}, ultima: '' };
+      const f = fechaDe(p);
+      const items = (p.items || []).filter(itemOk);
+      if (qp && !items.length) return;
+      if (!porTer[k]) porTer[k] = { k, nombre: nomDe(k, p), V: cero(), Q: cero(), docs: [], prods: {}, ultima: '' };
       const T = porTer[k];
-      let totalDoc = 0;
-      (p.items || []).forEach(i => {
-        if (!itemOk(i)) return;
-        const v = medida(i);
-        const vv = Number(i.cantidad || 0) * Number(i.precio_unitario || 0);
+      const sk = t.sigla.toLowerCase();
+      let docV = 0, docQ = 0;
+      items.forEach(i => {
         const q = Number(i.cantidad || 0);
-        totalDoc += v;
-        T[t.sigla.toLowerCase()] += v;
+        const pu = Number(i.precio_unitario || 0);
+        const vv = q * pu;
+        docV += vv; docQ += q;
+        T.V[sk] += vv; T.Q[sk] += q;
         const pk = String(i.codigo || i.nombre || '—');
         if (!T.prods[pk]) T.prods[pk] = { codigo: i.codigo || '', nombre: i.nombre || '', nosQ: 0, nosV: 0, debQ: 0, debV: 0 };
         const P = T.prods[pk];
         if (!P.nombre && i.nombre) P.nombre = i.nombre;
         P[t.lado + 'Q'] += t.signo * q;
         P[t.lado + 'V'] += t.signo * vv;
+        lineas.push({ fecha: f, doc: p.documento_contable, sigla: t.sigla, txt: t.txt, lado: t.lado, signo: t.signo,
+          tercero: T.nombre, bodega: p.bodega_nombre || p.bodega_codigo || '', codigo: i.codigo || '', nombre: i.nombre || '',
+          q, pu, v: vv, lote: i.lote || '' });
       });
-      if (qp && totalDoc === 0 && !(p.items || []).some(itemOk)) return;
-      T.docs.push({ id: p.id, fecha: fechaDe(p), doc: p.documento_contable, sigla: t.sigla, txt: t.txt, lado: t.lado, signo: t.signo, valor: totalDoc, bodega: p.bodega_nombre || p.bodega_codigo || '' });
-      if (fechaDe(p) > T.ultima) T.ultima = fechaDe(p);
+      T.docs.push({ id: p.id, fecha: f, doc: p.documento_contable, sigla: t.sigla, txt: t.txt, lado: t.lado, signo: t.signo,
+        valorV: docV, valorQ: docQ, bodega: p.bodega_nombre || p.bodega_codigo || '', obs: p.observaciones || '' });
+      if (f > T.ultima) T.ultima = f;
       // Tendencia: solo dentro del periodo visible (en "corte" se muestra desde "desde" si lo hay)
-      const f = fechaDe(p);
       if (!desde || f >= desde) {
         const mk = f.substring(0, 7);
-        if (!porMes[mk]) porMes[mk] = { k: mk, label: `${MESES[Number(mk.substring(5, 7)) - 1]} ${mk.substring(2, 4)}`, nos: 0, deb: 0 };
-        porMes[mk][t.lado] += t.signo * totalDoc;
+        if (!porMes[mk]) porMes[mk] = { k: mk, label: `${MESES[Number(mk.substring(5, 7)) - 1]} ${mk.substring(2, 4)}`,
+          V: { nos: 0, deb: 0, ...cero() }, Q: { nos: 0, deb: 0, ...cero() } };
+        porMes[mk].V[t.lado] += t.signo * docV; porMes[mk].Q[t.lado] += t.signo * docQ;
+        porMes[mk].V[sk] += docV; porMes[mk].Q[sk] += docQ;
       }
     });
-    const lista = Object.values(porTer).map(T => ({
-      ...T, nos: T.epo - T.idp, deb: T.ipe - T.ed, neto: (T.epo - T.idp) - (T.ipe - T.ed),
-    }));
+    const lista = Object.values(porTer).map(T => {
+      const sal = S => ({ nos: S.epo - S.idp, deb: S.ipe - S.ed, neto: (S.epo - S.idp) - (S.ipe - S.ed) });
+      return { ...T, sV: sal(T.V), sQ: sal(T.Q) };
+    });
     // Productos: el saldo se mira por tercero + producto; lo que un tercero
     // devolvió de más de un producto no tapa la deuda de otro tercero.
     const prods = {};
@@ -219,8 +227,19 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
       if (P.nosQ < -TOL || P.debQ < -TOL) sobrantes++;
     }));
     const meses = Object.values(porMes).sort((a, b) => a.k.localeCompare(b.k));
-    return { lista, prods: Object.values(prods), meses, sobrantes, nDocs: enRango.length };
-  }, [movs, ini, fin, desde, tercero, qp, modo, nombreTercero]);
+    return { lista, prods: Object.values(prods), meses, sobrantes, nDocs: enRango.length, lineas };
+  }, [movs, ini, fin, desde, tercero, qp, nombreTercero]);
+
+  // Vista según el modo elegido (valor $ o unidades).
+  const datos = useMemo(() => {
+    const cant = modo === 'cantidad';
+    const lista = base.lista.map(T => {
+      const S = cant ? T.Q : T.V, s = cant ? T.sQ : T.sV;
+      return { ...T, ...S, ...s, docs: T.docs.map(d => ({ ...d, valor: cant ? d.valorQ : d.valorV })) };
+    });
+    const meses = base.meses.map(m => ({ ...m, nos: (cant ? m.Q : m.V).nos, deb: (cant ? m.Q : m.V).deb }));
+    return { ...base, lista, meses };
+  }, [base, modo]);
 
   const fmtV = v => (modo === 'cantidad' ? num(v) + ' und' : cop(v));
   const totNos = datos.lista.reduce((s, t) => s + Math.max(0, t.nos), 0);
@@ -242,24 +261,138 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
 
   const detalle = sel ? datos.lista.find(t => t.k === sel) : null;
 
+  // ── Exportación a Excel: una hoja por cada bloque del dashboard ─────────
   function exportar() {
+    const FMT_COP = '"$"#,##0;[Red]-"$"#,##0';
+    const FMT_NUM = '#,##0.##;[Red]-#,##0.##';
+    const FMT_PCT = '0.0%';
     const wb = XLSX.utils.book_new();
-    const u = modo === 'cantidad' ? ' (und)' : ' ($)';
-    const hT = datos.lista.map(t => ({
-      Tercero: t.nombre, ['Prestado EPO' + u]: t.epo, ['Devuelto IDP' + u]: t.idp, ['Nos debe' + u]: t.nos,
-      ['Recibido IPE' + u]: t.ipe, ['Devolvimos ED' + u]: t.ed, ['Le debemos' + u]: t.deb, ['Neto' + u]: t.neto, 'Último movimiento': t.ultima,
-    })).sort((a, b) => b['Nos debe' + u] - a['Nos debe' + u]);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hT), 'Saldos por tercero');
-    const hp = lado => datos.prods.filter(p => p[lado + 'Q'] > TOL).sort((a, b) => b[lado + 'V'] - a[lado + 'V']).map(p => ({
-      Código: p.codigo, Producto: p.nombre, Cantidad: p[lado + 'Q'], 'Valor ($)': p[lado + 'V'],
-      Terceros: (lado === 'nos' ? p.terNos : p.terDeb).map(x => `${x.nombre} (${num(x.q)})`).join('; '),
+    // cols: [{ h: encabezado, w: ancho, t: 'cop' | 'num' | 'pct' | undefined }]
+    function hoja(nombre, cols, filas, titulo) {
+      const aoa = [];
+      if (titulo) { aoa.push([titulo]); aoa.push([]); }
+      aoa.push(cols.map(c => c.h));
+      filas.forEach(f => aoa.push(f));
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      const off = titulo ? 3 : 1;
+      filas.forEach((f, ri) => cols.forEach((c, ci) => {
+        const cell = ws[XLSX.utils.encode_cell({ r: ri + off, c: ci })];
+        if (cell && cell.t === 'n') cell.z = c.t === 'cop' ? FMT_COP : c.t === 'pct' ? FMT_PCT : c.t === 'num' ? FMT_NUM : undefined;
+      }));
+      ws['!cols'] = cols.map(c => ({ wch: c.w || 14 }));
+      if (filas.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: off - 1, c: 0 }, e: { r: off - 1 + filas.length, c: cols.length - 1 } }) };
+      XLSX.utils.book_append_sheet(wb, ws, nombre.substring(0, 31));
+    }
+    const L = base.lista;
+    const pos = x => Math.max(0, x);
+    const tNosV = L.reduce((s, t) => s + pos(t.sV.nos), 0), tDebV = L.reduce((s, t) => s + pos(t.sV.deb), 0);
+    const tNosQ = L.reduce((s, t) => s + pos(t.sQ.nos), 0), tDebQ = L.reduce((s, t) => s + pos(t.sQ.deb), 0);
+    const nomTer = tercero === 'todos' ? 'Todos' : (terceros.find(([k]) => k === tercero) || [, tercero])[1];
+
+    // 1. Resumen
+    const topV = [...L].sort((a, b) => b.sV.nos - a.sV.nos)[0];
+    const topD = [...L].sort((a, b) => b.sV.deb - a.sV.deb)[0];
+    const resumen = [
+      ['Generado', new Date().toLocaleString('es-CO')],
+      ['Cálculo', calculo === 'corte' ? 'Saldo al corte (acumulado desde el inicio)' : 'Solo movimientos del periodo'],
+      ['Año', anio === 'todos' ? 'Todos' : anio],
+      ['Desde', calculo === 'corte' ? 'Inicio' : (desde || 'Inicio')],
+      ['Hasta (corte)', hasta || hoy],
+      ['Tercero', nomTer],
+      ['Producto (filtro)', qProd || 'Todos'],
+      [],
+      ['Indicador', 'Valor ($)', 'Unidades'],
+      ['Nos deben (EPO − IDP)', tNosV, tNosQ],
+      ['Le debemos (IPE − ED)', tDebV, tDebQ],
+      ['Saldo neto', tNosV - tDebV, tNosQ - tDebQ],
+      ['Terceros que nos deben', L.filter(t => t.sV.nos > TOL).length, L.filter(t => t.sQ.nos > TOL).length],
+      ['Terceros a los que debemos', L.filter(t => t.sV.deb > TOL).length, L.filter(t => t.sQ.deb > TOL).length],
+      ['Quien más nos debe', topV && topV.sV.nos > TOL ? `${topV.nombre}` : '—', topV && topV.sV.nos > TOL ? topV.sV.nos : ''],
+      ['A quien más le debemos', topD && topD.sV.deb > TOL ? `${topD.nombre}` : '—', topD && topD.sV.deb > TOL ? topD.sV.deb : ''],
+      ['Documentos considerados', base.nDocs, ''],
+      ['Combinaciones tercero-producto con devoluciones de más', base.sobrantes, ''],
+      [],
+      ['Criterio', 'Nos debe = EPO − IDP · Le debemos = IPE − ED. Los saldos negativos (devoluciones de más) no se suman en los totales de deuda.'],
+    ];
+    const wsR = XLSX.utils.aoa_to_sheet([['Saldos de préstamos por tercero'], [], ...resumen]);
+    [11, 12, 13, 16, 17].forEach(r0 => {
+      const c1 = wsR[XLSX.utils.encode_cell({ r: r0, c: 1 })]; if (c1 && c1.t === 'n') c1.z = FMT_COP;
+      const c2 = wsR[XLSX.utils.encode_cell({ r: r0, c: 2 })]; if (c2 && c2.t === 'n') c2.z = r0 >= 16 ? FMT_COP : FMT_NUM;
+    });
+    wsR['!cols'] = [{ wch: 48 }, { wch: 40 }, { wch: 18 }];
+    XLSX.utils.book_append_sheet(wb, wsR, 'Resumen');
+
+    // 2. Saldos por tercero (valor y unidades)
+    const filasT = [...L].sort((a, b) => b.sV.nos - a.sV.nos).map(t => [
+      t.nombre, t.sV.nos, t.sV.deb, t.sV.neto, t.V.epo, t.V.idp, t.V.ipe, t.V.ed,
+      t.sQ.nos, t.sQ.deb, t.Q.epo, t.Q.idp, t.Q.ipe, t.Q.ed,
+      t.docs.length, t.ultima,
+    ]);
+    hoja('Saldos por tercero', [
+      { h: 'Tercero', w: 38 }, { h: 'Nos debe ($)', t: 'cop', w: 16 }, { h: 'Le debemos ($)', t: 'cop', w: 16 }, { h: 'Neto ($)', t: 'cop', w: 16 },
+      { h: 'Prestado EPO ($)', t: 'cop', w: 16 }, { h: 'Devuelto IDP ($)', t: 'cop', w: 16 }, { h: 'Recibido IPE ($)', t: 'cop', w: 16 }, { h: 'Devolvimos ED ($)', t: 'cop', w: 16 },
+      { h: 'Nos debe (und)', t: 'num' }, { h: 'Le debemos (und)', t: 'num' },
+      { h: 'Prestado EPO (und)', t: 'num' }, { h: 'Devuelto IDP (und)', t: 'num' }, { h: 'Recibido IPE (und)', t: 'num' }, { h: 'Devolvimos ED (und)', t: 'num' },
+      { h: 'Documentos', t: 'num', w: 11 }, { h: 'Último movimiento', w: 16 },
+    ], filasT);
+
+    // 3 y 4. Rankings
+    const ranking = (campo) => {
+      const fil = L.filter(t => t.sV[campo] > TOL).sort((a, b) => b.sV[campo] - a.sV[campo]);
+      const tot = fil.reduce((s, t) => s + t.sV[campo], 0) || 1;
+      let acum = 0;
+      return fil.map((t, i) => { acum += t.sV[campo]; return [i + 1, t.nombre, t.sV[campo], t.sQ[campo], t.sV[campo] / tot, acum / tot]; });
+    };
+    const colsRank = (tit) => [{ h: '#', w: 5 }, { h: 'Tercero', w: 38 }, { h: tit + ' ($)', t: 'cop', w: 16 }, { h: tit + ' (und)', t: 'num' }, { h: '% del total', t: 'pct', w: 11 }, { h: '% acumulado', t: 'pct', w: 12 }];
+    hoja('Clínicas que más nos deben', colsRank('Nos debe'), ranking('nos'), 'Clínicas que más nos deben (EPO − IDP)');
+    hoja('A quiénes más debemos', colsRank('Le debemos'), ranking('deb'), 'Terceros a los que más les debemos (IPE − ED)');
+
+    // 5 y 6. Productos
+    const hp = lado => {
+      const fil = base.prods.filter(p => p[lado + 'Q'] > TOL).sort((a, b) => b[lado + 'V'] - a[lado + 'V']);
+      const tot = fil.reduce((s, p) => s + p[lado + 'V'], 0) || 1;
+      return fil.map((p, i) => {
+        const ters = (lado === 'nos' ? p.terNos : p.terDeb).slice().sort((a, b) => b.v - a.v);
+        return [i + 1, p.codigo, p.nombre, p[lado + 'Q'], p[lado + 'V'], p[lado + 'V'] / tot, ters.length, ters[0]?.nombre || '', ters.map(x => `${x.nombre} (${num(x.q)})`).join('; ')];
+      });
+    };
+    const colsP = [{ h: '#', w: 5 }, { h: 'Código', w: 13 }, { h: 'Producto', w: 42 }, { h: 'Cantidad', t: 'num', w: 12 }, { h: 'Valor ($)', t: 'cop', w: 16 },
+      { h: '% del valor', t: 'pct', w: 11 }, { h: 'N.º terceros', t: 'num', w: 11 }, { h: 'Tercero con más saldo', w: 32 }, { h: 'Terceros (cantidad)', w: 70 }];
+    hoja('Productos que nos deben', colsP, hp('nos'), 'Productos que más nos deben');
+    hoja('Productos que debemos', colsP, hp('deb'), 'Productos que más debemos');
+
+    // 7. Detalle tercero-producto (lo que se ve al abrir cada tercero), con sobrantes
+    const tp = [];
+    L.forEach(t => Object.values(t.prods).forEach(p => {
+      [['nos', 'Nos debe'], ['deb', 'Le debemos']].forEach(([lado, txt]) => {
+        if (Math.abs(p[lado + 'Q']) > TOL || Math.abs(p[lado + 'V']) > TOL)
+          tp.push([t.nombre, txt, p.codigo, p.nombre, p[lado + 'Q'], p[lado + 'V'], p[lado + 'Q'] < -TOL ? 'Devolvió de más' : (p[lado + 'Q'] > TOL ? 'Pendiente' : 'Saldado')]);
+      });
     }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hp('nos')), 'Productos que nos deben');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hp('deb')), 'Productos que debemos');
-    const hm = [];
-    datos.lista.forEach(t => t.docs.forEach(d => hm.push({ Fecha: d.fecha, Documento: d.doc, Tipo: d.sigla, Movimiento: d.txt, Tercero: t.nombre, Bodega: d.bodega, ['Valor' + u]: d.valor })));
-    hm.sort((a, b) => a.Fecha.localeCompare(b.Fecha));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hm), 'Movimientos');
+    tp.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]) || b[5] - a[5]);
+    hoja('Tercero - producto', [{ h: 'Tercero', w: 38 }, { h: 'Lado', w: 12 }, { h: 'Código', w: 13 }, { h: 'Producto', w: 42 },
+      { h: 'Saldo (und)', t: 'num', w: 12 }, { h: 'Saldo ($)', t: 'cop', w: 16 }, { h: 'Estado', w: 16 }], tp);
+
+    // 8. Variación mensual
+    hoja('Variación mensual', [{ h: 'Mes', w: 10 }, { h: 'Prestado EPO ($)', t: 'cop', w: 16 }, { h: 'Devuelto IDP ($)', t: 'cop', w: 16 }, { h: 'Variación nos deben ($)', t: 'cop', w: 20 },
+      { h: 'Recibido IPE ($)', t: 'cop', w: 16 }, { h: 'Devolvimos ED ($)', t: 'cop', w: 16 }, { h: 'Variación debemos ($)', t: 'cop', w: 20 },
+      { h: 'Variación nos deben (und)', t: 'num', w: 20 }, { h: 'Variación debemos (und)', t: 'num', w: 20 }],
+      base.meses.map(m => [m.k, m.V.epo, m.V.idp, m.V.nos, m.V.ipe, m.V.ed, m.V.deb, m.Q.nos, m.Q.deb]));
+
+    // 9. Movimientos (documentos)
+    const docs = [];
+    L.forEach(t => t.docs.forEach(d => docs.push([d.fecha, d.doc, d.sigla, d.txt, t.nombre, d.bodega, d.valorQ, d.valorV,
+      d.lado === 'nos' ? (d.signo > 0 ? 'Aumenta lo que nos deben' : 'Disminuye lo que nos deben') : (d.signo > 0 ? 'Aumenta lo que debemos' : 'Disminuye lo que debemos'), d.obs])));
+    docs.sort((a, b) => a[0].localeCompare(b[0]) || String(a[1]).localeCompare(String(b[1])));
+    hoja('Movimientos', [{ h: 'Fecha', w: 11 }, { h: 'Documento', w: 13 }, { h: 'Tipo', w: 6 }, { h: 'Movimiento', w: 20 }, { h: 'Tercero', w: 38 }, { h: 'Bodega', w: 24 },
+      { h: 'Unidades', t: 'num', w: 11 }, { h: 'Valor ($)', t: 'cop', w: 16 }, { h: 'Efecto', w: 26 }, { h: 'Observaciones', w: 40 }], docs);
+
+    // 10. Movimientos por producto (línea a línea)
+    const lin = base.lineas.slice().sort((a, b) => a.fecha.localeCompare(b.fecha) || String(a.doc).localeCompare(String(b.doc)))
+      .map(l => [l.fecha, l.doc, l.sigla, l.tercero, l.codigo, l.nombre, l.lote, l.q, l.pu, l.v, l.lado === 'nos' ? 'Nos deben' : 'Debemos', l.signo > 0 ? 'Suma' : 'Resta']);
+    hoja('Movimientos por producto', [{ h: 'Fecha', w: 11 }, { h: 'Documento', w: 13 }, { h: 'Tipo', w: 6 }, { h: 'Tercero', w: 36 }, { h: 'Código', w: 13 }, { h: 'Producto', w: 40 },
+      { h: 'Lote', w: 12 }, { h: 'Cantidad', t: 'num', w: 10 }, { h: 'Precio unit. ($)', t: 'cop', w: 15 }, { h: 'Valor ($)', t: 'cop', w: 15 }, { h: 'Lado', w: 11 }, { h: 'Efecto', w: 8 }], lin);
+
     XLSX.writeFile(wb, `saldos_por_tercero_${hasta || hoy}.xlsx`);
   }
 
