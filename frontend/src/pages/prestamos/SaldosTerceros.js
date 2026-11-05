@@ -117,6 +117,30 @@ function Tendencia({ meses, fmtV }) {
   );
 }
 
+// Formatos de celda para los Excel
+const FMT_COP = '"$"#,##0;[Red]-"$"#,##0';
+const FMT_NUM = '#,##0.##;[Red]-#,##0.##';
+const FMT_PCT = '0.0%';
+const numDoc = d => { const m = String(d || '').match(/(\d+)/); return m ? parseInt(m[1], 10) : 0; };
+
+// Agrega una hoja con encabezados, formato numérico por columna, anchos y autofiltro.
+// cols: [{ h: encabezado, w: ancho, t: 'cop' | 'num' | 'pct' }]
+function agregarHoja(wb, nombre, cols, filas, titulo, subtitulo) {
+  const aoa = [];
+  if (titulo) { aoa.push([titulo]); aoa.push(subtitulo ? [subtitulo] : []); if (subtitulo) aoa.push([]); }
+  aoa.push(cols.map(c => c.h));
+  filas.forEach(f => aoa.push(f));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const off = titulo ? (subtitulo ? 4 : 3) : 1;
+  filas.forEach((f, ri) => cols.forEach((c, ci) => {
+    const cell = ws[XLSX.utils.encode_cell({ r: ri + off, c: ci })];
+    if (cell && cell.t === 'n') cell.z = c.t === 'cop' ? FMT_COP : c.t === 'pct' ? FMT_PCT : c.t === 'num' ? FMT_NUM : undefined;
+  }));
+  ws['!cols'] = cols.map(c => ({ wch: c.w || 14 }));
+  if (filas.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: off - 1, c: 0 }, e: { r: off - 1 + filas.length, c: cols.length - 1 } }) };
+  XLSX.utils.book_append_sheet(wb, ws, nombre.substring(0, 31));
+}
+
 export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
   const hoy = new Date().toISOString().substring(0, 10);
   const [modo, setModo]       = useState('valor');     // valor | cantidad
@@ -263,26 +287,9 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
 
   // ── Exportación a Excel: una hoja por cada bloque del dashboard ─────────
   function exportar() {
-    const FMT_COP = '"$"#,##0;[Red]-"$"#,##0';
-    const FMT_NUM = '#,##0.##;[Red]-#,##0.##';
-    const FMT_PCT = '0.0%';
     const wb = XLSX.utils.book_new();
     // cols: [{ h: encabezado, w: ancho, t: 'cop' | 'num' | 'pct' | undefined }]
-    function hoja(nombre, cols, filas, titulo) {
-      const aoa = [];
-      if (titulo) { aoa.push([titulo]); aoa.push([]); }
-      aoa.push(cols.map(c => c.h));
-      filas.forEach(f => aoa.push(f));
-      const ws = XLSX.utils.aoa_to_sheet(aoa);
-      const off = titulo ? 3 : 1;
-      filas.forEach((f, ri) => cols.forEach((c, ci) => {
-        const cell = ws[XLSX.utils.encode_cell({ r: ri + off, c: ci })];
-        if (cell && cell.t === 'n') cell.z = c.t === 'cop' ? FMT_COP : c.t === 'pct' ? FMT_PCT : c.t === 'num' ? FMT_NUM : undefined;
-      }));
-      ws['!cols'] = cols.map(c => ({ wch: c.w || 14 }));
-      if (filas.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: off - 1, c: 0 }, e: { r: off - 1 + filas.length, c: cols.length - 1 } }) };
-      XLSX.utils.book_append_sheet(wb, ws, nombre.substring(0, 31));
-    }
+    const hoja = (...args) => agregarHoja(wb, ...args);
     const L = base.lista;
     const pos = x => Math.max(0, x);
     const tNosV = L.reduce((s, t) => s + pos(t.sV.nos), 0), tDebV = L.reduce((s, t) => s + pos(t.sV.deb), 0);
@@ -396,6 +403,124 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
     XLSX.writeFile(wb, `saldos_por_tercero_${hasta || hoy}.xlsx`);
   }
 
+  // Texto con los filtros aplicados (va en el encabezado de los reportes).
+  function textoFiltrosExcel() {
+    const nomTer = tercero === 'todos' ? 'Todos' : (terceros.find(([k]) => k === tercero) || [, tercero])[1];
+    return `Corte: ${hasta || hoy} · ${calculo === 'corte' ? 'Saldo acumulado desde el inicio' : 'Solo el periodo desde ' + (desde || 'el inicio')}`
+      + ` · Tercero: ${nomTer} · Producto: ${qProd || 'Todos'} · Generado: ${new Date().toLocaleString('es-CO')}`;
+  }
+
+  // ── Excel compacto: solo saldos por tercero ─────────────────────────────
+  function exportarCompacto() {
+    const filas = base.lista
+      .filter(t => Math.abs(t.sV.nos) > 0.5 || Math.abs(t.sV.deb) > 0.5)
+      .sort((a, b) => b.sV.neto - a.sV.neto);
+    const aoa = [['Saldos de préstamos por tercero'], [textoFiltrosExcel()], [],
+      ['Tercero', 'Nos debe ($)', 'Le debemos ($)', 'Diferencia ($)', 'A favor de']];
+    filas.forEach(t => aoa.push([t.nombre, Math.round(t.sV.nos), Math.round(t.sV.deb), Math.round(t.sV.neto),
+      t.sV.neto > 0.5 ? 'Nosotros' : (t.sV.neto < -0.5 ? 'El tercero' : 'Saldado')]));
+    const r1 = 5, rN = 4 + filas.length;   // filas de datos en notación de Excel (1-based)
+    aoa.push(['TOTAL']);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const rt = rN; // índice 0-based de la fila TOTAL
+    if (filas.length) {
+      ws[XLSX.utils.encode_cell({ r: rt, c: 1 })] = { t: 'n', f: `SUMIF(B${r1}:B${rN},">0")` };
+      ws[XLSX.utils.encode_cell({ r: rt, c: 2 })] = { t: 'n', f: `SUMIF(C${r1}:C${rN},">0")` };
+      ws[XLSX.utils.encode_cell({ r: rt, c: 3 })] = { t: 'n', f: `B${rN + 1}-C${rN + 1}` };
+    }
+    for (let r = 4; r <= rt; r++) for (let c = 1; c <= 3; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell) cell.z = FMT_COP;
+    }
+    ws['!cols'] = [{ wch: 42 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 13 }];
+    if (filas.length) ws['!autofilter'] = { ref: `A4:E${rN}` };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Saldos por tercero');
+    XLSX.writeFile(wb, `saldos_terceros_compacto_${hasta || hoy}.xlsx`);
+  }
+
+  // ── Reporte de devoluciones de más (unidades y $) ──────────────────────
+  // Se revisa cada tercero + producto en orden cronológico: préstamos suman y
+  // devoluciones restan; el documento con el que el saldo queda por debajo de
+  // cero es el que devolvió de más, y el exceso es la parte que sobrepasó.
+  function analizarExcesos() {
+    const grupos = {};
+    base.lineas.forEach(l => {
+      const g = `${l.tercero}|${l.lado}|${l.codigo || l.nombre}`;
+      (grupos[g] = grupos[g] || []).push(l);
+    });
+    const pares = [], docs = [];
+    Object.values(grupos).forEach(ls => {
+      ls.sort((a, b) => a.fecha.localeCompare(b.fecha) || (b.signo - a.signo) || numDoc(a.doc) - numDoc(b.doc));
+      let sq = 0, presQ = 0, devQ = 0, presV = 0, devV = 0, excQdocs = 0, excVdocs = 0;
+      const docsPres = new Set(), docsDev = new Set(), docsPar = [];
+      ls.forEach(l => {
+        if (l.signo > 0) { presQ += l.q; presV += l.v; docsPres.add(l.doc); sq += l.q; return; }
+        devQ += l.q; devV += l.v; docsDev.add(l.doc);
+        const antes = sq; sq -= l.q;
+        if (sq < -TOL) {
+          const exc = Math.min(l.q, -sq);        // solo lo que pasó de cero en este documento
+          excQdocs += exc; excVdocs += exc * l.pu;
+          docsPar.push({ ...l, antes, exc, excV: exc * l.pu, despues: sq });
+        }
+      });
+      const excQ = devQ - presQ, excV = devV - presV;
+      // Solo se listan documentos de productos que siguen con exceso al corte
+      // (si después se registró el préstamo que faltaba, ya no es exceso).
+      if (excQ > TOL) docsPar.forEach(d => docs.push({ ...d, excFinal: excQ }));
+      if (excQ > TOL || excV > 0.5) {
+        const l0 = ls[0];
+        pares.push({ tercero: l0.tercero, lado: l0.lado, codigo: l0.codigo, nombre: l0.nombre,
+          presQ, devQ, excQ: Math.max(0, excQ), presV, devV, excV: Math.max(0, excV),
+          causa: excQ > TOL ? 'Se devolvieron más unidades de las prestadas' : 'Mismas unidades, pero devueltas a mayor precio',
+          docsPres: [...docsPres].join(', '), docsDev: [...docsDev].join(', ') });
+      }
+    });
+    return { pares, docs };
+  }
+
+  function exportarExcesos() {
+    const { pares, docs } = analizarExcesos();
+    const wb = XLSX.utils.book_new();
+    const hoja = (...a) => agregarHoja(wb, ...a);
+    const ladoTxt = l => (l === 'nos' ? 'Nos devolvieron de más (IDP)' : 'Devolvimos de más (ED)');
+    const aviso = calculo === 'periodo'
+      ? ' · OJO: con "Solo el periodo" pueden aparecer devoluciones de préstamos hechos antes del periodo; para revisar excesos reales use "Saldo al corte".' : '';
+
+    // Por tercero
+    const pt = {};
+    pares.forEach(p => {
+      const k = p.tercero + '|' + p.lado;
+      if (!pt[k]) pt[k] = { tercero: p.tercero, lado: p.lado, productos: 0, excQ: 0, excV: 0 };
+      pt[k].productos++; pt[k].excQ += p.excQ; pt[k].excV += p.excV;
+    });
+    hoja('Por tercero', [{ h: 'Tercero', w: 40 }, { h: 'Caso', w: 30 }, { h: 'Productos con exceso', t: 'num', w: 12 },
+      { h: 'Exceso (und)', t: 'num', w: 13 }, { h: 'Exceso ($)', t: 'cop', w: 16 }],
+      Object.values(pt).sort((a, b) => b.excV - a.excV).map(x => [x.tercero, ladoTxt(x.lado), x.productos, x.excQ, x.excV]),
+      'Devoluciones de más por tercero', textoFiltrosExcel() + aviso);
+
+    // Por tercero y producto
+    hoja('Por producto', [{ h: 'Tercero', w: 36 }, { h: 'Caso', w: 28 }, { h: 'Código', w: 13 }, { h: 'Producto', w: 40 },
+      { h: 'Prestado (und)', t: 'num', w: 12 }, { h: 'Devuelto (und)', t: 'num', w: 12 }, { h: 'Exceso (und)', t: 'num', w: 12 },
+      { h: 'Prestado ($)', t: 'cop', w: 15 }, { h: 'Devuelto ($)', t: 'cop', w: 15 }, { h: 'Exceso ($)', t: 'cop', w: 15 },
+      { h: 'Causa', w: 40 }, { h: 'Documentos de préstamo', w: 34 }, { h: 'Documentos de devolución', w: 34 }],
+      pares.sort((a, b) => b.excV - a.excV).map(p => [p.tercero, ladoTxt(p.lado), p.codigo, p.nombre, p.presQ, p.devQ, p.excQ,
+        p.presV, p.devV, p.excV, p.causa, p.docsPres || '(sin préstamo registrado)', p.docsDev]),
+      'Productos devueltos de más (tercero + producto)', textoFiltrosExcel() + aviso);
+
+    // Documentos que generaron el exceso
+    hoja('Documentos', [{ h: 'Fecha', w: 11 }, { h: 'Documento', w: 13 }, { h: 'Tipo', w: 6 }, { h: 'Tercero', w: 36 },
+      { h: 'Código', w: 13 }, { h: 'Producto', w: 40 }, { h: 'Lote', w: 12 }, { h: 'Saldo antes (und)', t: 'num', w: 13 },
+      { h: 'Cantidad devuelta', t: 'num', w: 12 }, { h: 'Saldo después (und)', t: 'num', w: 13 }, { h: 'Exceso en este doc. (und)', t: 'num', w: 14 },
+      { h: 'Precio unit. ($)', t: 'cop', w: 14 }, { h: 'Valor devuelto ($)', t: 'cop', w: 15 }, { h: 'Exceso ($)', t: 'cop', w: 15 },
+      { h: 'Exceso total del producto al corte (und)', t: 'num', w: 18 }],
+      docs.sort((a, b) => a.fecha.localeCompare(b.fecha) || numDoc(a.doc) - numDoc(b.doc)).map(d => [d.fecha, d.doc, d.sigla, d.tercero,
+        d.codigo, d.nombre, d.lote, d.antes, d.q, d.despues, d.exc, d.pu, d.v, d.excV, d.excFinal]),
+      'Documentos con los que se devolvió de más', textoFiltrosExcel() + aviso);
+
+    if (!pares.length) alert('No hay devoluciones de más con los filtros actuales. Se descarga el reporte vacío.');
+    XLSX.writeFile(wb, `devoluciones_de_mas_${hasta || hoy}.xlsx`);
+  }
+
   const textoCorte = calculo === 'corte'
     ? `Saldo acumulado al ${hasta || 'día de hoy'}: todos los movimientos hasta esa fecha.`
     : `Solo movimientos ${desde ? 'desde el ' + desde : 'desde el inicio'} ${hasta ? 'hasta el ' + hasta : 'hasta hoy'}.`;
@@ -427,12 +552,16 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
             <Seg value={calculo} onChange={setCalculo} opciones={[['corte', 'Saldo al corte'], ['periodo', 'Solo el periodo']]} />
             <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>{textoCorte}</span>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {(anio !== 'todos' || desde || hasta || tercero !== 'todos' || qProd) && (
               <button type="button" onClick={() => { elegirAnio('todos'); setTercero('todos'); setQProd(''); }}
                 style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>Limpiar filtros</button>)}
-            <button type="button" onClick={exportar}
-              style={{ ...input, cursor: 'pointer', fontWeight: 600, background: 'var(--t-accent)', color: '#fff', border: 'none' }}>⇣ Excel</button>
+            <button type="button" onClick={exportarCompacto} title="Solo saldos por tercero: nos debe, le debemos y diferencia"
+              style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>⇣ Excel compacto</button>
+            <button type="button" onClick={exportarExcesos} title="Documentos y productos donde se devolvió más de lo prestado"
+              style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>⇣ Devoluciones de más</button>
+            <button type="button" onClick={exportar} title="Todos los datos del dashboard en 10 hojas"
+              style={{ ...input, cursor: 'pointer', fontWeight: 600, background: 'var(--t-accent)', color: '#fff', border: 'none' }}>⇣ Excel completo</button>
           </div>
         </div>
       </div>
