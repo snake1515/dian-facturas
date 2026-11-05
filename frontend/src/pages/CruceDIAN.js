@@ -256,15 +256,19 @@ export default function CruceDIAN() {
     }
   };
 
+  // Fecha de emisión de la factura: la del reporte DIAN (col F); si no viene, la registrada en la app.
+  const fechaEmisionDe = (dian, factura) =>
+    String(dian?.fechaEmision || '').trim() || String(factura?.fecha_emision || '').substring(0, 10);
+
   // ── Exportar ────────────────────────────────────────────────────────────────
   const exportarReporte = (datos, nombre) => {
     const bom = '\uFEFF';
     let headers, rows;
     if (nombre === 'cruzadas') {
-      headers = ['Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
+      headers = ['Tipo','N° DIAN','Fecha Emisión','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
       rows = datos.map(({ dian, factura }) => [
-        factura.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas,
+        factura.tipo, dian.numero, fechaEmisionDe(dian, factura), dian.emisor, dian.valorFormato, dian.estado, dian.notas,
         factura.responsables?.length > 0 ? factura.responsables.map(r => r.nombre || r.email).join(', ') : '',
         dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
@@ -291,18 +295,18 @@ export default function CruceDIAN() {
   const exportarCompleto = () => {
     if (!resultado) return;
     const bom = '\uFEFF';
-    const headers = ['Estado Cruce','Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
+    const headers = ['Estado Cruce','Tipo','N° DIAN','Fecha Emisión','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
     const rows = [
       ...resultado.cruzadas.map(({ dian, factura }) => [
-        'ENCONTRADA', factura.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas,
+        'ENCONTRADA', factura.tipo, dian.numero, fechaEmisionDe(dian, factura), dian.emisor, dian.valorFormato, dian.estado, dian.notas,
         factura.responsables?.length > 0 ? factura.responsables.map(r => r.nombre || r.email).join(', ') : '',
         dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
         estadoContableInfo(factura).label, factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]),
       ...resultado.noCruzadas.map(({ dian }) => [
-        'NO ENCONTRADA', dian.tipo, dian.numero, dian.emisor, dian.valorFormato, dian.estado, dian.notas, '', dian.responsable,
+        'NO ENCONTRADA', dian.tipo, dian.numero, fechaEmisionDe(dian), dian.emisor, dian.valorFormato, dian.estado, dian.notas, '', dian.responsable,
         '', '', '', '', '', dian.estadoEntrega || '',
       ]),
     ];
@@ -530,7 +534,7 @@ const selectSt = {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                      {['Tipo','N° DIAN','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'].map(h => (
+                      {['Tipo','N° DIAN','Fecha Emisión','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'].map(h => (
                         <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -542,6 +546,7 @@ const selectSt = {
                           <span style={{ background: factura.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: factura.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{factura.tipo}</span>
                         </td>
                         <td style={{ padding: '8px 12px', color: '#4ade80', fontFamily: 'monospace' }}>{dian.numero}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fechaEmisionDe(dian, factura) || '—'}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#1e3a5f', color: '#60a5fa', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
