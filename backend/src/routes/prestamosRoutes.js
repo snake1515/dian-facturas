@@ -370,6 +370,44 @@ router.patch('/:id', authMiddleware, adminOnly, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Corrección de precios unitarios desde el detalle del documento (pestaña
+// Movimientos). Solo cambia precio_unitario de cada producto; cantidades,
+// códigos y demás campos quedan intactos, por eso no afecta cruces ni estados.
+// Lo pueden hacer los mismos roles que editan préstamos en el frontend.
+router.patch('/:id/precios', authMiddleware, async (req, res) => {
+  try {
+    if (!['admin', 'editor', 'regente'].includes(req.user?.rol)) {
+      return res.status(403).json({ error: 'No tienes permiso para corregir valores de préstamos' });
+    }
+    const precios = req.body?.precios;
+    if (!Array.isArray(precios) || precios.length === 0) {
+      return res.status(400).json({ error: 'No se enviaron precios para actualizar' });
+    }
+    const { rows } = await pool.query('SELECT items FROM prestamos WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Movimiento no encontrado' });
+    const items = typeof rows[0].items === 'string' ? JSON.parse(rows[0].items) : (rows[0].items || []);
+    for (const cambio of precios) {
+      const idx = Number(cambio.index);
+      const valor = Number(cambio.precio_unitario);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= items.length) {
+        return res.status(400).json({ error: `Producto inválido (posición ${cambio.index})` });
+      }
+      if (cambio.codigo != null && String(items[idx].codigo) !== String(cambio.codigo)) {
+        return res.status(409).json({ error: 'El documento cambió mientras lo editabas. Recarga e intenta de nuevo.' });
+      }
+      if (!Number.isFinite(valor) || valor < 0) {
+        return res.status(400).json({ error: `Precio inválido para ${items[idx].codigo}` });
+      }
+      items[idx] = { ...items[idx], precio_unitario: valor };
+    }
+    const { rows: act } = await pool.query(
+      'UPDATE prestamos SET items = $1 WHERE id = $2 RETURNING *',
+      [JSON.stringify(items), req.params.id]
+    );
+    res.json(act[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  DEVOLUCIONES
 // ═══════════════════════════════════════════════════════════════════════════

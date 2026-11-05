@@ -963,7 +963,8 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
 
       {detalle && (
         <Modal onClose={() => setDetalle(null)} titulo={`Préstamo ${detalle.documento_contable}`}>
-          <DetallePrestamoModal prestamo={detalle} devoluciones={devoluciones.filter(d => d.prestamo_id === detalle.id)} cruces={crucesDe(detalle)} prestamos={prestamos} />
+          <DetallePrestamoModal prestamo={detalle} devoluciones={devoluciones.filter(d => d.prestamo_id === detalle.id)} cruces={crucesDe(detalle)} prestamos={prestamos}
+            onSaved={doc => { if (doc) setDetalle(doc); onRefresh(); }} />
         </Modal>
       )}
 
@@ -1049,8 +1050,47 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
 
 // ─── DETALLE PRÉSTAMO ───────────────────────────────────────────────────────────
 
-function DetallePrestamoModal({ prestamo, devoluciones, cruces = [], prestamos = [] }) {
+function DetallePrestamoModal({ prestamo, devoluciones, cruces = [], prestamos = [], onSaved }) {
   const [expandido, setExpandido] = React.useState(null);
+  // Corrección de precios unitarios (solo si quien abre el modal pasa onSaved
+  // y el usuario puede editar préstamos).
+  const { puede } = useAuth();
+  const puedeCorregir = !!onSaved && !!puede?.editarPrestamos;
+  const [editPrecios, setEditPrecios] = React.useState(false);
+  const [precios, setPrecios] = React.useState({});
+  const [guardandoP, setGuardandoP] = React.useState(false);
+  const [errorP, setErrorP] = React.useState('');
+  function iniciarCorreccion() {
+    const m = {};
+    (prestamo.items || []).forEach((it, i) => { m[i] = String(it.precio_unitario ?? ''); });
+    setPrecios(m); setErrorP(''); setEditPrecios(true);
+  }
+  const precioDe = (item, i) => (editPrecios ? Number(String(precios[i] ?? '').replace(',', '.')) || 0 : Number(item.precio_unitario || 0));
+  async function guardarPrecios() {
+    setErrorP('');
+    const cambios = [];
+    for (const [i, item] of (prestamo.items || []).entries()) {
+      const txt = String(precios[i] ?? '').trim().replace(',', '.');
+      const v = Number(txt);
+      if (txt === '' || !Number.isFinite(v) || v < 0) return setErrorP(`Precio inválido para ${item.codigo}`);
+      if (v !== Number(item.precio_unitario || 0)) cambios.push({ index: i, codigo: item.codigo, precio_unitario: v });
+    }
+    if (cambios.length === 0) { setEditPrecios(false); return; }
+    setGuardandoP(true);
+    try {
+      const doc = await apiFetch(`/prestamos/${prestamo.id}/precios`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ precios: cambios }),
+      });
+      setEditPrecios(false);
+      onSaved(doc);
+    } catch (e) {
+      let msg = e.message;
+      try { msg = JSON.parse(msg).error || msg; } catch (_) { /* texto plano */ }
+      setErrorP('No se pudo guardar: ' + msg);
+    }
+    setGuardandoP(false);
+  }
+  const totalDoc = (prestamo.items || []).reduce((s, it, i) => s + Number(it.cantidad || 0) * precioDe(it, i), 0);
   const thS = { textAlign: 'left', padding: '7px 10px', fontSize: 11, color: 'var(--t-text-muted)', borderBottom: '1px solid var(--t-border)', fontWeight: 500 };
   const tdS = { padding: '8px 10px', borderBottom: '1px solid var(--t-border)', fontSize: 13 };
 
@@ -1070,7 +1110,28 @@ function DetallePrestamoModal({ prestamo, devoluciones, cruces = [], prestamos =
         )}
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>Productos prestados</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Productos prestados</div>
+        {puedeCorregir && !editPrecios && (
+          <button type='button' onClick={iniciarCorreccion} style={{ padding: '5px 12px', fontSize: 12, borderRadius: 7, cursor: 'pointer', border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+            ✏️ Corregir valores
+          </button>
+        )}
+        {editPrecios && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type='button' onClick={() => { setEditPrecios(false); setErrorP(''); }} disabled={guardandoP}
+              style={{ padding: '5px 12px', fontSize: 12, borderRadius: 7, cursor: 'pointer', border: '1px solid var(--t-border)', background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>Cancelar</button>
+            <button type='button' onClick={guardarPrecios} disabled={guardandoP}
+              style={{ padding: '5px 14px', fontSize: 12, borderRadius: 7, cursor: 'pointer', border: 'none', background: 'var(--t-accent)', color: '#fff', fontWeight: 600 }}>{guardandoP ? 'Guardando…' : 'Guardar valores'}</button>
+          </div>
+        )}
+      </div>
+      {editPrecios && (
+        <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 8 }}>
+          Escribe el precio unitario correcto de cada producto. Solo cambia el valor; las cantidades y los cruces no se modifican.
+        </div>
+      )}
+      {errorP && <div style={{ fontSize: 12, color: '#e5484d', marginBottom: 8 }}>{errorP}</div>}
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 20 }}>
         <thead><tr>{['Código','Categoría','Nombre','Cant.','Precio unit.','Total'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
         <tbody>
@@ -1080,11 +1141,27 @@ function DetallePrestamoModal({ prestamo, devoluciones, cruces = [], prestamos =
               <td style={tdS}><CatTag categoria={item.categoria} /></td>
               <td style={tdS}>{item.nombre}</td>
               <td style={tdS}>{item.cantidad}</td>
-              <td style={tdS}>{fmt(item.precio_unitario)}</td>
-              <td style={{ ...tdS, fontWeight: 500 }}>{fmt(item.cantidad * item.precio_unitario)}</td>
+              <td style={tdS}>
+                {editPrecios ? (
+                  <input type='number' min='0' step='any' value={precios[i] ?? ''} autoFocus={i === 0}
+                    onChange={e => setPrecios(prev => ({ ...prev, [i]: e.target.value }))}
+                    onKeyDown={e => { if (e.key === 'Enter') guardarPrecios(); if (e.key === 'Escape') setEditPrecios(false); }}
+                    style={{ width: 110, padding: '5px 8px', fontSize: 13, border: '1px solid var(--t-accent)', borderRadius: 6, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                ) : fmt(item.precio_unitario)}
+                {editPrecios && Number(String(precios[i] ?? '').replace(',', '.')) !== Number(item.precio_unitario || 0) && (
+                  <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 2 }}>antes {fmt(item.precio_unitario)}</div>
+                )}
+              </td>
+              <td style={{ ...tdS, fontWeight: 500 }}>{fmt(item.cantidad * precioDe(item, i))}</td>
             </tr>
           ))}
         </tbody>
+        <tfoot>
+          <tr>
+            <td colSpan={5} style={{ ...tdS, textAlign: 'right', color: 'var(--t-text-muted)', fontSize: 12, borderBottom: 'none' }}>Total del documento</td>
+            <td style={{ ...tdS, fontWeight: 700, borderBottom: 'none' }}>{fmt(totalDoc)}</td>
+          </tr>
+        </tfoot>
       </table>
 
       {devoluciones.length > 0 && (
