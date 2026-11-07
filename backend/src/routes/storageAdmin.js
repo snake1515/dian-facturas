@@ -54,4 +54,24 @@ router.get('/consumo-bd', authMiddleware, adminOnly, (req, res) => {
   res.json(require('../services/medidorEgress').reporte());
 });
 
+// ── Migración de la base de datos a otro PostgreSQL ─────────────────────────
+const migracion = require('../services/migracionBD');
+
+router.get('/migracion/vista-previa', authMiddleware, adminOnly, async (req, res) => {
+  try { res.json(await migracion.vistaPrevia()); }
+  catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+router.post('/migracion/iniciar', authMiddleware, adminOnly, (req, res) => {
+  try {
+    if (req.body?.confirmacion !== 'MIGRAR') return res.status(400).json({ error: 'Confirmación requerida' });
+    migracion.iniciar({ reemplazar: !!req.body.reemplazar });
+    res.json({ ok: true });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+router.get('/migracion/estado', authMiddleware, adminOnly, (req, res) => {
+  res.json(migracion.obtenerEstado());
+});
+
 module.exports = router;

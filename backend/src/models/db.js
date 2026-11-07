@@ -1,7 +1,20 @@
 const { Pool } = require('pg');
 
+// Quita sslmode/ssl de la URL: la librería pg los trata como verificación estricta
+// del certificado e ignora la opción "ssl" de abajo, lo que falla con proveedores
+// que usan su propia autoridad certificadora (p. ej. Aiven). El cifrado SSL se
+// mantiene igual a través de la opción "ssl".
+const limpiarUrl = (u) => {
+  if (!u) return u;
+  try {
+    const x = new URL(u);
+    ['sslmode', 'ssl', 'sslrootcert', 'sslcert', 'sslkey', 'uselibpqcompat'].forEach(k => x.searchParams.delete(k));
+    return x.toString();
+  } catch (e) { return u; }
+};
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: limpiarUrl(process.env.DATABASE_URL),
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
@@ -813,7 +826,7 @@ const protegerTablas = async () => {
   }
 };
 
-module.exports = { pool, initDB, protegerTablas };
+module.exports = { pool, initDB, protegerTablas, limpiarUrl };
 
 
 

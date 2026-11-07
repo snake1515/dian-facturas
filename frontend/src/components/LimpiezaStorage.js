@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import api from '../services/api';
+import MigracionBD from './MigracionBD';
 
 const mb = (b) => (b == null ? '—' : (b / 1024 / 1024).toFixed(1) + ' MB');
 const LIMITE = 1024 * 1024 * 1024; // 1 GB (plan gratis de Supabase)
@@ -77,6 +78,8 @@ export default function LimpiezaStorage() {
 
   return (
     <div>
+      <MigracionBD />
+
       <h3 style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0', marginBottom: 8, marginTop: 0 }}>Consumo de la base de datos (egress)</h3>
       <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
         Cuántos datos ha traído cada pantalla desde la base de datos desde el último reinicio del servidor.
