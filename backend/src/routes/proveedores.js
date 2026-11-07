@@ -107,6 +107,10 @@ router.put('/factura/:id(\\d+)/categoria', authMiddleware, editorOrAdmin, async 
 // "FACTURA CON NOVEDAD". De la más antigua a la más nueva.
 router.get('/facturas-sin-gestion', authMiddleware, async (req, res) => {
   try {
+    // Solo para quienes pueden ver facturas (no regente ni contable)
+    if (!['admin', 'editor', 'obra', 'consulta', 'lector'].includes(req.user?.rol)) {
+      return res.json({ dias: DIAS_SIN_GESTION, facturas: [] });
+    }
     const { rows } = await pool.query(`
       SELECT f.id, f.numero, f.proveedor_nombre, f.proveedor_nit, f.fecha_emision, f.total,
              ${CATEGORIA_SQL} AS categoria

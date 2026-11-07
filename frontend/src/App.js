@@ -6,6 +6,7 @@ import { ThemeProvider, useTheme, TEMAS } from './context/ThemeContext';
 import Login from './pages/Login';
 import Facturas from './pages/Facturas';
 import Proveedores from './pages/Proveedores';
+import Dashboard from './pages/Dashboard';
 import AvisosGlobales from './components/AvisosGlobales';
 import Usuarios from './pages/Usuarios';
 import Configuracion from './pages/Configuracion';
@@ -26,7 +27,7 @@ function useIsMobile() {
 }
 
 function landingPathFor(puede) {
-  if (puede.verFacturas) return '/';
+  if (puede.verDashboard) return '/';
   if (puede.verPrestamos) return '/prestamos';
   if (puede.verPendientes) return '/pendientes';
   if (puede.verValidadorInventario) return '/validador-inventario';
@@ -85,8 +86,14 @@ function Layout({ children }) {
       </div>
 
       <nav style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1 }}>
-        {puede.verFacturas && (
+        {puede.verDashboard && (
           <NavLink to="/" end style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            Inicio
+          </NavLink>
+        )}
+        {puede.verFacturas && (
+          <NavLink to="/facturas-obra" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
             Facturas obra
           </NavLink>
@@ -268,7 +275,8 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginGuard />} />
-          <Route path="/" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="fe-obra" categoria="obra" /></Layout></PrivateRoute>} />
+          <Route path="/" element={<PrivateRoute perm="verDashboard"><Layout><Dashboard /></Layout></PrivateRoute>} />
+          <Route path="/facturas-obra" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="fe-obra" categoria="obra" /></Layout></PrivateRoute>} />
           <Route path="/facturas-administrativas" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="fe-adm" categoria="administrativa" /></Layout></PrivateRoute>} />
           <Route path="/notas-credito" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="nc-obra" tipo="NC" categoria="obra" /></Layout></PrivateRoute>} />
           <Route path="/notas-credito-administrativas" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="nc-adm" tipo="NC" categoria="administrativa" /></Layout></PrivateRoute>} />

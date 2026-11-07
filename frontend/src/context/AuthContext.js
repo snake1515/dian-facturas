@@ -117,6 +117,8 @@ export function AuthProvider({ children }) {
     // Documentos Soporte
     verDocumentosSoporte: isContable,
   };
+  // Inicio (Dashboard): para quien vea al menos una sección con resumen
+  puede.verDashboard = puede.verFacturas || puede.verPrestamos || puede.verPendientes || puede.verValidadorInventario;
 
   return (
     <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isObra, isLector, isRegente, isContable, puede, doLogin, doLogout, updateUser }}>

@@ -139,7 +139,14 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
   // Auto-seleccionar mes más reciente al cargar (solo la primera vez)
   const autoMesSeleccionado = React.useRef(false);
   useEffect(() => {
-    const buscar = new URLSearchParams(location.search).get('buscar');
+    const qs = new URLSearchParams(location.search);
+    const buscar = qs.get('buscar');
+    const origenQs = qs.get('origen');
+    if (origenQs) {
+      autoMesSeleccionado.current = true;
+      setFilterMes('');
+      setFilterOrigen(origenQs);
+    }
     if (buscar) {
       autoMesSeleccionado.current = true; // no forzar el mes más reciente
       setFilterMes('');

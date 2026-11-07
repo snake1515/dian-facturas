@@ -67,6 +67,7 @@ app.use('/api/validador-inventario', validadorInventarioRoutes);
 app.use('/api/documentos-soporte', documentosSoporteRoutes);
 app.use('/api/storage-admin', require('./routes/storageAdmin'));
 app.use('/api/proveedores', require('./routes/proveedores'));
+app.use('/api/dashboard', require('./routes/dashboard'));
 
 // Health check
 app.get('/api/health', (req, res) => {

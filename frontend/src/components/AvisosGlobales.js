@@ -9,7 +9,7 @@ const leer = (k) => { try { return JSON.parse(sessionStorage.getItem(k) || 'null
 const guardar = (k, v) => { try { v === null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* sin storage */ } };
 
 const CLAVE_RECORRIDO = 'recorridoSinGestion';
-const rutaDe = (f) => `${f.categoria === 'administrativa' ? '/facturas-administrativas' : '/'}?buscar=${encodeURIComponent(f.numero)}`;
+const rutaDe = (f) => `${f.categoria === 'administrativa' ? '/facturas-administrativas' : '/facturas-obra'}?buscar=${encodeURIComponent(f.numero)}`;
 
 // Avisos que aparecen en todas las pantallas:
 //  1. Proveedores nuevos sin clasificar (admin/editor). No se puede cerrar:
@@ -44,12 +44,12 @@ export default function AvisosGlobales() {
   const [recorrido, setRecorrido] = useState(() => { const r = leer(CLAVE_RECORRIDO); return r && r.sesion === sesion ? r : null; });
 
   useEffect(() => {
-    if (!token || leer(claveSesion)) return; // ya se mostró en este ingreso
+    if (!token || !puede.verFacturas || leer(claveSesion)) return; // sin acceso a facturas, o ya se mostró en este ingreso
     api.get('/proveedores/facturas-sin-gestion').then(r => {
       guardar(claveSesion, true);
       if (r.data?.facturas?.length) setModalSinGestion(r.data);
     }).catch(() => {});
-  }, [token, claveSesion]);
+  }, [token, claveSesion, puede.verFacturas]);
 
   const irA = (rec) => {
     guardar(CLAVE_RECORRIDO, rec);
@@ -66,7 +66,8 @@ export default function AvisosGlobales() {
   const terminarRecorrido = () => { guardar(CLAVE_RECORRIDO, null); setRecorrido(null); };
 
   const actual = recorrido?.items?.[recorrido.idx];
-  const enProveedores = location.pathname === '/proveedores';
+  // En Proveedores y en Inicio no hace falta: allí ya se ve la información
+  const enProveedores = location.pathname === '/proveedores' || location.pathname === '/';
 
   return (
     <>
