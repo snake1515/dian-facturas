@@ -132,6 +132,9 @@ const iniciarCron = async () => {
   }
 };
 
+// Disponible para otras rutas (p. ej. al reconectar Gmail)
+app.locals.iniciarCron = iniciarCron;
+
 app.post('/api/configuracion/restart-cron', async (req, res) => {
   await iniciarCron();
   res.json({ ok: true });

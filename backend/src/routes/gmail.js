@@ -31,6 +31,22 @@ router.get('/callback', async (req, res) => {
       "INSERT INTO configuracion (clave, valor) VALUES ('gmail_connected', 'true') ON CONFLICT (clave) DO UPDATE SET valor = 'true'"
     );
 
+    // Al reconectar: reactivar el sincronizado automático y traer de inmediato
+    // las facturas que llegaron mientras la conexión estuvo vencida.
+    // Se hace en segundo plano para no demorar la respuesta.
+    setImmediate(async () => {
+      try {
+        if (req.app.locals.iniciarCron) await req.app.locals.iniciarCron();
+        const r = await pool.query("SELECT valor FROM configuracion WHERE clave = 'sync_desde'");
+        const desde = r.rows[0]?.valor || null;
+        const hasta = new Date().toISOString().split('T')[0];
+        console.log(`🔄 Gmail reconectado: sincronizando ${desde || '(sin fecha inicial)'} → ${hasta}`);
+        await sincronizarCorreos(desde, hasta);
+      } catch (e) {
+        console.error('⚠️ Sincronización tras reconectar Gmail falló:', e.message);
+      }
+    });
+
     // Redirigir al frontend con éxito
     res.redirect(`${process.env.FRONTEND_URL}?gmail=conectado`);
   } catch (err) {
