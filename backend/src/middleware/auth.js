@@ -27,5 +27,15 @@ const editorOrAdmin = (req, res, next) => {
   next();
 };
 
-module.exports = { authMiddleware, adminOnly, editorOrAdmin };
+// Perfiles que trabajan con facturas. Regente (solo préstamos) y contable
+// (solo documentos soporte) no tienen acceso a facturas ni a sus módulos.
+const ROLES_FACTURAS = ['admin', 'editor', 'obra', 'consulta', 'lector'];
+const soloRolesFacturas = (req, res, next) => {
+  if (!ROLES_FACTURAS.includes(req.user?.rol)) {
+    return res.status(403).json({ error: 'Su perfil no tiene acceso a facturas' });
+  }
+  next();
+};
+
+module.exports = { authMiddleware, adminOnly, editorOrAdmin, soloRolesFacturas, ROLES_FACTURAS };
 
