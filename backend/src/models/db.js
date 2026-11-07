@@ -100,6 +100,17 @@ const initDB = async () => {
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS documento_ingreso VARCHAR(100);
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS notas TEXT;
       ALTER TABLE facturas ADD COLUMN IF NOT EXISTS notas_infraestructura TEXT;
+      -- Clasificación obra / administrativa
+      CREATE TABLE IF NOT EXISTS proveedores (
+        id SERIAL PRIMARY KEY,
+        nit VARCHAR(50) UNIQUE NOT NULL,
+        nombre TEXT,
+        categoria VARCHAR(20) CHECK (categoria IN ('obra', 'administrativa')),
+        clasificado_por VARCHAR(200),
+        clasificado_en TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+      ALTER TABLE facturas ADD COLUMN IF NOT EXISTS categoria_manual VARCHAR(20);
       -- constraint manejado por Supabase directamente
       
       ALTER TABLE responsables_factura ADD COLUMN IF NOT EXISTS nombre VARCHAR(150);

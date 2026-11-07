@@ -85,6 +85,7 @@ export function AuthProvider({ children }) {
     reenviarFacturas:       isLector && !esRegente,
     asignarResponsables:    isEditor,
     editarNotas:            isObra,                    // obra, editor, admin
+    gestionarProveedores:   isEditor,                  // editor, admin: pestaña Proveedores y mover facturas obra/administrativa
     editarNotasInfraestructura: ['admin', 'editor', 'consulta', 'lector'].includes(rol), // consulta (y su nombre antiguo 'lector'), editor, admin
     editarDocIngreso:       isObra,                    // obra, editor, admin
     elegirFlujo:            isObra,                    // obra puede elegir OC/CM y cambiar

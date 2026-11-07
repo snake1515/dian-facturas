@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useLocation } from 'react-router-dom';
 import {
   listarFacturas, obtenerFactura, actualizarResponsables, reenviarFactura,
   eliminarFactura, eliminarPorFechas, gmailSync, actualizarEstadoContable, actualizarContrato,
@@ -41,8 +42,10 @@ const ESTADOS_CONTABLES = [
   { value: 'aprobado',                  label: 'Aprobado',                   color: '#4ade80', bg: '#052e16' },
 ];
 
-export default function Facturas({ tipo = 'FE' }) {
+export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
   const { puede, isAdmin } = useAuth();
+  const location = useLocation();
+  const nombreCategoria = categoria === 'administrativa' ? 'administrativas' : 'obra';
   const [facturas, setFacturas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -101,6 +104,7 @@ export default function Facturas({ tipo = 'FE' }) {
       setLoading(true);
       const res = await listarFacturas({
         tipo,
+        categoria,
         search: debouncedSearch || undefined,
         estado: filterEstado || undefined,
         estado_contable: filterEstadoContable || undefined,
@@ -114,7 +118,7 @@ export default function Facturas({ tipo = 'FE' }) {
 
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
-  }, [tipo, debouncedSearch, filterEstado, filterEstadoContable, filterOrigen, debouncedResponsable, debouncedValorMin, debouncedValorMax]);
+  }, [tipo, categoria, debouncedSearch, filterEstado, filterEstadoContable, filterOrigen, debouncedResponsable, debouncedValorMin, debouncedValorMax]);
 
   const cargarContactos = useCallback(async () => {
     try { const res = await listarContactos(); setContactos(res.data || []); }
@@ -134,6 +138,15 @@ export default function Facturas({ tipo = 'FE' }) {
 
   // Auto-seleccionar mes más reciente al cargar (solo la primera vez)
   const autoMesSeleccionado = React.useRef(false);
+  useEffect(() => {
+    const buscar = new URLSearchParams(location.search).get('buscar');
+    if (buscar) {
+      autoMesSeleccionado.current = true; // no forzar el mes más reciente
+      setFilterMes('');
+      setSearch(buscar);
+      setDebouncedSearch(buscar);
+    }
+  }, [location.search]);
   useEffect(() => {
     if (facturas.length > 0 && !autoMesSeleccionado.current) {
       const meses = [...new Set(facturas.map(f => String(f.fecha_emision || '').substring(0, 7)).filter(Boolean))].sort().reverse();
@@ -308,7 +321,7 @@ export default function Facturas({ tipo = 'FE' }) {
       {/* Stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
         {[
-          { label: tipo === 'FE' ? 'Facturas' : 'Notas crédito', val: totales.docs, sub: 'documentos', color: '#3b82f6' },
+          { label: `${tipo === 'FE' ? 'Facturas' : 'Notas crédito'} ${nombreCategoria}`, val: totales.docs, sub: 'documentos', color: '#3b82f6' },
           { label: 'Pendientes', val: totales.pendientes, sub: 'sin procesar', color: '#f59e0b' },
           { label: 'Valor total', val: fmt(totales.valor), sub: 'acumulado', color: '#22c55e' },
         ].map(s => (
@@ -459,6 +472,9 @@ export default function Facturas({ tipo = 'FE' }) {
                     <td style={td}>
                       <div style={{ fontWeight: 500, color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.proveedor_nombre}</div>
                       <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>NIT: {f.proveedor_nit}</div>
+                      <div onClick={e => e.stopPropagation()}>
+                        <CategoriaChip factura={f} onUpdate={cargar} canMove={puede.gestionarProveedores} />
+                      </div>
                     </td>
                     <td style={{ ...td, color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(f.fecha_emision)}</td>
                     <td style={{ ...td, fontWeight: 600, color: parseFloat(f.total) < 0 ? '#f87171' : 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>{fmt(f.total)}</td>
@@ -682,6 +698,52 @@ export default function Facturas({ tipo = 'FE' }) {
           <div style={{ marginBottom: 12 }}><label style={labelSt}>Desde</label><input style={inputSt} type="date" value={syncRange.desde} onChange={e => setSyncRange({ ...syncRange, desde: e.target.value })} /></div>
           <div><label style={labelSt}>Hasta</label><input style={inputSt} type="date" value={syncRange.hasta} onChange={e => setSyncRange({ ...syncRange, hasta: e.target.value })} /></div>
         </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── Categoría obra / administrativa ──────────────────────────────────────────
+// Muestra si la factura está sin clasificar o fue movida manualmente.
+// Admin/editor pueden moverla a la otra pestaña o devolverla a la del proveedor.
+function CategoriaChip({ factura, onUpdate, canMove }) {
+  const [abierto, setAbierto] = React.useState(false);
+  const [guardando, setGuardando] = React.useState(false);
+  const manual = factura.categoria_manual;
+  const efectiva = manual || factura.proveedor_categoria || null;
+  const etiqueta = { obra: 'Obra', administrativa: 'Administrativa' };
+
+  const mover = async (valor) => {
+    setGuardando(true);
+    try {
+      await api.put(`/proveedores/factura/${factura.id}/categoria`, { categoria: valor });
+      setAbierto(false);
+      await onUpdate();
+    } catch (err) { alert(err.response?.data?.error || 'No se pudo mover la factura'); }
+    finally { setGuardando(false); }
+  };
+
+  const chip = !efectiva
+    ? { txt: 'Proveedor sin clasificar', color: '#fbbf24', bg: 'rgba(251,191,36,.12)' }
+    : manual
+      ? { txt: `Movida a ${etiqueta[manual]}`, color: '#f472b6', bg: 'rgba(244,114,182,.12)' }
+      : null;
+
+  if (!chip && !canMove) return null;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
+      {chip && <span style={{ fontSize: 10, color: chip.color, background: chip.bg, padding: '1px 6px', borderRadius: 4, fontWeight: 600 }}>{chip.txt}</span>}
+      {canMove && !abierto && (
+        <button onClick={() => setAbierto(true)} title="Mover entre obra y administrativa"
+          style={{ fontSize: 10, background: 'none', border: '1px solid var(--t-border)', borderRadius: 4, color: 'var(--t-text-muted)', padding: '0 5px', cursor: 'pointer' }}>⇄ Mover</button>
+      )}
+      {canMove && abierto && (
+        <span style={{ display: 'inline-flex', gap: 3, whiteSpace: 'nowrap' }}>
+          {efectiva !== 'obra' && <button disabled={guardando} onClick={() => mover('obra')} style={{ fontSize: 10, background: '#1e3a5f', color: '#60a5fa', border: 'none', borderRadius: 4, padding: '1px 6px', cursor: 'pointer' }}>→ Obra</button>}
+          {efectiva !== 'administrativa' && <button disabled={guardando} onClick={() => mover('administrativa')} style={{ fontSize: 10, background: '#2e1065', color: '#a78bfa', border: 'none', borderRadius: 4, padding: '1px 6px', cursor: 'pointer' }}>→ Administrativa</button>}
+          {manual && <button disabled={guardando} onClick={() => mover(null)} title="Quitar el movimiento manual y usar la categoría del proveedor" style={{ fontSize: 10, background: 'var(--t-bg-card)', color: 'var(--t-text-secondary)', border: '1px solid var(--t-border)', borderRadius: 4, padding: '1px 6px', cursor: 'pointer' }}>↺ Según proveedor</button>}
+          <button onClick={() => setAbierto(false)} style={{ fontSize: 11, background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer' }}>✕</button>
+        </span>
       )}
     </div>
   );

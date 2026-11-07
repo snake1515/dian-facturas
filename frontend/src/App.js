@@ -5,6 +5,8 @@ import { ThemeProvider, useTheme, TEMAS } from './context/ThemeContext';
 
 import Login from './pages/Login';
 import Facturas from './pages/Facturas';
+import Proveedores from './pages/Proveedores';
+import AvisosGlobales from './components/AvisosGlobales';
 import Usuarios from './pages/Usuarios';
 import Configuracion from './pages/Configuracion';
 import CruceDIAN from './pages/CruceDIAN';
@@ -86,13 +88,31 @@ function Layout({ children }) {
         {puede.verFacturas && (
           <NavLink to="/" end style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            Facturas
+            Facturas obra
+          </NavLink>
+        )}
+        {puede.verFacturas && (
+          <NavLink to="/facturas-administrativas" style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Facturas administrativas
           </NavLink>
         )}
         {puede.verFacturas && (
           <NavLink to="/notas-credito" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
-            Notas Crédito
+            Notas crédito obra
+          </NavLink>
+        )}
+        {puede.verFacturas && (
+          <NavLink to="/notas-credito-administrativas" style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+            Notas crédito administrativas
+          </NavLink>
+        )}
+        {puede.gestionarProveedores && (
+          <NavLink to="/proveedores" style={navStyle}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="3" y1="13" x2="21" y2="13"/></svg>
+            Proveedores
           </NavLink>
         )}
         {puede.verUsuarios && (
@@ -192,6 +212,7 @@ function Layout({ children }) {
           boxSizing: 'border-box',
         }}>
           {children}
+          <AvisosGlobales />
         </main>
       </div>
     </ThemeProvider>
@@ -247,8 +268,11 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginGuard />} />
-          <Route path="/" element={<PrivateRoute perm="verFacturas"><Layout><Facturas /></Layout></PrivateRoute>} />
-          <Route path="/notas-credito" element={<PrivateRoute perm="verFacturas"><Layout><Facturas tipo="NC" /></Layout></PrivateRoute>} />
+          <Route path="/" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="fe-obra" categoria="obra" /></Layout></PrivateRoute>} />
+          <Route path="/facturas-administrativas" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="fe-adm" categoria="administrativa" /></Layout></PrivateRoute>} />
+          <Route path="/notas-credito" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="nc-obra" tipo="NC" categoria="obra" /></Layout></PrivateRoute>} />
+          <Route path="/notas-credito-administrativas" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="nc-adm" tipo="NC" categoria="administrativa" /></Layout></PrivateRoute>} />
+          <Route path="/proveedores" element={<PrivateRoute perm="gestionarProveedores"><Layout><Proveedores /></Layout></PrivateRoute>} />
           <Route path="/usuarios" element={<PrivateRoute adminOnly><Layout><Usuarios /></Layout></PrivateRoute>} />
           <Route path="/configuracion" element={<PrivateRoute adminOnly><Layout><Configuracion /></Layout></PrivateRoute>} />
           <Route path="/cruce-dian" element={<PrivateRoute perm="verCruceDIAN"><Layout><CruceDIAN /></Layout></PrivateRoute>} />

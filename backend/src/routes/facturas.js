@@ -4,13 +4,15 @@ const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
 const { descargarArchivo } = require('../services/storageService');
 const { recuperarPdfDesdeGmail } = require('../services/gmailService');
+const { CATEGORIA_SQL, sincronizarProveedores } = require('../services/clasificacion');
 
 const router = express.Router();
 
 // ── GET /api/facturas ─────────────────────────────────────────────────────────
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const { tipo, search, estado, estado_contable, origen, responsable, valor_min, valor_max } = req.query;
+    const { tipo, search, estado, estado_contable, origen, responsable, valor_min, valor_max, categoria } = req.query;
+    sincronizarProveedores(); // registra proveedores nuevos (máx. 1 vez por minuto, sin esperar)
 
     const condiciones = [];
     const valores = [];
@@ -79,6 +81,13 @@ router.get('/', authMiddleware, async (req, res) => {
       i++;
     }
 
+    // Pestaña obra / administrativa: su categoría, más las sin clasificar (se ven en ambas)
+    if (categoria === 'obra' || categoria === 'administrativa') {
+      condiciones.push(`(${CATEGORIA_SQL} = $${i} OR ${CATEGORIA_SQL} IS NULL)`);
+      valores.push(categoria);
+      i++;
+    }
+
     const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
 
     const query = `
@@ -104,6 +113,8 @@ router.get('/', authMiddleware, async (req, res) => {
         f.gmail_message_id,
         f.notas,
         f.notas_infraestructura,
+        f.categoria_manual,
+        (SELECT p.categoria FROM proveedores p WHERE p.nit = TRIM(f.proveedor_nit)) AS proveedor_categoria,
         f.es_contrato,
         f.forma_pago,
         f.origen,
