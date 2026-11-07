@@ -63,8 +63,15 @@ export default function Dashboard() {
   if (tiene('facturas')) {
     const g = datos.gmail;
     if (g?.alerta) alertas.push({
-      nivel: 'critico', icono: '⛔', titulo: g.conectado ? 'Gmail no está sincronizando' : 'Gmail desconectado',
-      texto: g.conectado ? `Última sincronización ${haceCuanto(g.ultimaSync)}. Las facturas nuevas no están llegando: reconecte Gmail en Configuración. Si ya lo reconectó, espere unos minutos a que termine de sincronizar y pulse Actualizar.` : 'Conecte la cuenta de Gmail en Configuración para recibir facturas.',
+      nivel: 'critico', icono: '⛔',
+      titulo: !g.conectado ? 'Gmail desconectado' : g.error?.permisoVencido ? 'El permiso de Gmail venció' : 'Gmail no está sincronizando',
+      texto: !g.conectado
+        ? 'Conecte la cuenta de Gmail en Configuración para recibir facturas.'
+        : g.error?.permisoVencido
+          ? `Las facturas nuevas no están llegando. Pulse "Reconectar Gmail" en Configuración; al reconectar se sincroniza solo. Última sincronización ${haceCuanto(g.ultimaSync)}.`
+          : g.error
+            ? `La última sincronización falló (${String(g.error.mensaje || '').slice(0, 120)}). Última sincronización exitosa ${haceCuanto(g.ultimaSync)}.`
+            : `Última sincronización ${haceCuanto(g.ultimaSync)}. Revise la conexión de Gmail en Configuración.`,
       to: user?.rol === 'admin' ? '/configuracion' : null,
     });
     const a = datos.acciones;

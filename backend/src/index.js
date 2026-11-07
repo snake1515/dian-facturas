@@ -127,6 +127,25 @@ const iniciarCron = async () => {
     });
 
     console.log(`✅ Cron activo: cada ${horas} hora(s)`);
+
+    // Recuperación al despertar: en el plan gratis de Render el servidor se
+    // duerme cuando nadie usa la app y el cron no corre. Al arrancar, si la
+    // última sincronización quedó atrás, se sincroniza de una vez (en segundo plano).
+    const ls = await pool.query("SELECT valor FROM configuracion WHERE clave = 'last_sync'");
+    const ultima = ls.rows[0]?.valor ? new Date(ls.rows[0].valor) : null;
+    if (!ultima || Date.now() - ultima.getTime() > horas * 3600 * 1000) {
+      setTimeout(async () => {
+        try {
+          const r = await pool.query("SELECT valor FROM configuracion WHERE clave = 'sync_desde'");
+          const desde = r.rows[0]?.valor || null;
+          const hasta = new Date().toISOString().split('T')[0];
+          console.log(`🌅 Sincronización de recuperación al iniciar: ${desde || '(sin fecha inicial)'} → ${hasta}`);
+          await sincronizarCorreos(desde, hasta);
+        } catch (e) {
+          console.error('⚠️ Sincronización de recuperación falló:', e.message);
+        }
+      }, 20 * 1000);
+    }
   } catch (err) {
     console.error('Error iniciando cron:', err.message);
   }

@@ -94,17 +94,25 @@ router.get('/', authMiddleware, async (req, res) => {
       // Estado de Gmail: alerta si no sincroniza hace más del doble del intervalo (+1 h)
       const cfg = {};
       (await pool.query(`SELECT clave, valor FROM configuracion
-        WHERE clave IN ('gmail_connected', 'gmail_account', 'last_sync', 'sync_interval_hours')`))
+        WHERE clave IN ('gmail_connected', 'gmail_account', 'last_sync', 'sync_interval_hours', 'gmail_ultimo_error')`))
         .rows.forEach(x => { cfg[x.clave] = x.valor; });
       const horas = parseInt(cfg.sync_interval_hours || '4', 10) || 4;
       const ultima = cfg.last_sync ? new Date(cfg.last_sync) : null;
       const horasSin = ultima ? (Date.now() - ultima.getTime()) / 3600000 : null;
+      let error = null;
+      try { error = cfg.gmail_ultimo_error ? JSON.parse(cfg.gmail_ultimo_error) : null; } catch (e) { error = null; }
+      // Mientras el servidor duerme (plan gratis) no se sincroniza: eso no es una falla.
+      // Solo se avisa si hay un error real, si Gmail está desconectado, o si el
+      // servidor lleva despierto más del intervalo y aun así no ha sincronizado.
+      const horasDespierto = process.uptime() / 3600;
+      const atrasado = horasSin === null || horasSin > horas * 2 + 1;
       r.gmail = {
         conectado: cfg.gmail_connected === 'true',
         cuenta: cfg.gmail_account || null,
         ultimaSync: cfg.last_sync || null,
         intervaloHoras: horas,
-        alerta: cfg.gmail_connected !== 'true' || horasSin === null || horasSin > horas * 2 + 1,
+        error: error ? { ...error, permisoVencido: /invalid_grant/i.test(error.mensaje || '') } : null,
+        alerta: cfg.gmail_connected !== 'true' || !!error || (atrasado && horasDespierto > horas + 0.5),
       };
     }
 

@@ -42,7 +42,7 @@ const getAuthenticatedClient = async () => {
   return oauth2Client;
 };
 
-const sincronizarCorreos = async (desde = null, hasta = null) => {
+const sincronizarCorreosInterno = async (desde = null, hasta = null) => {
   console.log(`🔄 Iniciando sincronización de Gmail${desde ? ` desde ${desde} hasta ${hasta}` : ' (todo)'}...`);
   try {
     const auth = await getAuthenticatedClient();
@@ -107,6 +107,10 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
       "INSERT INTO configuracion (clave, valor) VALUES ('last_sync', $1) ON CONFLICT (clave) DO UPDATE SET valor = $1",
       [new Date().toISOString()]
     );
+    // Sincronización exitosa: se limpia cualquier error anterior
+    await pool.query(
+      "INSERT INTO configuracion (clave, valor) VALUES ('gmail_ultimo_error', '') ON CONFLICT (clave) DO UPDATE SET valor = ''"
+    );
 
     // Contar coincidencias pendientes de revisión (manual vs gmail)
     const coincRes = await pool.query(
@@ -117,6 +121,13 @@ const sincronizarCorreos = async (desde = null, hasta = null) => {
     return { ok: true, nuevas, coincidenciasPendientes };
   } catch (err) {
     console.error('❌ Error en sincronización:', err.message);
+    // Se guarda para que el Dashboard avise (p. ej. invalid_grant = permiso vencido)
+    try {
+      await pool.query(
+        "INSERT INTO configuracion (clave, valor) VALUES ('gmail_ultimo_error', $1) ON CONFLICT (clave) DO UPDATE SET valor = $1",
+        [JSON.stringify({ mensaje: err.message, fecha: new Date().toISOString() })]
+      );
+    } catch (e) { /* no bloquear */ }
     return { ok: false, error: err.message };
   }
 };
@@ -400,6 +411,20 @@ const recuperarPdfDesdeGmail = async (messageId) => {
     console.error(`⚠️ PDF recuperado de Gmail pero no se pudo guardar en Storage: ${err.message}`);
     return { filename: null, buffer: encontrado.data };
   }
+};
+
+// Solo una sincronización a la vez (cron, recuperación al despertar, reconexión
+// o importación manual). Si ya hay una en curso, se espera su resultado en vez
+// de lanzar otra en paralelo que podría procesar los mismos correos dos veces.
+let sincronizacionEnCurso = null;
+const sincronizarCorreos = async (desde, hasta) => {
+  if (sincronizacionEnCurso) {
+    console.log('⏳ Ya hay una sincronización en curso; se espera su resultado');
+    return sincronizacionEnCurso;
+  }
+  sincronizacionEnCurso = sincronizarCorreosInterno(desde, hasta);
+  try { return await sincronizacionEnCurso; }
+  finally { sincronizacionEnCurso = null; }
 };
 
 module.exports = { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos, recuperarPdfDesdeGmail };
