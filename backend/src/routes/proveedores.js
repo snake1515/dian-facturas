@@ -27,6 +27,20 @@ router.get('/', authMiddleware, editorOrAdmin, async (req, res) => {
   }
 });
 
+// ── GET /api/proveedores/categorias — NIT → categoría (lectura, todos) ───────
+// Lo usa el Cruce DIAN para separar en obra/administrativa las facturas que
+// están en el reporte DIAN pero no en la app (se clasifican por NIT del emisor).
+router.get('/categorias', authMiddleware, async (req, res) => {
+  try {
+    await sincronizarProveedores();
+    const { rows } = await pool.query(`SELECT nit, categoria FROM proveedores`);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error consultando categorías' });
+  }
+});
+
 // ── GET /api/proveedores/sin-clasificar — cuántos faltan por clasificar ──────
 router.get('/sin-clasificar', authMiddleware, editorOrAdmin, async (req, res) => {
   try {

@@ -59,6 +59,7 @@ export default function CruceDIAN() {
   const [procesando, setProcesando] = useState(false);
   const [resultado, setResultado] = useState(null);
   const [tabActiva, setTabActiva] = useState('cruzadas');
+  const [vista, setVista] = useState('obra'); // 'obra' | 'administrativa'
 
   // Mes/año del archivo DIAN subido
   const [mesArchivo, setMesArchivo] = useState(mesActual);
@@ -239,12 +240,30 @@ export default function CruceDIAN() {
         mapaFacturas[(f.numero || '').trim().toUpperCase()] = f;
       });
 
+      // Categoría por NIT del emisor (pestaña Proveedores), para las no encontradas
+      const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
+      const catPorNit = {};
+      try {
+        const cats = await api.get('/proveedores/categorias');
+        (cats.data || []).forEach(p => { if (p.categoria) catPorNit[soloDigitos(p.nit)] = p.categoria; });
+      } catch (e) { console.error('No se pudieron cargar las categorías de proveedores', e); }
+      const categoriaDeNit = (nit) => {
+        const d = soloDigitos(nit);
+        if (catPorNit[d]) return catPorNit[d];
+        // El reporte puede traer el NIT con dígito de verificación (900123456-7)
+        const sinDv = soloDigitos(String(nit || '').split('-')[0]);
+        return catPorNit[sinDv] || (d.length > 1 ? catPorNit[d.slice(0, -1)] : null) || null;
+      };
+
       const cruzadas = [];
       const noCruzadas = [];
       regsFiltrados.forEach(reg => {
         const found = mapaFacturas[reg.numero.toUpperCase()];
-        if (found) cruzadas.push({ dian: reg, factura: found });
-        else noCruzadas.push({ dian: reg });
+        if (found) {
+          // Misma categoría que la factura en la app (respeta el movimiento manual)
+          const cat = found.categoria_manual || found.proveedor_categoria || categoriaDeNit(found.proveedor_nit);
+          cruzadas.push({ dian: reg, factura: found, cat });
+        } else noCruzadas.push({ dian: reg, cat: categoriaDeNit(reg.nitEmisor) });
       });
 
       setResultado({ cruzadas, noCruzadas, total: regsFiltrados.length });
@@ -255,6 +274,22 @@ export default function CruceDIAN() {
       setProcesando(false);
     }
   };
+
+  // ── Vista obra / administrativa ─────────────────────────────────────────────
+  // Cada registro va a la vista de su categoría; sin clasificar aparece en ambas.
+  const enVista = (item) => !item.cat || item.cat === vista;
+  const resultadoVista = resultado ? (() => {
+    const cruzadas = resultado.cruzadas.filter(enVista);
+    const noCruzadas = resultado.noCruzadas.filter(enVista);
+    return { cruzadas, noCruzadas, total: cruzadas.length + noCruzadas.length };
+  })() : null;
+  const contarVista = (v) => resultado
+    ? resultado.cruzadas.filter(x => !x.cat || x.cat === v).length + resultado.noCruzadas.filter(x => !x.cat || x.cat === v).length
+    : 0;
+  const chipSinClasificar = (item) => !item.cat && (
+    <span title="Proveedor sin clasificar: aparece en Obra y en Administrativas"
+      style={{ marginLeft: 6, fontSize: 10, color: '#fbbf24', background: 'rgba(251,191,36,.12)', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>Sin clasificar</span>
+  );
 
   // Fecha de emisión de la factura: la del reporte DIAN (col F); si no viene, la registrada en la app.
   const fechaEmisionDe = (dian, factura) =>
@@ -287,25 +322,25 @@ export default function CruceDIAN() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `cruce_dian_${nombre}_${añoApp}-${mesApp}.csv`;
+    a.download = `cruce_dian_${vista}_${nombre}_${añoApp}-${mesApp}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
 
   const exportarCompleto = () => {
-    if (!resultado) return;
+    if (!resultadoVista) return;
     const bom = '\uFEFF';
     const headers = ['Estado Cruce','Tipo','N° DIAN','Fecha Emisión','Emisor DIAN','Valor DIAN','Estado DIAN','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'];
 
     const rows = [
-      ...resultado.cruzadas.map(({ dian, factura }) => [
+      ...resultadoVista.cruzadas.map(({ dian, factura }) => [
         'ENCONTRADA', factura.tipo, dian.numero, fechaEmisionDe(dian, factura), dian.emisor, dian.valorFormato, dian.estado, dian.notas,
         factura.responsables?.length > 0 ? factura.responsables.map(r => r.nombre || r.email).join(', ') : '',
         dian.responsable,
         factura.numero, factura.proveedor_nombre, fmt(factura.total),
         estadoContableInfo(factura).label, factura.documento_ingreso || '', dian.estadoEntrega || '',
       ]),
-      ...resultado.noCruzadas.map(({ dian }) => [
+      ...resultadoVista.noCruzadas.map(({ dian }) => [
         'NO ENCONTRADA', dian.tipo, dian.numero, fechaEmisionDe(dian), dian.emisor, dian.valorFormato, dian.estado, dian.notas, '', dian.responsable,
         '', '', '', '', '', dian.estadoEntrega || '',
       ]),
@@ -316,7 +351,7 @@ export default function CruceDIAN() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `cruce_dian_completo_${añoApp}-${mesApp}.csv`;
+    a.download = `cruce_dian_${vista}_completo_${añoApp}-${mesApp}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -485,12 +520,26 @@ const selectSt = {
       {/* ── Resultados ── */}
       {resultado && (
         <div>
+          {/* Vista: facturas de obra / administrativas (según el proveedor) */}
+          <div style={{ display: 'flex', gap: 4, background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', padding: 4, borderRadius: 10, marginBottom: 14, width: 'fit-content' }}>
+            {[
+              { id: 'obra', label: '🏗️ Facturas obra' },
+              { id: 'administrativa', label: '🏢 Facturas administrativas' },
+            ].map(v => (
+              <button key={v.id} onClick={() => setVista(v.id)}
+                style={{ padding: '8px 16px', borderRadius: 7, border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                  background: vista === v.id ? 'var(--t-accent)' : 'transparent', color: vista === v.id ? '#fff' : 'var(--t-text-muted)' }}>
+                {v.label} ({contarVista(v.id)})
+              </button>
+            ))}
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
             {[
-              { label: 'Total DIAN', val: resultado.total, color: '#3b82f6' },
-              { label: 'Encontradas', val: resultado.cruzadas.length, color: '#4ade80' },
-              { label: 'No encontradas', val: resultado.noCruzadas.length, color: '#f87171' },
-              { label: '% Cobertura', val: resultado.total > 0 ? Math.round(resultado.cruzadas.length / resultado.total * 100) + '%' : '0%', color: '#fbbf24' },
+              { label: 'Total DIAN', val: resultadoVista.total, color: '#3b82f6' },
+              { label: 'Encontradas', val: resultadoVista.cruzadas.length, color: '#4ade80' },
+              { label: 'No encontradas', val: resultadoVista.noCruzadas.length, color: '#f87171' },
+              { label: '% Cobertura', val: resultadoVista.total > 0 ? Math.round(resultadoVista.cruzadas.length / resultadoVista.total * 100) + '%' : '0%', color: '#fbbf24' },
             ].map(s => (
               <div key={s.label} style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 8, padding: '12px 14px' }}>
                 <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>{s.label}</div>
@@ -500,7 +549,7 @@ const selectSt = {
           </div>
 
           <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
-            Comparando contra facturas de <strong style={{ color: '#60a5fa' }}>{mesAppLabel} {añoApp}</strong>
+            {vista === 'obra' ? 'Facturas de obra' : 'Facturas administrativas'} · Comparando contra facturas de <strong style={{ color: '#60a5fa' }}>{mesAppLabel} {añoApp}</strong>
             {filtroResponsable && <> · Responsable: <strong style={{ color: '#fbbf24' }}>{filtroResponsable}</strong></>}
           </div>
 
@@ -508,18 +557,18 @@ const selectSt = {
             <button onClick={exportarCompleto} style={{ background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
               📥 Exportar reporte completo
             </button>
-            <button onClick={() => exportarReporte(resultado.cruzadas, 'cruzadas')} style={{ background: 'var(--t-bg-card)', color: '#4ade80', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
-              ✅ Encontradas ({resultado.cruzadas.length})
+            <button onClick={() => exportarReporte(resultadoVista.cruzadas, 'cruzadas')} style={{ background: 'var(--t-bg-card)', color: '#4ade80', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+              ✅ Encontradas ({resultadoVista.cruzadas.length})
             </button>
-            <button onClick={() => exportarReporte(resultado.noCruzadas, 'no_cruzadas')} style={{ background: 'var(--t-bg-card)', color: '#f87171', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
-              ❌ No encontradas ({resultado.noCruzadas.length})
+            <button onClick={() => exportarReporte(resultadoVista.noCruzadas, 'no_cruzadas')} style={{ background: 'var(--t-bg-card)', color: '#f87171', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+              ❌ No encontradas ({resultadoVista.noCruzadas.length})
             </button>
           </div>
 
           <div style={{ display: 'flex', gap: 2, background: 'var(--t-bg-app)', padding: 3, borderRadius: 8, marginBottom: 12, width: 'fit-content' }}>
             {[
-              { id: 'cruzadas', label: `✅ Encontradas (${resultado.cruzadas.length})` },
-              { id: 'no_cruzadas', label: `❌ No encontradas (${resultado.noCruzadas.length})` },
+              { id: 'cruzadas', label: `✅ Encontradas (${resultadoVista.cruzadas.length})` },
+              { id: 'no_cruzadas', label: `❌ No encontradas (${resultadoVista.noCruzadas.length})` },
             ].map(t => (
               <button key={t.id} onClick={() => setTabActiva(t.id)}
                 style={{ padding: '6px 14px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 500, cursor: 'pointer', background: tabActiva === t.id ? 'var(--t-bg-card)' : 'transparent', color: tabActiva === t.id ? 'var(--t-text-primary)' : 'var(--t-text-muted)' }}>
@@ -540,14 +589,14 @@ const selectSt = {
                     </tr>
                   </thead>
                   <tbody>
-                    {resultado.cruzadas.map(({ dian, factura }, i) => (
+                    {resultadoVista.cruzadas.map((item, i) => { const { dian, factura } = item; return (
                       <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
                         <td style={{ padding: '8px 12px' }}>
                           <span style={{ background: factura.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: factura.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{factura.tipo}</span>
                         </td>
                         <td style={{ padding: '8px 12px', color: '#4ade80', fontFamily: 'monospace' }}>{dian.numero}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', whiteSpace: 'nowrap' }}>{fechaEmisionDe(dian, factura) || '—'}</td>
-                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}{chipSinClasificar(item)}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#1e3a5f', color: '#60a5fa', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.notas}</td>
@@ -577,10 +626,10 @@ const selectSt = {
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{factura.documento_ingreso || '—'}</td>
                         <td style={{ padding: '8px 12px' }}>{badgeEntrega(dian.estadoEntrega)}</td>
                       </tr>
-                    ))}
+                    ); })}
                   </tbody>
                 </table>
-                {resultado.cruzadas.length === 0 && (
+                {resultadoVista.cruzadas.length === 0 && (
                   <div style={{ textAlign: 'center', padding: 32, color: 'var(--t-text-muted)' }}>No hay facturas cruzadas</div>
                 )}
               </div>
@@ -599,7 +648,7 @@ const selectSt = {
                     </tr>
                   </thead>
                   <tbody>
-                    {resultado.noCruzadas.map(({ dian }, i) => (
+                    {resultadoVista.noCruzadas.map((item, i) => { const { dian } = item; return (
                       <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
                         <td style={{ padding: '8px 12px', color: '#f87171', fontFamily: 'monospace' }}>{dian.numero}</td>
                         <td style={{ padding: '8px 12px' }}>
@@ -619,7 +668,7 @@ const selectSt = {
                         </td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontSize: 11 }}>{dian.tipo}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)', fontFamily: 'monospace' }}>{dian.nitEmisor}</td>
-                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dian.emisor}{chipSinClasificar(item)}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-secondary)' }}>{dian.fechaEmision}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--t-text-primary)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{dian.valorFormato}</td>
                         <td style={{ padding: '8px 12px' }}><span style={{ background: '#2a1a1a', color: '#f87171', padding: '2px 8px', borderRadius: 20, fontSize: 11 }}>{dian.estado}</span></td>
@@ -631,10 +680,10 @@ const selectSt = {
                         </td>
                         <td style={{ padding: '8px 12px' }}>{badgeEntrega(dian.estadoEntrega)}</td>
                       </tr>
-                    ))}
+                    ); })}
                   </tbody>
                 </table>
-                {resultado.noCruzadas.length === 0 && (
+                {resultadoVista.noCruzadas.length === 0 && (
                   <div style={{ textAlign: 'center', padding: 32, color: 'var(--t-text-muted)' }}>Todas las facturas DIAN están en la app ✅</div>
                 )}
               </div>
