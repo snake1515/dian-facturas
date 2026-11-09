@@ -16,6 +16,18 @@ const limpiarUrl = (u) => {
 const pool = new Pool({
   connectionString: limpiarUrl(process.env.DATABASE_URL),
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  // Plan gratis de la base (1 GB de RAM): cada conexión abierta consume memoria
+  // en el servidor de PostgreSQL. Se limitan y se cierran las que no se usan.
+  max: 5,                          // conexiones simultáneas como máximo
+  idleTimeoutMillis: 30 * 1000,    // cerrar conexiones inactivas tras 30 s
+  connectionTimeoutMillis: 20 * 1000,
+  statement_timeout: 2 * 60 * 1000, // ninguna consulta puede durar más de 2 min
+});
+
+// Si la base corta una conexión inactiva (p. ej. reinicio por falta de memoria),
+// se registra el error y el pool abre otra cuando se necesite, sin tumbar el servidor.
+pool.on('error', (err) => {
+  console.error('⚠️ Conexión a la base de datos interrumpida:', err.message);
 });
 
 const initDB = async () => {
