@@ -808,6 +808,8 @@ const initDB = async () => {
     // RLS ahora y otra vez a los 2 minutos (algunos módulos crean tablas al arrancar)
     await protegerTablas();
     setTimeout(protegerTablas, 2 * 60 * 1000);
+    // Índices de rendimiento (en segundo plano: no retrasan el arranque)
+    setTimeout(() => require('../services/indices').crearIndices().catch(e => console.warn('⚠️ Índices:', e.message)), 5 * 1000);
   } finally {
     client.release();
   }

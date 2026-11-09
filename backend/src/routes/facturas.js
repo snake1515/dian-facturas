@@ -87,7 +87,8 @@ router.get('/', authMiddleware, async (req, res) => {
 
     // Pestaña obra / administrativa: su categoría, más las sin clasificar (se ven en ambas)
     if (categoria === 'obra' || categoria === 'administrativa') {
-      condiciones.push(`(${CATEGORIA_SQL} = $${i} OR ${CATEGORIA_SQL} IS NULL)`);
+      // pc = proveedor (JOIN más abajo): la categoría se calcula una sola vez por fila
+      condiciones.push(`(COALESCE(f.categoria_manual, pc.categoria) = $${i} OR COALESCE(f.categoria_manual, pc.categoria) IS NULL)`);
       valores.push(categoria);
       i++;
     }
@@ -118,7 +119,7 @@ router.get('/', authMiddleware, async (req, res) => {
         f.notas,
         f.notas_infraestructura,
         f.categoria_manual,
-        (SELECT p.categoria FROM proveedores p WHERE p.nit = TRIM(f.proveedor_nit)) AS proveedor_categoria,
+        pc.categoria AS proveedor_categoria,
         f.es_contrato,
         f.forma_pago,
         f.origen,
@@ -155,9 +156,10 @@ router.get('/', authMiddleware, async (req, res) => {
           '[]'
         ) AS responsables
       FROM facturas f
+      LEFT JOIN proveedores pc ON pc.nit = TRIM(f.proveedor_nit)
       LEFT JOIN responsables_factura r ON r.factura_id = f.id
       ${where}
-      GROUP BY f.id
+      GROUP BY f.id, pc.categoria
       ORDER BY f.fecha_emision DESC, f.created_at DESC
     `;
 
