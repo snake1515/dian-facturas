@@ -1,7 +1,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { authMiddleware, editorOrAdmin } = require('../middleware/auth');
-const { CATEGORIA_SQL, DESDE_SIN_GESTION, DIAS_SIN_GESTION, sincronizarProveedores } = require('../services/clasificacion');
+const { CATEGORIA_SQL, DESDE_SIN_GESTION, DIAS_SIN_GESTION, SIN_NOTA_EXCEPCION_SQL, sincronizarProveedores } = require('../services/clasificacion');
 
 const router = express.Router();
 const CATEGORIAS = ['obra', 'administrativa'];
@@ -104,7 +104,7 @@ router.put('/factura/:id(\\d+)/categoria', authMiddleware, editorOrAdmin, async 
 // ── GET /api/proveedores/facturas-sin-gestion — aviso para todos ─────────────
 // Facturas (FE) emitidas desde DESDE_SIN_GESTION, con más de DIAS_SIN_GESTION
 // días desde la emisión, sin ninguna gestión contable y sin la nota
-// "FACTURA CON NOVEDAD". De la más antigua a la más nueva.
+// "FACTURA CON NOVEDAD" ni "FACTURA DE CAJA MENOR". De la más antigua a la más nueva.
 router.get('/facturas-sin-gestion', authMiddleware, async (req, res) => {
   try {
     // Solo para quienes pueden ver facturas (no regente ni contable)
@@ -121,7 +121,7 @@ router.get('/facturas-sin-gestion', authMiddleware, async (req, res) => {
         AND COALESCE(f.estado_contable, 'por_gestionar') = 'por_gestionar'
         AND f.flujo_tipo IS NULL
         AND COALESCE(f.es_contrato, false) = false
-        AND COALESCE(f.notas, '') NOT LIKE '%FACTURA CON NOVEDAD%'
+        AND ${SIN_NOTA_EXCEPCION_SQL}
       ORDER BY f.fecha_emision ASC, f.id ASC`, [DESDE_SIN_GESTION, DIAS_SIN_GESTION]);
     res.json({ dias: DIAS_SIN_GESTION, facturas: rows });
   } catch (err) {

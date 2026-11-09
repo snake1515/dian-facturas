@@ -7,7 +7,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
-const { DESDE_SIN_GESTION, DIAS_SIN_GESTION, sincronizarProveedores } = require('../services/clasificacion');
+const { DESDE_SIN_GESTION, DIAS_SIN_GESTION, SIN_NOTA_EXCEPCION_SQL, sincronizarProveedores } = require('../services/clasificacion');
 
 const router = express.Router();
 
@@ -72,13 +72,13 @@ router.get('/', authMiddleware, async (req, res) => {
         SELECT
           COUNT(*) FILTER (WHERE f.tipo = 'FE' AND f.fecha_emision >= $1::date
             AND f.fecha_emision < ${HOY} - $2::int AND ${SIN_GESTION}
-            AND COALESCE(f.notas, '') NOT LIKE '%FACTURA CON NOVEDAD%' AND ${CAT} <> 'administrativa')::int AS sin_gestion_obra,
+            AND ${SIN_NOTA_EXCEPCION_SQL} AND ${CAT} <> 'administrativa')::int AS sin_gestion_obra,
           COUNT(*) FILTER (WHERE f.tipo = 'FE' AND f.fecha_emision >= $1::date
             AND f.fecha_emision < ${HOY} - $2::int AND ${SIN_GESTION}
-            AND COALESCE(f.notas, '') NOT LIKE '%FACTURA CON NOVEDAD%' AND ${CAT} = 'administrativa')::int AS sin_gestion_adm,
+            AND ${SIN_NOTA_EXCEPCION_SQL} AND ${CAT} = 'administrativa')::int AS sin_gestion_adm,
           COUNT(*) FILTER (WHERE f.tipo = 'FE' AND f.fecha_emision >= $1::date
             AND f.fecha_emision < ${HOY} - $2::int AND ${SIN_GESTION}
-            AND COALESCE(f.notas, '') NOT LIKE '%FACTURA CON NOVEDAD%')::int AS sin_gestion_total,
+            AND ${SIN_NOTA_EXCEPCION_SQL})::int AS sin_gestion_total,
           COUNT(*) FILTER (WHERE COALESCE(f.notas, '') LIKE '%FACTURA CON NOVEDAD%' AND ${SIN_GESTION})::int AS con_novedad,
           COUNT(*) FILTER (WHERE f.origen = 'pdf_manual' AND f.pdf_path IS NULL)::int AS manuales_sin_pdf
         ${FROM_CAT}`, [DESDE_SIN_GESTION, DIAS_SIN_GESTION])).rows[0];

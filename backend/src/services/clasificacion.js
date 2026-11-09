@@ -16,6 +16,12 @@ const CATEGORIA_SQL = `COALESCE(f.categoria_manual, (SELECT p.categoria FROM pro
 const DESDE_SIN_GESTION = '2026-11-01';
 const DIAS_SIN_GESTION = 5;
 
+// Frases en Notas (en MAYÚSCULA, tal cual) que excluyen una factura del aviso
+// de facturas sin gestión.
+const NOTAS_EXCEPCION = ['FACTURA CON NOVEDAD', 'FACTURA DE CAJA MENOR'];
+const SIN_NOTA_EXCEPCION_SQL = NOTAS_EXCEPCION
+  .map(t => `COALESCE(f.notas, '') NOT LIKE '%${t}%'`).join(' AND ');
+
 // Copia a "proveedores" los NIT nuevos que aparezcan en las facturas.
 // Se ejecuta como máximo una vez por minuto (salvo forzar = true).
 let ultimaSync = 0;
@@ -43,4 +49,4 @@ const sincronizarProveedores = async (forzar = false) => {
   return enCurso;
 };
 
-module.exports = { CATEGORIA_SQL, DESDE_SIN_GESTION, DIAS_SIN_GESTION, sincronizarProveedores };
+module.exports = { CATEGORIA_SQL, DESDE_SIN_GESTION, DIAS_SIN_GESTION, NOTAS_EXCEPCION, SIN_NOTA_EXCEPCION_SQL, sincronizarProveedores };

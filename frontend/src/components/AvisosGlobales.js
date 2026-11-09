@@ -97,7 +97,7 @@ export default function AvisosGlobales() {
               y sin ninguna gestión en <b>Est. contable</b>.
             </div>
             <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--t-text-muted)', marginTop: 8 }}>
-              Para que dejen de aparecer, asigne un estado contable (OC, caja menor, contrato…) o escriba <b>FACTURA CON NOVEDAD</b> en la columna Notas.
+              Para que dejen de aparecer, asigne un estado contable (OC, caja menor, contrato…) o escriba <b>FACTURA CON NOVEDAD</b> o <b>FACTURA DE CAJA MENOR</b> en la columna Notas.
             </div>
             <div style={{ marginTop: 12, maxHeight: 180, overflowY: 'auto', fontSize: 12, borderTop: '1px solid var(--t-border)' }}>
               {modalSinGestion.facturas.slice(0, 50).map(f => (
