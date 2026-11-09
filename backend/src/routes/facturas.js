@@ -6,6 +6,10 @@ const { descargarArchivo } = require('../services/storageService');
 const { recuperarPdfDesdeGmail } = require('../services/gmailService');
 const { CATEGORIA_SQL, sincronizarProveedores } = require('../services/clasificacion');
 
+// Mismo proveedor: NIT igual (solo dígitos). Si alguno no tiene NIT, no se exige.
+const nitSql = (a) => `COALESCE(regexp_replace(${a}.proveedor_nit, '[^0-9]', '', 'g'), '')`;
+const MISMO_PROVEEDOR = (a, b) => `(${nitSql(a)} = '' OR ${nitSql(b)} = '' OR ${nitSql(a)} = ${nitSql(b)})`;
+
 const router = express.Router();
 
 // ── GET /api/facturas ─────────────────────────────────────────────────────────
@@ -122,10 +126,22 @@ router.get('/', authMiddleware, async (req, res) => {
         f.gmail_factura_id,
         f.notificacion_vista,
         f.created_at,
+        -- Cruce factura ↔ nota crédito: mismo número Y mismo proveedor (NIT).
+        -- Así una NC no marca facturas de otro proveedor con el mismo número.
+        -- Si alguno de los dos no tiene NIT, se compara solo el número (como antes).
         EXISTS(
           SELECT 1 FROM facturas nc
-          WHERE nc.tipo = 'NC' AND nc.documento_ingreso = f.numero
+          WHERE nc.tipo = 'NC'
+            AND UPPER(TRIM(nc.documento_ingreso)) = UPPER(TRIM(f.numero))
+            AND ${MISMO_PROVEEDOR('nc', 'f')}
         ) AS tiene_nc,
+        -- Para una NC: ¿existe la factura indicada en Doc. ingreso de ese mismo proveedor?
+        CASE WHEN f.tipo = 'NC' AND COALESCE(TRIM(f.documento_ingreso), '') <> '' THEN EXISTS(
+          SELECT 1 FROM facturas fe
+          WHERE fe.tipo = 'FE'
+            AND UPPER(TRIM(fe.numero)) = UPPER(TRIM(f.documento_ingreso))
+            AND ${MISMO_PROVEEDOR('fe', 'f')}
+        ) END AS nc_factura_encontrada,
         EXISTS(
           SELECT 1 FROM productos_factura_estado pfe
           JOIN productos_factura p ON p.id = pfe.producto_id

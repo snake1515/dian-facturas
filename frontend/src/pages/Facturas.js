@@ -906,6 +906,16 @@ function BarraProgreso({ factura, onUpdate, canEdit, canElegirFlujo, canDevolver
   // ── NC: solo "Por cruzar" / "Cruzado" ────────────────────────────────────
   if (factura.tipo === 'NC') {
     const cruzado = !!factura.documento_ingreso;
+    // El número en Doc. ingreso no corresponde a ninguna factura de este proveedor
+    if (cruzado && factura.nc_factura_encontrada === false) {
+      return (
+        <span title={`No hay una factura ${factura.documento_ingreso} de ${factura.proveedor_nombre || 'este proveedor'}`}
+          style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, padding:'3px 10px', borderRadius:20,
+            background:'rgba(239,68,68,.12)', color:'#f87171', border:'0.5px solid rgba(239,68,68,.4)' }}>
+          ⚠️ Factura no encontrada en este proveedor
+        </span>
+      );
+    }
     return (
       <span style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, padding:'3px 10px', borderRadius:20,
         background: cruzado ? '#FAEEDA' : 'var(--t-bg-card)',
