@@ -9,6 +9,12 @@ const leer = (k) => { try { return JSON.parse(sessionStorage.getItem(k) || 'null
 const guardar = (k, v) => { try { v === null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* sin storage */ } };
 
 const CLAVE_RECORRIDO = 'recorridoSinGestion';
+const GRUPOS = [
+  { id: 'obra',           titulo: '🏗️ Facturas obra',            corto: 'obra',           color: '#60a5fa' },
+  { id: 'administrativa', titulo: '🏢 Facturas administrativas', corto: 'administrativas', color: '#fb923c' },
+  { id: 'sin_clasificar', titulo: '❔ Proveedor sin clasificar',  corto: 'sin clasificar',  color: '#fbbf24' },
+];
+const grupoDe = (f) => (f.categoria === 'obra' || f.categoria === 'administrativa' ? f.categoria : 'sin_clasificar');
 const rutaDe = (f) => `${f.categoria === 'administrativa' ? '/facturas-administrativas' : '/facturas-obra'}?buscar=${encodeURIComponent(f.numero)}`;
 
 // Avisos que aparecen en todas las pantallas:
@@ -57,10 +63,12 @@ export default function AvisosGlobales() {
     if (rec) navigate(rutaDe(rec.items[rec.idx]));
   };
 
-  const aceptarSinGestion = () => {
-    const items = modalSinGestion.facturas.map(f => ({ id: f.id, numero: f.numero, proveedor: f.proveedor_nombre, fecha: f.fecha_emision, total: f.total, categoria: f.categoria }));
+  // grupo: 'obra' | 'administrativa' | 'sin_clasificar' | undefined (todas)
+  const aceptarSinGestion = (grupo) => {
+    const lista = grupo ? modalSinGestion.facturas.filter(f => grupoDe(f) === grupo) : modalSinGestion.facturas;
+    const items = lista.map(f => ({ id: f.id, numero: f.numero, proveedor: f.proveedor_nombre, fecha: f.fecha_emision, total: f.total, categoria: f.categoria }));
     setModalSinGestion(null);
-    irA({ items, idx: 0, sesion });
+    irA({ items, idx: 0, sesion, titulo: grupo ? GRUPOS.find(g => g.id === grupo).corto : null });
   };
 
   const terminarRecorrido = () => { guardar(CLAVE_RECORRIDO, null); setRecorrido(null); };
@@ -90,7 +98,7 @@ export default function AvisosGlobales() {
       {/* Popup de facturas sin gestión (al ingresar) */}
       {modalSinGestion && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.65)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div style={{ background: 'var(--t-bg-card)', border: '1px solid #ef4444', borderRadius: 12, padding: 24, maxWidth: 520, width: '100%', color: 'var(--t-text-primary)', boxShadow: '0 20px 60px rgba(0,0,0,.5)' }}>
+          <div style={{ background: 'var(--t-bg-card)', border: '1px solid #ef4444', borderRadius: 12, padding: 24, maxWidth: 620, width: '100%', color: 'var(--t-text-primary)', boxShadow: '0 20px 60px rgba(0,0,0,.5)' }}>
             <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>⚠️ Facturas sin gestión</div>
             <div style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--t-text-secondary)' }}>
               Hay <b style={{ color: '#f87171' }}>{modalSinGestion.facturas.length}</b> factura{modalSinGestion.facturas.length === 1 ? '' : 's'} con más de {modalSinGestion.dias} días desde su emisión
@@ -99,18 +107,47 @@ export default function AvisosGlobales() {
             <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--t-text-muted)', marginTop: 8 }}>
               Para que dejen de aparecer, asigne un estado contable (OC, caja menor, contrato…) o escriba <b>FACTURA CON NOVEDAD</b> o <b>FACTURA DE CAJA MENOR</b> en la columna Notas.
             </div>
-            <div style={{ marginTop: 12, maxHeight: 180, overflowY: 'auto', fontSize: 12, borderTop: '1px solid var(--t-border)' }}>
-              {modalSinGestion.facturas.slice(0, 50).map(f => (
-                <div key={f.id} style={{ display: 'flex', gap: 8, padding: '5px 0', borderBottom: '1px solid var(--t-border)' }}>
-                  <span style={{ width: 80, color: 'var(--t-text-muted)' }}>{fmtDate(f.fecha_emision)}</span>
-                  <span style={{ width: 90, fontFamily: 'monospace' }}>{f.numero}</span>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.proveedor_nombre}</span>
-                </div>
-              ))}
+            <div style={{ marginTop: 12, maxHeight: 340, overflowY: 'auto' }}>
+              {GRUPOS.map(g => {
+                const lista = modalSinGestion.facturas.filter(f => grupoDe(f) === g.id);
+                if (!lista.length && g.id === 'sin_clasificar') return null;
+                return (
+                  <div key={g.id} style={{ marginBottom: 12, border: '1px solid var(--t-border)', borderLeft: `3px solid ${g.color}`, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700 }}>
+                        {g.titulo}: <span style={{ color: lista.length ? '#f87171' : '#4ade80' }}>{lista.length}</span>
+                      </span>
+                      {lista.length > 0 && (
+                        <button onClick={() => aceptarSinGestion(g.id)}
+                          style={{ background: 'transparent', color: g.color, border: `1px solid ${g.color}`, borderRadius: 6, padding: '3px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                          Revisar {g.corto} ▶
+                        </button>
+                      )}
+                    </div>
+                    {g.id === 'sin_clasificar' && (
+                      <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 2 }}>Aparecen en ambas pestañas hasta clasificar su proveedor.</div>
+                    )}
+                    {lista.length === 0 ? (
+                      <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4 }}>✅ Ninguna pendiente</div>
+                    ) : (
+                      <div style={{ marginTop: 6, fontSize: 12 }}>
+                        {lista.slice(0, 30).map(f => (
+                          <div key={f.id} style={{ display: 'flex', gap: 8, padding: '4px 0', borderTop: '1px solid var(--t-border)' }}>
+                            <span style={{ width: 80, color: 'var(--t-text-muted)' }}>{fmtDate(f.fecha_emision)}</span>
+                            <span style={{ width: 90, fontFamily: 'monospace' }}>{f.numero}</span>
+                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.proveedor_nombre}</span>
+                          </div>
+                        ))}
+                        {lista.length > 30 && <div style={{ fontSize: 11, color: 'var(--t-text-muted)', paddingTop: 4 }}>… y {lista.length - 30} más</div>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-              <button onClick={aceptarSinGestion} style={{ background: '#ef4444', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 22px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
-                Aceptar — ir a la más antigua
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+              <button onClick={() => aceptarSinGestion()} style={{ background: '#ef4444', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 22px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                Aceptar — revisar todas (más antigua primero)
               </button>
             </div>
           </div>
@@ -125,7 +162,7 @@ export default function AvisosGlobales() {
           display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', maxWidth: 'calc(100vw - 32px)',
           boxShadow: '0 8px 30px rgba(0,0,0,.5)', color: '#f3f4f6', fontSize: 13,
         }}>
-          <span style={{ color: '#fca5a5', fontWeight: 700 }}>Sin gestión {recorrido.idx + 1} de {recorrido.items.length}</span>
+          <span style={{ color: '#fca5a5', fontWeight: 700 }}>Sin gestión{recorrido.titulo ? ` (${recorrido.titulo})` : ''} {recorrido.idx + 1} de {recorrido.items.length}</span>
           <span><b style={{ fontFamily: 'monospace' }}>{actual.numero}</b> · {actual.proveedor} · {fmtDate(actual.fecha)} · {fmt(actual.total)}</span>
           <span style={{ display: 'flex', gap: 6 }}>
             <button disabled={recorrido.idx === 0} onClick={() => irA({ ...recorrido, idx: recorrido.idx - 1 })}
