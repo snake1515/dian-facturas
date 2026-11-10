@@ -1,7 +1,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { authMiddleware, editorOrAdmin } = require('../middleware/auth');
-const { CATEGORIA_SQL, DESDE_SIN_GESTION, DIAS_SIN_GESTION, SIN_NOTA_EXCEPCION_SQL, sincronizarProveedores } = require('../services/clasificacion');
+const { CATEGORIA_SQL, DESDE_SIN_GESTION, DIAS_SIN_GESTION, SIN_NOTA_EXCEPCION_SQL, SIN_CRUCE_NC_SQL, sincronizarProveedores } = require('../services/clasificacion');
 
 const router = express.Router();
 const CATEGORIAS = ['obra', 'administrativa'];
@@ -122,6 +122,7 @@ router.get('/facturas-sin-gestion', authMiddleware, async (req, res) => {
         AND f.flujo_tipo IS NULL
         AND COALESCE(f.es_contrato, false) = false
         AND ${SIN_NOTA_EXCEPCION_SQL}
+        AND ${SIN_CRUCE_NC_SQL}
       ORDER BY f.fecha_emision ASC, f.id ASC`, [DESDE_SIN_GESTION, DIAS_SIN_GESTION]);
     res.json({ dias: DIAS_SIN_GESTION, facturas: rows });
   } catch (err) {

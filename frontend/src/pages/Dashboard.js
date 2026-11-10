@@ -10,6 +10,7 @@ const C_SIN = '#64748b';
 // Etapas de gestión: una sola tonalidad, de claro (menos avance) a oscuro (más avance)
 const ETAPAS = [
   { id: 'sin_gestion', label: 'Sin gestión', color: '#64748b' },
+  { id: 'cruzada_nc',  label: 'Cruzada con NC', color: '#2dd4bf' },
   { id: 'en_proceso',  label: 'En proceso',  color: '#93c5fd' },
   { id: 'ingresada',   label: 'Ingresada (OC / caja menor)', color: '#3b82f6' },
   { id: 'aprobado',    label: 'Aprobada',    color: '#1d4ed8' },

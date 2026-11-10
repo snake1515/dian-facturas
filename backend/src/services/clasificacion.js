@@ -22,6 +22,17 @@ const NOTAS_EXCEPCION = ['FACTURA CON NOVEDAD', 'FACTURA DE CAJA MENOR'];
 const SIN_NOTA_EXCEPCION_SQL = NOTAS_EXCEPCION
   .map(t => `COALESCE(f.notas, '') NOT LIKE '%${t}%'`).join(' AND ');
 
+// La factura "f" ya fue cruzada con una nota crédito (misma regla que la
+// columna "Cruzado con nota crédito": número en Doc. ingreso de la NC y mismo NIT).
+// Ese cruce cuenta como gestión.
+const NIT = (a) => `COALESCE(regexp_replace(${a}.proveedor_nit, '[^0-9]', '', 'g'), '')`;
+const CRUZADA_NC_SQL = `EXISTS (
+  SELECT 1 FROM facturas nc
+  WHERE nc.tipo = 'NC'
+    AND UPPER(TRIM(nc.documento_ingreso)) = UPPER(TRIM(f.numero))
+    AND (${NIT('nc')} = '' OR ${NIT('f')} = '' OR ${NIT('nc')} = ${NIT('f')}))`;
+const SIN_CRUCE_NC_SQL = `NOT ${CRUZADA_NC_SQL}`;
+
 // Copia a "proveedores" los NIT nuevos que aparezcan en las facturas.
 // Se ejecuta como máximo una vez por minuto (salvo forzar = true).
 let ultimaSync = 0;
@@ -49,4 +60,4 @@ const sincronizarProveedores = async (forzar = false) => {
   return enCurso;
 };
 
-module.exports = { CATEGORIA_SQL, DESDE_SIN_GESTION, DIAS_SIN_GESTION, NOTAS_EXCEPCION, SIN_NOTA_EXCEPCION_SQL, sincronizarProveedores };
+module.exports = { CATEGORIA_SQL, CRUZADA_NC_SQL, SIN_CRUCE_NC_SQL, DESDE_SIN_GESTION, DIAS_SIN_GESTION, NOTAS_EXCEPCION, SIN_NOTA_EXCEPCION_SQL, sincronizarProveedores };

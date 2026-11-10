@@ -7,7 +7,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
-const { DESDE_SIN_GESTION, DIAS_SIN_GESTION, SIN_NOTA_EXCEPCION_SQL, sincronizarProveedores } = require('../services/clasificacion');
+const { DESDE_SIN_GESTION, DIAS_SIN_GESTION, SIN_NOTA_EXCEPCION_SQL, CRUZADA_NC_SQL, sincronizarProveedores } = require('../services/clasificacion');
 
 const router = express.Router();
 
@@ -28,8 +28,10 @@ const FROM_CAT = `
 const CAT = `COALESCE(COALESCE(f.categoria_manual, p.categoria), 'sin_clasificar')`;
 const HOY = `(NOW() AT TIME ZONE 'America/Bogota')::date`;
 const LLEGADA = `(f.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Bogota')::date`;
-const SIN_GESTION = `COALESCE(f.estado_contable, 'por_gestionar') = 'por_gestionar'
+const POR_GESTIONAR = `COALESCE(f.estado_contable, 'por_gestionar') = 'por_gestionar'
         AND f.flujo_tipo IS NULL AND COALESCE(f.es_contrato, false) = false`;
+// Cruzar la factura con una nota crédito también cuenta como gestión
+const SIN_GESTION = `${POR_GESTIONAR} AND NOT ${CRUZADA_NC_SQL}`;
 
 const seguro = async (fn) => { try { return await fn(); } catch (e) { console.error('Dashboard:', e.message); return null; } };
 
@@ -58,6 +60,7 @@ router.get('/', authMiddleware, async (req, res) => {
         SELECT ${CAT} AS cat,
           CASE
             WHEN ${SIN_GESTION} THEN 'sin_gestion'
+            WHEN ${POR_GESTIONAR} THEN 'cruzada_nc'
             WHEN f.estado_contable = 'aprobado' THEN 'aprobado'
             WHEN f.estado_contable IN ('ingresado_orden_compra', 'ingresado_caja_menor') THEN 'ingresada'
             ELSE 'en_proceso'
