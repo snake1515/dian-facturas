@@ -284,6 +284,11 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
     .sort((a, b) => (orden === 'neto' ? Math.abs(b.neto) - Math.abs(a.neto) : b[orden] - a[orden]));
 
   const detalle = sel ? datos.lista.find(t => t.k === sel) : null;
+  React.useEffect(() => {
+    if (!sel) return;
+    const el = document.getElementById(`tercero-${sel}`);
+    if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }, [sel]);
 
   // ── Exportación a Excel: una hoja por cada bloque del dashboard ─────────
   function exportar() {
@@ -609,7 +614,8 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
             </tr></thead>
             <tbody>
               {tabla.map(t => (
-                <tr key={t.k} onClick={() => setSel(sel === t.k ? null : t.k)} style={{ cursor: 'pointer', background: sel === t.k ? 'var(--t-bg-inner)' : undefined }}>
+                <React.Fragment key={t.k}>
+                <tr id={`tercero-${t.k}`} onClick={() => setSel(sel === t.k ? null : t.k)} style={{ cursor: 'pointer', background: sel === t.k ? 'var(--t-bg-inner)' : undefined }}>
                   <td style={{ ...td, fontWeight: 600 }}>{t.nombre}</td>
                   <td style={{ ...td, ...r, fontWeight: 700, color: t.nos > TOL ? C_NOS : 'var(--t-text-muted)' }}>{Math.abs(t.nos) > TOL ? fmtV(t.nos) : '—'}</td>
                   <td style={{ ...td, ...r, fontWeight: 700, color: t.deb > TOL ? C_DEB : 'var(--t-text-muted)' }}>{Math.abs(t.deb) > TOL ? fmtV(t.deb) : '—'}</td>
@@ -620,6 +626,70 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
                   <td style={{ ...td, ...r, color: 'var(--t-text-muted)' }}>{t.ed ? fmtV(t.ed) : '—'}</td>
                   <td style={{ ...td, color: 'var(--t-text-muted)', whiteSpace: 'nowrap' }}>{t.ultima}</td>
                 </tr>
+                {/* Detalle del tercero: se despliega justo debajo de su fila */}
+                {sel === t.k && detalle && (
+                <tr><td colSpan={9} style={{ padding: 0 }}>
+                    <div style={{ ...card, borderColor: 'var(--t-accent)', margin: '4px 0 10px', cursor: 'default' }} onClick={e => e.stopPropagation()}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--t-text-primary)' }}>{detalle.nombre}</div>
+                          <div style={{ fontSize: 13, marginTop: 4 }}>
+                            <span style={{ color: C_NOS, fontWeight: 700 }}>Nos debe {fmtV(detalle.nos)}</span>
+                            <span style={{ color: 'var(--t-text-muted)' }}> · </span>
+                            <span style={{ color: C_DEB, fontWeight: 700 }}>Le debemos {fmtV(detalle.deb)}</span>
+                            <span style={{ color: 'var(--t-text-muted)' }}> · Neto {fmtV(detalle.neto)}</span>
+                          </div>
+                        </div>
+                        <button type="button" onClick={() => setSel(null)} style={{ ...input, cursor: 'pointer' }}>Cerrar ✕</button>
+                      </div>
+                      <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px', color: 'var(--t-text-primary)' }}>Documentos ({detalle.docs.length}) <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--t-text-muted)' }}>· del más reciente al más antiguo</span></div>
+                      <div style={{ overflowX: 'auto', maxHeight: 340, overflowY: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                          <thead><tr><th style={th}>Fecha elaboración</th><th style={th}>Documento</th><th style={th}>Movimiento</th><th style={th}>Bodega</th><th style={{ ...th, ...r }}>Valor</th><th style={{ ...th, ...r }}>Efecto</th></tr></thead>
+                          <tbody>
+                            {[...detalle.docs].sort((a, b) => b.fecha.localeCompare(a.fecha)).map(d => (
+                              <tr key={d.id}>
+                                <td style={{ ...td, whiteSpace: 'nowrap' }}>{d.fecha}</td>
+                                <td style={{ ...td, fontWeight: 600 }}>{d.doc}</td>
+                                <td style={td}><span style={{ fontSize: 11, fontWeight: 700, padding: '2px 6px', borderRadius: 5, background: 'var(--t-bg-inner)', marginRight: 6 }}>{d.sigla}</span>{d.txt}</td>
+                                <td style={{ ...td, color: 'var(--t-text-muted)' }}>{d.bodega}</td>
+                                <td style={{ ...td, ...r }}>{fmtV(d.valor)}</td>
+                                <td style={{ ...td, ...r, fontSize: 12, color: d.lado === 'nos' ? C_NOS : C_DEB }}>{d.signo > 0 ? '▲' : '▼'} {d.lado === 'nos' ? 'nos debe' : 'debemos'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div style={{ marginTop: 16 }} />
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+                        {[['nos', 'Productos que nos debe', C_NOS], ['deb', 'Productos que le debemos', C_DEB]].map(([lado, tit, col]) => {
+                          const filas = Object.values(detalle.prods).filter(p => Math.abs(p[lado + 'Q']) > TOL).sort((a, b) => b[lado + 'V'] - a[lado + 'V']);
+                          return (
+                            <div key={lado}>
+                              <div style={{ fontWeight: 700, fontSize: 13, color: col, marginBottom: 6 }}>{tit}</div>
+                              <div style={{ overflowX: 'auto', maxHeight: 320, overflowY: 'auto' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                  <thead><tr><th style={th}>Producto</th><th style={{ ...th, ...r }}>Cant.</th><th style={{ ...th, ...r }}>Valor</th></tr></thead>
+                                  <tbody>
+                                    {filas.map(p => (
+                                      <tr key={p.codigo + p.nombre}>
+                                        <td style={td}><div style={{ fontWeight: 600 }}>{p.nombre || '—'}</div><div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{p.codigo}</div></td>
+                                        <td style={{ ...td, ...r, color: p[lado + 'Q'] < 0 ? 'var(--t-text-muted)' : undefined }}>{num(p[lado + 'Q'])}{p[lado + 'Q'] < 0 ? ' (devolvió de más)' : ''}</td>
+                                        <td style={{ ...td, ...r }}>{cop(p[lado + 'V'])}</td>
+                                      </tr>
+                                    ))}
+                                    {!filas.length && <tr><td colSpan={3} style={{ ...td, color: 'var(--t-text-muted)' }}>Sin saldo.</td></tr>}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                </td></tr>
+                )}
+                </React.Fragment>
               ))}
               {!tabla.length && <tr><td style={{ ...td, textAlign: 'center', color: 'var(--t-text-muted)', padding: 24 }} colSpan={9}>No hay movimientos con estos filtros.</td></tr>}
             </tbody>
@@ -642,67 +712,6 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
           Un valor negativo en «Nos debe» o «Le debemos» indica que se devolvió más de lo prestado en lo que cubre el filtro; esos valores no se suman en los totales de deuda.
         </div>
       </div>
-
-      {/* Detalle del tercero */}
-      {detalle && (
-        <div style={{ ...card, borderColor: 'var(--t-accent)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--t-text-primary)' }}>{detalle.nombre}</div>
-              <div style={{ fontSize: 13, marginTop: 4 }}>
-                <span style={{ color: C_NOS, fontWeight: 700 }}>Nos debe {fmtV(detalle.nos)}</span>
-                <span style={{ color: 'var(--t-text-muted)' }}> · </span>
-                <span style={{ color: C_DEB, fontWeight: 700 }}>Le debemos {fmtV(detalle.deb)}</span>
-                <span style={{ color: 'var(--t-text-muted)' }}> · Neto {fmtV(detalle.neto)}</span>
-              </div>
-            </div>
-            <button type="button" onClick={() => setSel(null)} style={{ ...input, cursor: 'pointer' }}>Cerrar ✕</button>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
-            {[['nos', 'Productos que nos debe', C_NOS], ['deb', 'Productos que le debemos', C_DEB]].map(([lado, tit, col]) => {
-              const filas = Object.values(detalle.prods).filter(p => Math.abs(p[lado + 'Q']) > TOL).sort((a, b) => b[lado + 'V'] - a[lado + 'V']);
-              return (
-                <div key={lado}>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: col, marginBottom: 6 }}>{tit}</div>
-                  <div style={{ overflowX: 'auto', maxHeight: 320, overflowY: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                      <thead><tr><th style={th}>Producto</th><th style={{ ...th, ...r }}>Cant.</th><th style={{ ...th, ...r }}>Valor</th></tr></thead>
-                      <tbody>
-                        {filas.map(p => (
-                          <tr key={p.codigo + p.nombre}>
-                            <td style={td}><div style={{ fontWeight: 600 }}>{p.nombre || '—'}</div><div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{p.codigo}</div></td>
-                            <td style={{ ...td, ...r, color: p[lado + 'Q'] < 0 ? 'var(--t-text-muted)' : undefined }}>{num(p[lado + 'Q'])}{p[lado + 'Q'] < 0 ? ' (devolvió de más)' : ''}</td>
-                            <td style={{ ...td, ...r }}>{cop(p[lado + 'V'])}</td>
-                          </tr>
-                        ))}
-                        {!filas.length && <tr><td colSpan={3} style={{ ...td, color: 'var(--t-text-muted)' }}>Sin saldo.</td></tr>}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ fontWeight: 700, fontSize: 13, margin: '16px 0 6px', color: 'var(--t-text-primary)' }}>Movimientos ({detalle.docs.length})</div>
-          <div style={{ overflowX: 'auto', maxHeight: 340, overflowY: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr><th style={th}>Fecha</th><th style={th}>Documento</th><th style={th}>Movimiento</th><th style={th}>Bodega</th><th style={{ ...th, ...r }}>Valor</th><th style={{ ...th, ...r }}>Efecto</th></tr></thead>
-              <tbody>
-                {[...detalle.docs].sort((a, b) => b.fecha.localeCompare(a.fecha)).map(d => (
-                  <tr key={d.id}>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>{d.fecha}</td>
-                    <td style={{ ...td, fontWeight: 600 }}>{d.doc}</td>
-                    <td style={td}><span style={{ fontSize: 11, fontWeight: 700, padding: '2px 6px', borderRadius: 5, background: 'var(--t-bg-inner)', marginRight: 6 }}>{d.sigla}</span>{d.txt}</td>
-                    <td style={{ ...td, color: 'var(--t-text-muted)' }}>{d.bodega}</td>
-                    <td style={{ ...td, ...r }}>{fmtV(d.valor)}</td>
-                    <td style={{ ...td, ...r, fontSize: 12, color: d.lado === 'nos' ? C_NOS : C_DEB }}>{d.signo > 0 ? '▲' : '▼'} {d.lado === 'nos' ? 'nos debe' : 'debemos'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
 
       {/* Productos */}
       <div style={card}>
