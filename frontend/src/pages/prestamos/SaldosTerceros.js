@@ -415,6 +415,52 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
       + ` · Tercero: ${nomTer} · Producto: ${qProd || 'Todos'} · Generado: ${new Date().toLocaleString('es-CO')}`;
   }
 
+  // ── PDF: listado de documentos de un tercero ────────────────────────────
+  // Arma una página lista para imprimir y abre el diálogo del navegador,
+  // donde se elige "Guardar como PDF" (no requiere librerías adicionales).
+  function imprimirDocsPdf(det) {
+    const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const docs = [...det.docs].sort((a, b) => b.fecha.localeCompare(a.fecha));
+    const filas = docs.map(d => `<tr>
+      <td class="nw">${esc(d.fecha)}</td><td><b>${esc(d.doc)}</b></td>
+      <td><span class="sig">${esc(d.sigla)}</span>${esc(d.txt)}</td><td>${esc(d.bodega)}</td>
+      <td class="r nw">${esc(fmtV(d.valor))}</td>
+      <td class="r nw" style="color:${d.lado === 'nos' ? C_NOS : C_DEB}">${d.signo > 0 ? '▲' : '▼'} ${d.lado === 'nos' ? 'nos debe' : 'debemos'}</td></tr>`).join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Documentos ${esc(det.nombre)}</title>
+      <style>
+        @page { size: letter; margin: 14mm 12mm 16mm; }
+        body { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 11px; margin: 0; }
+        h1 { font-size: 16px; margin: 0 0 4px; } .f { color: #555; font-size: 10px; margin-bottom: 8px; }
+        .tot { font-size: 12px; margin: 6px 0 12px; } .tot b { margin-right: 14px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f1f5f9; text-align: left; font-size: 10px; text-transform: uppercase; padding: 6px; border-bottom: 1.5px solid #94a3b8; }
+        td { padding: 5px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+        thead { display: table-header-group; } tr { page-break-inside: avoid; }
+        .r { text-align: right; } .nw { white-space: nowrap; }
+        .sig { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: #e2e8f0; margin-right: 5px; }
+      </style></head><body>
+      <h1>Documentos de ${esc(det.nombre)}</h1>
+      <div class="f">${esc(textoFiltrosExcel())}</div>
+      <div class="tot"><b style="color:${C_NOS}">Nos debe ${esc(fmtV(det.nos))}</b><b style="color:${C_DEB}">Le debemos ${esc(fmtV(det.deb))}</b><b>Neto ${esc(fmtV(det.neto))}</b></div>
+      <div style="font-weight:700;margin-bottom:4px">Documentos (${docs.length}) · del más reciente al más antiguo</div>
+      <table><thead><tr><th>Fecha elaboración</th><th>Documento</th><th>Movimiento</th><th>Bodega</th><th class="r">Valor</th><th class="r">Efecto</th></tr></thead>
+      <tbody>${filas || '<tr><td colspan="6">Sin documentos</td></tr>'}</tbody></table>
+      </body></html>`;
+    // Iframe oculto: evita el bloqueo de ventanas emergentes
+    const fr = document.createElement('iframe');
+    fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(fr);
+    const w = fr.contentWindow;
+    w.document.open(); w.document.write(html); w.document.close();
+    const prevTitle = document.title;
+    // El nombre sugerido del archivo PDF sale del título del documento
+    document.title = `Documentos ${det.nombre}`.replace(/[\\/:*?"<>|]/g, '');
+    setTimeout(() => {
+      w.focus(); w.print();
+      setTimeout(() => { document.title = prevTitle; fr.remove(); }, 1000);
+    }, 250);
+  }
+
   // ── Excel compacto: solo saldos por tercero ─────────────────────────────
   function exportarCompacto() {
     const filas = base.lista
@@ -640,7 +686,11 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
                             <span style={{ color: 'var(--t-text-muted)' }}> · Neto {fmtV(detalle.neto)}</span>
                           </div>
                         </div>
-                        <button type="button" onClick={() => setSel(null)} style={{ ...input, cursor: 'pointer' }}>Cerrar ✕</button>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button type="button" onClick={() => imprimirDocsPdf(detalle)} disabled={!detalle.docs.length}
+                            title="Abre la impresión: elija «Guardar como PDF»" style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>🖨 Imprimir / PDF</button>
+                          <button type="button" onClick={() => setSel(null)} style={{ ...input, cursor: 'pointer' }}>Cerrar ✕</button>
+                        </div>
                       </div>
                       <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px', color: 'var(--t-text-primary)' }}>Documentos ({detalle.docs.length}) <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--t-text-muted)' }}>· del más reciente al más antiguo</span></div>
                       <div style={{ overflowX: 'auto', maxHeight: 340, overflowY: 'auto' }}>
