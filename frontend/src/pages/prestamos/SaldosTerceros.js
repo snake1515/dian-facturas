@@ -415,6 +415,30 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
       + ` · Tercero: ${nomTer} · Producto: ${qProd || 'Todos'} · Generado: ${new Date().toLocaleString('es-CO')}`;
   }
 
+  // ── Excel: documentos y productos de un tercero ─────────────────────────
+  function exportarTerceroExcel(det) {
+    const wb = XLSX.utils.book_new();
+    const sub = textoFiltrosExcel()
+      + ` · Nos debe: ${fmtV(det.nos)} · Le debemos: ${fmtV(det.deb)} · Neto: ${fmtV(det.neto)}`;
+    const docs = [...det.docs].sort((a, b) => b.fecha.localeCompare(a.fecha));
+    agregarHoja(wb, 'Documentos', [
+      { h: 'Fecha elaboración', w: 13 }, { h: 'Documento', w: 13 }, { h: 'Tipo', w: 7 }, { h: 'Movimiento', w: 24 },
+      { h: 'Bodega', w: 26 }, { h: 'Cantidad', t: 'num', w: 11 }, { h: 'Valor ($)', t: 'cop', w: 16 },
+      { h: 'Efecto', w: 13 }, { h: 'Observaciones', w: 40 }],
+      docs.map(d => [d.fecha, d.doc, d.sigla, d.txt, d.bodega || '', Number(d.valorQ || 0), Math.round(Number(d.valorV || 0)),
+        `${d.signo > 0 ? 'Suma' : 'Resta'} · ${d.lado === 'nos' ? 'nos debe' : 'debemos'}`, d.obs || '']),
+      `Documentos de ${det.nombre}`, sub);
+    const prods = [];
+    [['nos', 'Nos debe'], ['deb', 'Le debemos']].forEach(([lado, txt]) =>
+      Object.values(det.prods).filter(p => Math.abs(p[lado + 'Q']) > TOL)
+        .sort((a, b) => b[lado + 'V'] - a[lado + 'V'])
+        .forEach(p => prods.push([txt, p.codigo, p.nombre, Number(p[lado + 'Q']), Math.round(Number(p[lado + 'V']))])));
+    agregarHoja(wb, 'Productos', [{ h: 'Saldo', w: 12 }, { h: 'Código', w: 14 }, { h: 'Producto', w: 50 },
+      { h: 'Cantidad', t: 'num', w: 11 }, { h: 'Valor ($)', t: 'cop', w: 16 }], prods, `Productos con saldo · ${det.nombre}`, sub);
+    const nom = det.nombre.replace(/[\\/:*?"<>|]/g, '').trim().replace(/\s+/g, '_');
+    XLSX.writeFile(wb, `documentos_${nom}_${hasta || hoy}.xlsx`);
+  }
+
   // ── PDF: listado de documentos de un tercero ────────────────────────────
   // Arma una página lista para imprimir y abre el diálogo del navegador,
   // donde se elige "Guardar como PDF" (no requiere librerías adicionales).
@@ -689,6 +713,8 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
                         <div style={{ display: 'flex', gap: 8 }}>
                           <button type="button" onClick={() => imprimirDocsPdf(detalle)} disabled={!detalle.docs.length}
                             title="Abre la impresión: elija «Guardar como PDF»" style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>🖨 Imprimir / PDF</button>
+                          <button type="button" onClick={() => exportarTerceroExcel(detalle)} disabled={!detalle.docs.length}
+                            title="Descarga los documentos y productos de este tercero en Excel" style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>📊 Excel</button>
                           <button type="button" onClick={() => setSel(null)} style={{ ...input, cursor: 'pointer' }}>Cerrar ✕</button>
                         </div>
                       </div>
