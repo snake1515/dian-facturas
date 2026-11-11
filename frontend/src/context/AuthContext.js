@@ -63,7 +63,7 @@ export function AuthProvider({ children }) {
   const isAdmin   = rol === 'admin';
   const isEditor  = rol === 'editor'  || rol === 'admin';
   const isObra    = rol === 'obra'    || rol === 'editor' || rol === 'admin';
-  const isLector  = rol === 'lector'  || rol === 'consulta' || rol === 'obra' || rol === 'editor' || rol === 'admin';
+  const isLector  = rol === 'lector'  || rol === 'consulta' || rol === 'almacen' || rol === 'obra' || rol === 'editor' || rol === 'admin';
   const isRegente = rol === 'regente' || rol === 'admin';
   const isContable = rol === 'contable' || rol === 'admin';
 
@@ -77,16 +77,21 @@ export function AuthProvider({ children }) {
   const esConsulta = rol === 'consulta';
   const esObra     = rol === 'obra';
   const esRegente  = rol === 'regente';
+  // almacen: igual que consulta, pero solo facturas y NC ADMINISTRATIVAS; escribe en "Notas almacén"
+  const esAlmacen  = rol === 'almacen';
 
   const puede = {
     // Facturas
     verFacturas:            isLector && !esRegente,
+    verFacturasObra:        isLector && !esRegente && !esAlmacen, // almacén solo ve las administrativas
+    subirPdfDian:           !esAlmacen,
+    editarResponsables:     !esAlmacen,
     descargarArchivos:      isLector && !esRegente,
     reenviarFacturas:       isLector && !esRegente,
     asignarResponsables:    isEditor,
     editarNotas:            isObra,                    // obra, editor, admin
     gestionarProveedores:   isEditor,                  // editor, admin: pestaña Proveedores y mover facturas obra/administrativa
-    editarNotasInfraestructura: ['admin', 'editor', 'consulta', 'lector'].includes(rol), // consulta (y su nombre antiguo 'lector'), editor, admin
+    editarNotasInfraestructura: ['admin', 'editor', 'consulta', 'lector', 'almacen'].includes(rol), // consulta (y su nombre antiguo 'lector'), almacén, editor, admin
     editarDocIngreso:       isObra,                    // obra, editor, admin
     elegirFlujo:            isObra,                    // obra puede elegir OC/CM y cambiar
     editarEstadoContable:   isEditor,                  // solo editor/admin avanzan pasos
@@ -118,7 +123,7 @@ export function AuthProvider({ children }) {
     verDocumentosSoporte: isContable,
   };
   // Inicio (Dashboard): para quien vea al menos una sección con resumen
-  puede.verDashboard = puede.verFacturas || puede.verPrestamos || puede.verPendientes || puede.verValidadorInventario;
+  puede.verDashboard = puede.verFacturasObra || puede.verPrestamos || puede.verPendientes || puede.verValidadorInventario;
 
   return (
     <AuthContext.Provider value={{ user, token, loading, isAdmin, isEditor, isObra, isLector, isRegente, isContable, puede, doLogin, doLogout, updateUser }}>

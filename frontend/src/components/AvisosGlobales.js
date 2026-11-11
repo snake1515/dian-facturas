@@ -50,12 +50,12 @@ export default function AvisosGlobales() {
   const [recorrido, setRecorrido] = useState(() => { const r = leer(CLAVE_RECORRIDO); return r && r.sesion === sesion ? r : null; });
 
   useEffect(() => {
-    if (!token || !puede.verFacturas || leer(claveSesion)) return; // sin acceso a facturas, o ya se mostró en este ingreso
+    if (!token || !puede.verFacturasObra || leer(claveSesion)) return; // sin acceso a facturas, o ya se mostró en este ingreso
     api.get('/proveedores/facturas-sin-gestion').then(r => {
       guardar(claveSesion, true);
       if (r.data?.facturas?.length) setModalSinGestion(r.data);
     }).catch(() => {});
-  }, [token, claveSesion, puede.verFacturas]);
+  }, [token, claveSesion, puede.verFacturasObra]);
 
   const irA = (rec) => {
     guardar(CLAVE_RECORRIDO, rec);

@@ -634,8 +634,9 @@ router.put('/:id/documento-ingreso', authMiddleware, async (req, res) => {
 });
 
 // ── PUT /api/facturas/:id/notas-infraestructura ──────────────────────────────
-// Solo pueden editarla los roles admin, editor y consulta ('lector' es el nombre antiguo de consulta).
-const ROLES_NOTAS_INFRA = ['admin', 'editor', 'consulta', 'lector'];
+// Solo pueden editarla admin, editor, consulta ('lector' es su nombre antiguo) y almacén.
+// En las pestañas administrativas esta columna se muestra como "Notas almacén".
+const ROLES_NOTAS_INFRA = ['admin', 'editor', 'consulta', 'lector', 'almacen'];
 router.put('/:id/notas-infraestructura', authMiddleware, async (req, res) => {
   try {
     if (!ROLES_NOTAS_INFRA.includes(req.user?.rol)) {

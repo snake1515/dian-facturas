@@ -28,6 +28,7 @@ function useIsMobile() {
 
 function landingPathFor(puede) {
   if (puede.verDashboard) return '/';
+  if (puede.verFacturas) return '/facturas-administrativas';
   if (puede.verPrestamos) return '/prestamos';
   if (puede.verPendientes) return '/pendientes';
   if (puede.verValidadorInventario) return '/validador-inventario';
@@ -64,7 +65,7 @@ function Layout({ children }) {
     textDecoration: 'none', transition: 'all .15s',
   });
 
-  const rolLabel = { admin: 'Administrador', editor: 'Editor', lector: 'Consulta', consulta: 'Consulta', obra: 'Obra', regente: 'Regente', contable: 'Contable' }[user?.rol] || user?.rol;
+  const rolLabel = { admin: 'Administrador', editor: 'Editor', lector: 'Consulta', consulta: 'Consulta', obra: 'Obra', regente: 'Regente', contable: 'Contable', almacen: 'Almacén' }[user?.rol] || user?.rol;
 
   const Sidebar = () => (
     <aside style={{
@@ -92,7 +93,7 @@ function Layout({ children }) {
             Inicio
           </NavLink>
         )}
-        {puede.verFacturas && (
+        {puede.verFacturasObra && (
           <NavLink to="/facturas-obra" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
             Facturas obra
@@ -104,7 +105,7 @@ function Layout({ children }) {
             Facturas administrativas
           </NavLink>
         )}
-        {puede.verFacturas && (
+        {puede.verFacturasObra && (
           <NavLink to="/notas-credito" style={navStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
             Notas crédito obra
@@ -276,9 +277,9 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginGuard />} />
           <Route path="/" element={<PrivateRoute perm="verDashboard"><Layout><Dashboard /></Layout></PrivateRoute>} />
-          <Route path="/facturas-obra" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="fe-obra" categoria="obra" /></Layout></PrivateRoute>} />
+          <Route path="/facturas-obra" element={<PrivateRoute perm="verFacturasObra"><Layout><Facturas key="fe-obra" categoria="obra" /></Layout></PrivateRoute>} />
           <Route path="/facturas-administrativas" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="fe-adm" categoria="administrativa" /></Layout></PrivateRoute>} />
-          <Route path="/notas-credito" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="nc-obra" tipo="NC" categoria="obra" /></Layout></PrivateRoute>} />
+          <Route path="/notas-credito" element={<PrivateRoute perm="verFacturasObra"><Layout><Facturas key="nc-obra" tipo="NC" categoria="obra" /></Layout></PrivateRoute>} />
           <Route path="/notas-credito-administrativas" element={<PrivateRoute perm="verFacturas"><Layout><Facturas key="nc-adm" tipo="NC" categoria="administrativa" /></Layout></PrivateRoute>} />
           <Route path="/proveedores" element={<PrivateRoute perm="gestionarProveedores"><Layout><Proveedores /></Layout></PrivateRoute>} />
           <Route path="/usuarios" element={<PrivateRoute adminOnly><Layout><Usuarios /></Layout></PrivateRoute>} />

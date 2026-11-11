@@ -46,6 +46,8 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
   const { puede, isAdmin } = useAuth();
   const location = useLocation();
   const nombreCategoria = categoria === 'administrativa' ? 'administrativas' : 'obra';
+  // La columna notas_infraestructura se llama "Notas almacén" en las pestañas administrativas
+  const etiquetaNotasInfra = categoria === 'administrativa' ? 'Notas almacén' : 'Notas infraestructura';
   const [facturas, setFacturas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -396,6 +398,7 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
             {syncing ? '⟳ Sincronizando...' : '⟳ Sincronizar'}
           </button>
         )}
+        {puede.subirPdfDian && (
         <label style={{ ...btnGhost, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: subiendoPdf ? 0.6 : 1 }}>
           {subiendoPdf ? '⏳ Subiendo...' : '📤 Subir PDF DIAN'}
           <input type="file" accept=".pdf" style={{ display: 'none' }} disabled={subiendoPdf} onChange={async (e) => {
@@ -417,6 +420,7 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
             } finally { setSubiendoPdf(false); }
           }} />
         </label>
+        )}
         <button style={btnGhost} onClick={() => setModal('exportar')} title="Descargar reporte Excel">
           📥 Exportar
         </button>
@@ -448,7 +452,7 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
                   {thSort('documento_ingreso', 'Doc. ingreso')}
                   {thSort('estado_contable', 'Est. contable')}
                   <th style={th}>Notas</th>
-                  <th style={th}>Notas infraestructura</th>
+                  <th style={th}>{etiquetaNotasInfra}</th>
                   <th style={th}>Forma pago</th>
                   <th style={th}>Acciones</th>
                 </tr>
@@ -500,7 +504,7 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
                       <NotasInput factura={f} onUpdate={cargar} canEdit={puede.editarNotas} />
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
-                      <NotasInfraInput factura={f} onUpdate={cargar} canEdit={puede.editarNotasInfraestructura} />
+                      <NotasInfraInput factura={f} onUpdate={cargar} canEdit={puede.editarNotasInfraestructura} etiqueta={etiquetaNotasInfra} />
                     </td>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
                       {f.forma_pago
@@ -576,7 +580,7 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
             </Section>
           )}
           {activeF.notas_infraestructura && (
-            <Section title="Notas infraestructura">
+            <Section title={etiquetaNotasInfra}>
               <div style={{ fontSize: 13, color: 'var(--t-text-secondary)', whiteSpace: 'pre-wrap' }}>{activeF.notas_infraestructura}</div>
             </Section>
           )}
@@ -691,7 +695,7 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
 
       {/* MODAL EXPORTAR */}
       {modal === 'exportar' && (
-        <ExportModal facturas={sortedFacturas} tipo={tipo} onClose={closeModal} />
+        <ExportModal facturas={sortedFacturas} tipo={tipo} etiquetaNotasInfra={etiquetaNotasInfra} onClose={closeModal} />
       )}
 
       {/* MODAL SINCRONIZAR */}
@@ -758,8 +762,9 @@ function CategoriaChip({ factura, onUpdate, canMove }) {
 
 // ── Notas Infraestructura Input ──────────────────────────────────────────────
 // Igual que NotasInput pero sobre el campo notas_infraestructura.
-// Editable por consulta, editor y admin; los demás perfiles solo la ven.
-function NotasInfraInput({ factura, onUpdate, canEdit }) {
+// Editable por consulta, almacén, editor y admin; los demás perfiles solo la ven.
+// En las pestañas administrativas se muestra como "Notas almacén".
+function NotasInfraInput({ factura, onUpdate, canEdit, etiqueta = 'Notas infraestructura' }) {
   const [editing, setEditing] = React.useState(false);
   const [val, setVal] = React.useState(factura.notas_infraestructura || '');
   const [saving, setSaving] = React.useState(false);
@@ -772,7 +777,7 @@ function NotasInfraInput({ factura, onUpdate, canEdit }) {
     try {
       await api.put(`/facturas/${factura.id}/notas-infraestructura`, { notas_infraestructura: val });
       await onUpdate(); setEditing(false);
-    } catch (err) { alert(err.response?.data?.error || 'Error al guardar notas de infraestructura'); }
+    } catch (err) { alert(err.response?.data?.error || `Error al guardar ${etiqueta.toLowerCase()}`); }
     finally { setSaving(false); }
   };
 
@@ -781,7 +786,7 @@ function NotasInfraInput({ factura, onUpdate, canEdit }) {
   if (editing) return (
     <div style={{ display: 'flex', gap: 4, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
       <input autoFocus value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setEditing(false); }}
-        style={{ width: 130, background: 'var(--t-bg-card)', border: '1px solid #3b82f6', borderRadius: 4, padding: '2px 6px', color: 'var(--t-text-primary)', fontSize: 12 }} placeholder="Nota infraestructura..." />
+        style={{ width: 130, background: 'var(--t-bg-card)', border: '1px solid #3b82f6', borderRadius: 4, padding: '2px 6px', color: 'var(--t-text-primary)', fontSize: 12 }} placeholder={`${etiqueta}...`} />
       <button onClick={handleSave} disabled={saving} style={{ background: '#3b82f6', border: 'none', borderRadius: 4, color: '#fff', padding: '2px 6px', fontSize: 11, cursor: 'pointer' }}>✓</button>
       <button onClick={() => setEditing(false)} style={{ background: 'none', border: 'none', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 13 }}>✕</button>
     </div>
@@ -1074,7 +1079,7 @@ const TotalRow = ({ label, val, grand }) => <div style={{ display: 'flex', justi
 
 
 // ── ExportModal ───────────────────────────────────────────────────────────────
-function ExportModal({ facturas, tipo, onClose }) {
+function ExportModal({ facturas, tipo, etiquetaNotasInfra = 'Notas infraestructura', onClose }) {
   const [desde, setDesde] = React.useState('');
   const [hasta, setHasta] = React.useState('');
 
@@ -1096,7 +1101,7 @@ function ExportModal({ facturas, tipo, onClose }) {
       return ESTADOS[f.estado_contable] || f.estado_contable || '';
     };
     const headers = ['Tipo','Número','Proveedor','NIT','Fecha Emisión','Subtotal','IVA','Total',
-      'Estado','Estado Contable','Doc. Ingreso','Responsables','Reenviado a','CUFE','Notas infraestructura'];
+      'Estado','Estado Contable','Doc. Ingreso','Responsables','Reenviado a','CUFE',etiquetaNotasInfra];
     const rows = filtered.map(f => [
       f.tipo, f.numero, f.proveedor_nombre, f.proveedor_nit,
       f.fecha_emision ? String(f.fecha_emision).substring(0,10) : '',

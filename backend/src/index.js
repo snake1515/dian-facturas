@@ -57,8 +57,11 @@ app.use(medidorEgress.middleware);
 app.use('/api/auth', authRoutes);
 // Facturas y sus módulos: solo perfiles con acceso a facturas (no regente ni contable)
 {
-  const { authMiddleware, soloRolesFacturas } = require('./middleware/auth');
+  const { authMiddleware, soloRolesFacturas, restringirAlmacen, sinAlmacen } = require('./middleware/auth');
   app.use(['/api/facturas', '/api/cruces-dian', '/api/coincidencias', '/api/pendientes'], authMiddleware, soloRolesFacturas);
+  // Perfil Almacén: solo facturas administrativas, y sin acceso a los demás módulos
+  app.use('/api/facturas', restringirAlmacen);
+  app.use(['/api/cruces-dian', '/api/coincidencias', '/api/pendientes'], sinAlmacen);
 }
 app.use('/api/facturas', facturasRoutes);
 app.use('/api/facturas', facturasPdfRoutes);

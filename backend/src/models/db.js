@@ -802,7 +802,9 @@ const initDB = async () => {
 
     // Migraciones de roles — queries separadas para que los UPDATE surtan efecto antes del constraint
     // Migrar roles viejos si existen (sin tocar el constraint)
-    await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos', 'contable')");
+    // Si existe una restricción antigua sobre los roles, se quita (los roles válidos los controla la app)
+    await client.query("ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check");
+    await client.query("UPDATE usuarios SET rol = 'consulta' WHERE rol NOT IN ('admin', 'editor', 'consulta', 'obra', 'regente', 'prestamos', 'contable', 'almacen')");
 
     console.log('✅ Base de datos inicializada correctamente');
     // RLS ahora y otra vez a los 2 minutos (algunos módulos crean tablas al arrancar)

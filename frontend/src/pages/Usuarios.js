@@ -85,8 +85,8 @@ export default function Usuarios() {
     catch (err) { alert(err.response?.data?.error || 'Error'); }
   };
 
-  const rolLabel = (r) => ({ admin: 'Administrador', editor: 'Editor', lector: 'Consulta', consulta: 'Consulta', obra: 'Obra', regente: 'Regente', contable: 'Contable' }[r] || r);
-  const rolColor = (r) => ({ admin: badgeBlue, editor: badgePurple, lector: badgeGray, consulta: badgeGray, obra: badgeOrange, regente: badgeTeal, contable: badgeGreen }[r] || badgeGray);
+  const rolLabel = (r) => ({ admin: 'Administrador', editor: 'Editor', lector: 'Consulta', consulta: 'Consulta', obra: 'Obra', regente: 'Regente', contable: 'Contable', almacen: 'Almacén' }[r] || r);
+  const rolColor = (r) => ({ admin: badgeBlue, editor: badgePurple, lector: badgeGray, consulta: badgeGray, obra: badgeOrange, regente: badgeTeal, contable: badgeGreen, almacen: badgeAmber }[r] || badgeGray);
 
   return (
     <div style={{ padding: '16px 8px' }}>
@@ -148,6 +148,7 @@ export default function Usuarios() {
           { rol: 'Editor', color: '#a78bfa', permisos: ['Ver y descargar facturas', 'Editar estado contable, doc. ingreso y notas', 'Asignar responsables y reenviar', 'Avanzar estado contable y sincronizar Gmail', 'Módulo Préstamos: ver, editar, subir PDF y cruces'] },
           { rol: 'Consulta', color: '#94a3b8', permisos: ['Ver facturas y notas crédito', 'Descargar PDF/XML', 'Reenviar facturas', 'Sin edición'] },
         { rol: 'Obra', color: '#fb923c', permisos: ['Ver facturas y NC', 'Notas y doc. ingreso', 'Elegir OC / Caja menor', 'Descargar y reenviar', 'Módulo pendientes'] },
+        { rol: 'Almacén', color: '#fbbf24', permisos: ['Solo facturas y NC administrativas', 'Descargar PDF/XML y reenviar', 'Escribir "Notas almacén"'] },
         { rol: 'Regente', color: '#2dd4bf', permisos: ['Módulo Préstamos: ver, editar, subir PDF', 'Realizar cruces'] },
         ].map(r => (
           <div key={r.rol} style={{ background: '#1e2535', border: '1px solid #2a3348', borderRadius: 8, padding: '12px 14px' }}>
@@ -179,6 +180,7 @@ export default function Usuarios() {
                 <select style={inputSt} value={form.rol} onChange={e => setForm({ ...form, rol: e.target.value })}>
                   <option value="consulta">Consulta — ver, descargar y reenviar</option>
                   <option value="obra">Obra — facturas + notas + pendientes</option>
+                  <option value="almacen">Almacén — solo facturas y NC administrativas + notas almacén</option>
                   <option value="regente">Regente — solo módulo préstamos</option>
                   <option value="contable">Contable — solo Documentos Soporte</option>
                   <option value="editor">Editor — edición completa sin configuración</option>
@@ -273,6 +275,7 @@ const badge = { padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight:
 const badgeBlue = { background: 'rgba(59,130,246,.12)', color: '#60a5fa' };
 const badgePurple = { background: 'rgba(139,92,246,.12)', color: '#a78bfa' };
 const badgeGray = { background: 'rgba(100,116,139,.15)', color: '#94a3b8' };
+const badgeAmber = { background: 'rgba(245,158,11,.12)', color: '#fbbf24' };
 const badgeGreen = { background: 'rgba(34,197,94,.12)', color: '#4ade80' };
 const badgeRed    = { background: 'rgba(239,68,68,.12)', color: '#f87171' };
 const badgeOrange = { background: 'rgba(251,146,60,.12)', color: '#fb923c' };

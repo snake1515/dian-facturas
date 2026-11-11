@@ -54,7 +54,7 @@ router.post('/usuarios', async (req, res) => {
     }
 
     const hash = await bcrypt.hash(password, 10);
-    const rolesValidos = ['admin', 'editor', 'lector', 'consulta', 'obra', 'regente', 'contable'];
+    const rolesValidos = ['admin', 'editor', 'lector', 'consulta', 'obra', 'regente', 'contable', 'almacen'];
     const rolFinal = esPrimero ? 'admin' : (rolesValidos.includes(rol) ? rol : 'consulta');
 
     const { alias } = req.body;
