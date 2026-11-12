@@ -51,6 +51,15 @@ const MESES = [
 
 const AÑOS = ['2024', '2025', '2026'];
 
+// Responsable del reporte DIAN normalizado (mayúsculas, sin espacios extra)
+const SIN_RESPONSABLE = '(Sin responsable)';
+const normResp = (x) => String(x || '').trim().replace(/\s+/g, ' ').toUpperCase() || SIN_RESPONSABLE;
+const listaResponsables = (regs) => {
+  const lista = [...new Set(regs.map(r => normResp(r.responsable)))].sort();
+  // "(Sin responsable)" al final
+  return [...lista.filter(x => x !== SIN_RESPONSABLE), ...lista.filter(x => x === SIN_RESPONSABLE)];
+};
+
 export default function CruceDIAN() {
   const añoActual = String(new Date().getFullYear());
   const mesActual = String(new Date().getMonth() + 1).padStart(2, '0');
@@ -71,7 +80,8 @@ export default function CruceDIAN() {
 
   // Filtro de responsable (dinámico según el archivo cargado)
   const [responsables, setResponsables] = useState([]);
-  const [filtroResponsable, setFiltroResponsable] = useState('');
+  // Selección múltiple: lista vacía = todos los responsables
+  const [filtroResponsable, setFiltroResponsable] = useState([]);
 
   // Archivos guardados en Supabase
   const [archivosGuardados, setArchivosGuardados] = useState([]);
@@ -173,9 +183,8 @@ export default function CruceDIAN() {
       setMesArchivo(mes);
       setAñoArchivo(año);
       setMesActivo(`${año}-${mes}`);
-      const resp = [...new Set(regs.map(r => r.responsable).filter(Boolean))].sort();
-      setResponsables(resp);
-      setFiltroResponsable('');
+      setResponsables(listaResponsables(regs));
+      setFiltroResponsable([]);
       setArchivo(null);
       setResultado(null);
     } catch (err) {
@@ -224,13 +233,13 @@ export default function CruceDIAN() {
         setNombreArchivoActual(archivo.name);
         setMesActivo(`${añoArchivo}-${mesArchivo}`);
 
-        const resp = [...new Set(regs.map(r => r.responsable).filter(Boolean))].sort();
-        setResponsables(resp);
+        setResponsables(listaResponsables(regs));
       }
 
       // Filtrar por responsable si hay filtro activo
-      const regsFiltrados = filtroResponsable
-        ? regs.filter(r => r.responsable === filtroResponsable)
+      const elegidos = new Set(filtroResponsable);
+      const regsFiltrados = elegidos.size
+        ? regs.filter(r => elegidos.has(normResp(r.responsable)))
         : regs;
 
       // Cruzar contra facturas de la app del mes seleccionado
@@ -408,10 +417,25 @@ const selectSt = {
           {responsables.length > 0 && (
             <div>
               <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 4 }}>Responsable</div>
-              <select style={selectSt} value={filtroResponsable} onChange={e => { setFiltroResponsable(e.target.value); setResultado(null); }}>
-                <option value="">Todos los responsables</option>
-                {responsables.map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
+              {/* Selección múltiple: se pueden marcar varios responsables a la vez */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {[['', 'Todos'], ...responsables.map(x => [x, x])].map(([val, txt]) => {
+                  const activo = val === '' ? filtroResponsable.length === 0 : filtroResponsable.includes(val);
+                  return (
+                    <button key={txt} type="button"
+                      onClick={() => {
+                        setFiltroResponsable(prev => val === '' ? [] : (prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val]));
+                        setResultado(null);
+                      }}
+                      style={{ ...selectSt, cursor: 'pointer', padding: '7px 12px', fontWeight: activo ? 700 : 400,
+                        border: `1px solid ${activo ? '#fbbf24' : 'var(--t-border)'}`,
+                        background: activo ? 'rgba(251,191,36,.12)' : selectSt.background,
+                        color: activo ? '#fbbf24' : 'var(--t-text-secondary)' }}>
+                      {activo && val !== '' ? '✓ ' : ''}{txt}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -486,7 +510,7 @@ const selectSt = {
               setResultado(null);
               setRegistrosDIAN([]);
               setResponsables([]);
-              setFiltroResponsable('');
+              setFiltroResponsable([]);
               setMesActivo(null);
             }} />
         </div>
@@ -550,7 +574,7 @@ const selectSt = {
 
           <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 12 }}>
             {vista === 'obra' ? 'Facturas de obra' : 'Facturas administrativas'} · Comparando contra facturas de <strong style={{ color: '#60a5fa' }}>{mesAppLabel} {añoApp}</strong>
-            {filtroResponsable && <> · Responsable: <strong style={{ color: '#fbbf24' }}>{filtroResponsable}</strong></>}
+            {filtroResponsable.length > 0 && <> · Responsable: <strong style={{ color: '#fbbf24' }}>{filtroResponsable.join(', ')}</strong></>}
           </div>
 
           <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
