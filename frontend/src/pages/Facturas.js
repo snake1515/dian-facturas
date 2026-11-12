@@ -8,6 +8,7 @@ import {
   listarCoincidencias, aceptarCoincidencia, ignorarCoincidencia
 } from '../services/api';
 import api from '../services/api';
+import SubirPdfsDian from '../components/SubirPdfsDian';
 
 const fmt = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
 const fmtDate = (s) => { if (!s) return '—'; try { const solo = String(s).substring(0, 10); const [y, m, d] = solo.split('-'); if (!y || !m || !d) return s; return d+'/'+m+'/'+y; } catch(e) { return s; } };
@@ -72,7 +73,7 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
   const [syncRange, setSyncRange] = useState({ desde: '', hasta: '' });
 
   const [hoveredRow, setHoveredRow] = useState(null);
-  const [subiendoPdf, setSubiendoPdf] = useState(false);
+  const [subiendoPdf, setSubiendoPdf] = useState(false); // ventana de subida de PDF abierta
   const [filterOrigen, setFilterOrigen] = useState('');
   const [filterResponsable, setFilterResponsable] = useState('');
   const [filterValorMin, setFilterValorMin] = useState('');
@@ -399,27 +400,9 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
           </button>
         )}
         {puede.subirPdfDian && (
-        <label style={{ ...btnGhost, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: subiendoPdf ? 0.6 : 1 }}>
-          {subiendoPdf ? '⏳ Subiendo...' : '📤 Subir PDF DIAN'}
-          <input type="file" accept=".pdf" style={{ display: 'none' }} disabled={subiendoPdf} onChange={async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            e.target.value = '';
-            setSubiendoPdf(true);
-            try {
-              const fd = new FormData();
-              fd.append('pdf', file);
-              const resp = await api.post('/facturas/subir-pdf', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-              await cargar();
-              if (resp.data?.sinPdf) alert('⚠️ ' + resp.data.mensaje);
-              else alert(resp.data?.pdfAdjuntado ? '📎 ' + resp.data.mensaje : '✅ Factura subida correctamente');
-            } catch (err) {
-              const msg = err.response?.data?.mensaje || err.response?.data?.error || err.message;
-              if (err.response?.status === 409) { alert('⚠️ ' + msg); }
-              else { alert('❌ Error: ' + msg); }
-            } finally { setSubiendoPdf(false); }
-          }} />
-        </label>
+        <button style={btnGhost} onClick={() => setSubiendoPdf(true)} title="Subir uno o varios PDF descargados de la DIAN">
+          📤 Subir PDF DIAN
+        </button>
         )}
         <button style={btnGhost} onClick={() => setModal('exportar')} title="Descargar reporte Excel">
           📥 Exportar
@@ -692,6 +675,9 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
           </div>
         </Modal>
       )}
+
+      {/* SUBIR PDF DIAN (varios a la vez, una sola contraseña) */}
+      {subiendoPdf && <SubirPdfsDian onClose={() => setSubiendoPdf(false)} onTerminado={cargar} />}
 
       {/* MODAL EXPORTAR */}
       {modal === 'exportar' && (

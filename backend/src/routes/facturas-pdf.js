@@ -4,17 +4,26 @@ const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
 const { parsearPDFDIAN } = require('../services/pdfParser');
 const { subirArchivo } = require('../services/storageService');
+const { desbloquearPdf } = require('../services/pdfPassword');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // ── POST /api/facturas/subir-pdf ──────────────────────────────────────────────
-// Recibe un PDF de la DIAN, lo parsea y lo guarda como factura manual
+// Recibe un PDF de la DIAN, lo parsea y lo guarda como factura manual.
+// Campo opcional "password": si el PDF viene protegido, se le quita la
+// contraseña y se guarda la copia ya desbloqueada.
 router.post('/subir-pdf', authMiddleware, upload.single('pdf'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Se requiere un archivo PDF' });
 
-    const pdfBuffer = req.file.buffer;
+    let pdfBuffer;
+    try {
+      pdfBuffer = await desbloquearPdf(req.file.buffer, String(req.body?.password || ''));
+    } catch (pwErr) {
+      if (pwErr.codigo) return res.status(422).json({ error: pwErr.message, codigo: pwErr.codigo });
+      return res.status(422).json({ error: pwErr.message });
+    }
     let datos;
     try {
       datos = await parsearPDFDIAN(pdfBuffer);
