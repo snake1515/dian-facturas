@@ -494,63 +494,125 @@ router.get('/:id', authMiddleware, async (req, res) => {
 });
 
 // ── GET /api/facturas/:id/pdf ─────────────────────────────────────────────────
+// Obtiene el PDF de una factura: primero del Storage y, si falla, desde el
+// correo original de Gmail. Devuelve { buffer, numero } o { motivo }.
+async function obtenerPdfFactura(id) {
+  const result = await pool.query('SELECT pdf_path, numero, origen, gmail_message_id FROM facturas WHERE id = $1', [id]);
+  if (!result.rows.length) return { noExiste: true, motivo: 'Factura no encontrada' };
+  const f = result.rows[0];
+
+  let buffer = null;
+  let motivo = null;
+
+  // 1) Intento normal: leer del Storage
+  if (f.pdf_path) {
+    try {
+      buffer = await descargarArchivo(f.pdf_path);
+    } catch (err) {
+      console.error(`❌ PDF factura ${id} (${f.pdf_path}):`, err.message);
+      if (err.statusCode === 402 || err.statusCode === 403 || err.statusCode === 429) {
+        motivo = `Supabase Storage rechazó la descarga (HTTP ${err.statusCode}). Revise la cuota/egress del proyecto en Supabase.`;
+      } else if (err.statusCode === 400 || err.statusCode === 404) {
+        motivo = 'El PDF registrado ya no existe en Supabase Storage.';
+      } else {
+        motivo = `Error leyendo el PDF en Storage${err.statusCode ? ` (HTTP ${err.statusCode})` : ''}.`;
+      }
+    }
+  } else {
+    motivo = 'La factura no tiene PDF asociado (el correo no lo traía o falló su subida al sincronizar).';
+  }
+
+  // 2) Respaldo: si vino de Gmail, recuperar el PDF desde el correo original
+  // (Gmail no depende de Supabase, así que se intenta aunque Storage esté bloqueado)
+  if (!buffer && f.gmail_message_id) {
+    try {
+      const rec = await recuperarPdfDesdeGmail(f.gmail_message_id);
+      if (rec) {
+        buffer = rec.buffer;
+        if (rec.filename) {
+          await pool.query('UPDATE facturas SET pdf_path = $1 WHERE id = $2', [rec.filename, id]);
+        }
+      } else {
+        motivo = 'El correo original de Gmail no contiene un PDF (ni dentro del ZIP). Súbalo manualmente con "Subir PDF DIAN".';
+      }
+    } catch (err) {
+      console.error(`❌ Recuperando PDF de Gmail para factura ${id}:`, err.message);
+      motivo = `${motivo} No se pudo recuperar desde Gmail: ${err.message}`;
+    }
+  }
+
+  return buffer ? { buffer, numero: f.numero } : { motivo: motivo || 'PDF no disponible' };
+}
+
 router.get('/:id/pdf', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT pdf_path, numero, origen, gmail_message_id FROM facturas WHERE id = $1', [id]);
-    if (!result.rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
-    const f = result.rows[0];
+    const r = await obtenerPdfFactura(id);
+    if (!r.buffer) return res.status(404).json({ error: r.motivo });
 
-    let buffer = null;
-    let motivo = null;
-
-    // 1) Intento normal: leer de Supabase Storage
-    if (f.pdf_path) {
-      try {
-        buffer = await descargarArchivo(f.pdf_path);
-      } catch (err) {
-        console.error(`❌ PDF factura ${id} (${f.pdf_path}):`, err.message);
-        if (err.statusCode === 402 || err.statusCode === 403 || err.statusCode === 429) {
-          motivo = `Supabase Storage rechazó la descarga (HTTP ${err.statusCode}). Revise la cuota/egress del proyecto en Supabase.`;
-        } else if (err.statusCode === 400 || err.statusCode === 404) {
-          motivo = 'El PDF registrado ya no existe en Supabase Storage.';
-        } else {
-          motivo = `Error leyendo el PDF en Storage${err.statusCode ? ` (HTTP ${err.statusCode})` : ''}.`;
-        }
-      }
-    } else {
-      motivo = 'La factura no tiene PDF asociado (el correo no lo traía o falló su subida al sincronizar).';
-    }
-
-    // 2) Respaldo: si vino de Gmail, recuperar el PDF desde el correo original
-    // (Gmail no depende de Supabase, así que se intenta aunque Storage esté bloqueado)
-    if (!buffer && f.gmail_message_id) {
-      try {
-        const rec = await recuperarPdfDesdeGmail(f.gmail_message_id);
-        if (rec) {
-          buffer = rec.buffer;
-          if (rec.filename) {
-            await pool.query('UPDATE facturas SET pdf_path = $1 WHERE id = $2', [rec.filename, id]);
-          }
-        } else {
-          motivo = 'El correo original de Gmail no contiene un PDF (ni dentro del ZIP). Súbalo manualmente con "Subir PDF DIAN".';
-        }
-      } catch (err) {
-        console.error(`❌ Recuperando PDF de Gmail para factura ${id}:`, err.message);
-        motivo = `${motivo} No se pudo recuperar desde Gmail: ${err.message}`;
-      }
-    }
-
-    if (!buffer) return res.status(404).json({ error: motivo || 'PDF no disponible' });
-
-    const filename = `factura_${f.numero || id}.pdf`;
+    const filename = `factura_${r.numero || id}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Length', buffer.length);
-    res.send(buffer);
+    res.setHeader('Content-Length', r.buffer.length);
+    res.send(r.buffer);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al descargar PDF' });
+  }
+});
+
+// ── POST /api/facturas/zip-pdfs ───────────────────────────────────────────────
+// Descarga varios PDF en un solo ZIP. Body: { items: [{ id, nombre }], nombreZip }
+// Cada PDF se nombra con "nombre" (en el Cruce DIAN: el N° DIAN). Las que no
+// tengan PDF disponible se listan en "NO_INCLUIDAS.txt" dentro del ZIP.
+router.post('/zip-pdfs', authMiddleware, async (req, res) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!items.length) return res.status(400).json({ error: 'No hay facturas para descargar' });
+    if (items.length > 400) return res.status(400).json({ error: 'Máximo 400 facturas por ZIP' });
+
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip();
+    const usados = new Set();
+    const faltantes = [];
+    const limpiar = (t) => String(t || '').replace(/[\\/:*?"<>|\s]+/g, '').slice(0, 80);
+
+    // De a 3 a la vez para no saturar el servidor
+    for (let i = 0; i < items.length; i += 3) {
+      const lote = items.slice(i, i + 3);
+      const res3 = await Promise.all(lote.map(async (it) => {
+        const id = parseInt(it.id, 10);
+        if (!id) return { it, motivo: 'Id inválido' };
+        try { return { it, ...(await obtenerPdfFactura(id)) }; }
+        catch (e) { return { it, motivo: e.message }; }
+      }));
+      for (const r of res3) {
+        const base = limpiar(r.it.nombre) || limpiar(r.numero) || `factura_${r.it.id}`;
+        if (!r.buffer) { faltantes.push(`${base}: ${r.motivo}`); continue; }
+        let nombre = `${base}.pdf`;
+        for (let n = 2; usados.has(nombre.toUpperCase()); n++) nombre = `${base}_${n}.pdf`;
+        usados.add(nombre.toUpperCase());
+        zip.addFile(nombre, r.buffer);
+      }
+    }
+
+    if (!usados.size) return res.status(404).json({ error: 'Ninguna de las facturas tiene PDF disponible', faltantes });
+    if (faltantes.length) {
+      zip.addFile('NO_INCLUIDAS.txt', Buffer.from(
+        `Facturas sin PDF disponible (${faltantes.length}):\r\n\r\n${faltantes.join('\r\n')}\r\n`, 'utf8'));
+    }
+
+    const buffer = zip.toBuffer();
+    const nombreZip = (limpiar(req.body?.nombreZip) || 'facturas') + '.zip';
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${nombreZip}"`);
+    res.setHeader('X-Pdf-Incluidos', String(usados.size));
+    res.setHeader('X-Pdf-Faltantes', String(faltantes.length));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Pdf-Incluidos, X-Pdf-Faltantes');
+    res.send(buffer);
+  } catch (err) {
+    console.error('Error generando ZIP de PDFs:', err);
+    res.status(500).json({ error: 'Error generando el ZIP' });
   }
 });
 

@@ -66,6 +66,7 @@ export default function CruceDIAN() {
 
   const [archivo, setArchivo] = useState(null);
   const [procesando, setProcesando] = useState(false);
+  const [generandoZip, setGenerandoZip] = useState(false);
   const [resultado, setResultado] = useState(null);
   const [tabActiva, setTabActiva] = useState('cruzadas');
   const [vista, setVista] = useState('obra'); // 'obra' | 'administrativa'
@@ -365,6 +366,37 @@ export default function CruceDIAN() {
     URL.revokeObjectURL(a.href);
   };
 
+  // ── ZIP con los PDF de las facturas "NO ENTREGADA FISICAMENTE A CONTABILIDAD" ──
+  // Solo las encontradas en la app (las no encontradas no tienen PDF). Cada PDF
+  // se nombra con el N° DIAN.
+  const noEntregadas = (resultadoVista?.cruzadas || []).filter(({ dian, factura }) =>
+    factura?.id && String(dian.estadoEntrega || '').toUpperCase().includes('NO ENTREGADA'));
+
+  const descargarZipNoEntregadas = async () => {
+    if (!noEntregadas.length) return;
+    setGenerandoZip(true);
+    try {
+      const nombreZip = `no_entregadas_${vista}_${añoApp}-${mesApp}`;
+      const resp = await api.post('/facturas/zip-pdfs', {
+        nombreZip,
+        items: noEntregadas.map(({ dian, factura }) => ({ id: factura.id, nombre: dian.numero })),
+      }, { responseType: 'blob', timeout: 10 * 60 * 1000 });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(resp.data);
+      a.download = `${nombreZip}.zip`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      const faltan = parseInt(resp.headers?.['x-pdf-faltantes'] || '0', 10);
+      if (faltan > 0) {
+        alert(`⚠️ El ZIP tiene ${resp.headers['x-pdf-incluidos']} PDF. ${faltan} factura(s) no tenían PDF disponible: están listadas en el archivo NO_INCLUIDAS.txt dentro del ZIP.`);
+      }
+    } catch (err) {
+      let msg = err.message;
+      try { const t = await err.response?.data?.text?.(); if (t) msg = JSON.parse(t).error || msg; } catch (e) { /* respuesta no JSON */ }
+      alert('❌ No se pudo generar el ZIP: ' + msg);
+    } finally { setGenerandoZip(false); }
+  };
+
   const badgeEntrega = (val) => {
   if (!val) return <span style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>—</span>;
   const v = val.toUpperCase();
@@ -586,6 +618,12 @@ const selectSt = {
             </button>
             <button onClick={() => exportarReporte(resultadoVista.noCruzadas, 'no_cruzadas')} style={{ background: 'var(--t-bg-card)', color: '#f87171', border: '1px solid var(--t-border)', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
               ❌ No encontradas ({resultadoVista.noCruzadas.length})
+            </button>
+            <button onClick={descargarZipNoEntregadas} disabled={generandoZip || noEntregadas.length === 0}
+              title="Descarga en un ZIP los PDF de las facturas con «FACTURA NO ENTREGADA FISICAMENTE A CONTABILIDAD», nombrados con el N° DIAN"
+              style={{ background: 'var(--t-bg-card)', color: '#f87171', border: '1px solid rgba(248,113,113,.5)', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 600,
+                cursor: generandoZip || noEntregadas.length === 0 ? 'default' : 'pointer', opacity: noEntregadas.length === 0 ? 0.5 : 1 }}>
+              {generandoZip ? `⏳ Armando ZIP (${noEntregadas.length} PDF)…` : `📦 ZIP PDF no entregadas a contabilidad (${noEntregadas.length})`}
             </button>
           </div>
 
