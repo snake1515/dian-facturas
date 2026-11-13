@@ -196,6 +196,9 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
   const [orden, setOrden]     = useState('nos');       // nos | deb | neto
   const [sel, setSel]         = useState(null);        // tercero abierto en detalle
   const [prodAbierto, setProdAbierto] = useState(null);
+  const [verDocs, setVerDocs] = useState('nos');       // nos | deb — documentos pendientes de todos los terceros
+  const [qDoc, setQDoc]       = useState('');
+  const [estadoSel, setEstadoSel] = useState('todos'); // filtro de estado en el detalle del tercero
 
   // Solo los cuatro documentos que cuentan para el saldo.
   const movs = useMemo(() => (prestamos || []).filter(p => TIPOS[p.tipo] && fechaDe(p)), [prestamos]);
@@ -244,7 +247,7 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
       (prestamos || []).forEach(d => {
         if (d.tipo === 'devolucion_ingreso' || d.tipo === 'devolucion_egreso') { devPorId[d.id] = d; if (d.prestamo_id) devsLegado.push(d); }
       });
-      const nuevoT = (k, p) => (porTer[k] = porTer[k] || { k, nombre: nomDe(k, p), V: cero(), Q: cero(), docs: [], prods: {}, ultima: '', devSinCruzar: [] });
+      const nuevoT = (k, p) => (porTer[k] = porTer[k] || { k, nombre: nomDe(k, p), V: cero(), Q: cero(), docs: [], prods: {}, ultima: '', devSinCruzar: [], prestamosTodos: [] });
       enRango.forEach(p => {
         const t = TIPOS[p.tipo];
         const k = claveTercero(p);
@@ -291,6 +294,10 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
         });
         T.V[sk] += presV; T.Q[sk] += presQ;
         T.V[skAb] += presV - pendV; T.Q[skAb] += presQ - pendQ;
+        // Estado real según los cruces (no la etiqueta guardada en el documento)
+        const estadoReal = pendQ <= TOL ? 'cerrado' : (presQ - pendQ <= TOL ? 'abierto' : 'parcial');
+        T.prestamosTodos.push({ id: p.id, fecha: f, doc: p.documento_contable, sigla: t.sigla, lado: t.lado, estadoReal,
+          presQ, presV, pendQ, pendV, abonadoV: presV - pendV, pendientes });
         if (pendQ > TOL) {
           T.docs.push({ id: p.id, fecha: f, doc: p.documento_contable, sigla: t.sigla,
             txt: 'Pendiente: ' + pendientes.map(x => `${x.nombre || x.codigo} ×${num(x.q)}`).join('; '),
@@ -927,32 +934,51 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
                       </div>
                       {esCruces && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 16 }}>
-                          {[['nos', 'Documentos que nos debe (EPO con saldo)', C_NOS], ['deb', 'Documentos que le debemos (IPE con saldo)', C_DEB]].map(([lado, tit, col]) => {
-                            const ds = detalle.docs.filter(d => d.lado === lado).sort((a, b) => a.fecha.localeCompare(b.fecha));
-                            const tq = ds.reduce((a, d) => a + d.valorQ, 0), tv = ds.reduce((a, d) => a + d.valorV, 0);
+                          {(() => {
+                            const todos = detalle.prestamosTodos || [];
+                            const cuenta = e => todos.filter(d => d.estadoReal === e).length;
+                            return (
+                              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: 12, color: 'var(--t-text-muted)', fontWeight: 600 }}>Estado:</span>
+                                <Seg value={estadoSel} onChange={setEstadoSel} opciones={[
+                                  ['todos', `Todos (${todos.length})`], ['abierto', `Abiertos (${cuenta('abierto')})`],
+                                  ['parcial', `Parciales (${cuenta('parcial')})`], ['cerrado', `Cerrados (${cuenta('cerrado')})`]]} />
+                                <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Abierto = nada devuelto · Parcial = devuelto en parte · Cerrado = devuelto completo (según los cruces)</span>
+                              </div>
+                            );
+                          })()}
+                          {[['nos', 'Préstamos que hicimos (EPO) — nos deben devolver', C_NOS], ['deb', 'Préstamos que recibimos (IPE) — debemos devolver nosotros', C_DEB]].map(([lado, tit, col]) => {
+                            const ds = (detalle.prestamosTodos || []).filter(d => d.lado === lado && (estadoSel === 'todos' || d.estadoReal === estadoSel))
+                              .sort((a, b) => a.fecha.localeCompare(b.fecha));
+                            if (!(detalle.prestamosTodos || []).some(d => d.lado === lado)) return null;
+                            const tv = ds.reduce((a, d) => a + d.pendV, 0);
+                            const ESTILO = { abierto: ['#fee2e2', '#b91c1c', 'Abierto'], parcial: ['#fef3c7', '#b45309', 'Parcial'], cerrado: ['#dcfce7', '#15803d', 'Cerrado'] };
                             return (
                               <div key={lado}>
                                 <div style={{ fontWeight: 700, fontSize: 13, color: col, marginBottom: 6 }}>
-                                  {tit} · {ds.length} doc{ds.length === 1 ? '' : 's'} · {num(tq)} und · {cop(tv)}
+                                  {tit} · {ds.length} doc{ds.length === 1 ? '' : 's'} · pendiente {cop(tv)}
                                 </div>
-                                <div style={{ overflowX: 'auto', maxHeight: 340, overflowY: 'auto' }}>
+                                <div style={{ overflowX: 'auto', maxHeight: 380, overflowY: 'auto' }}>
                                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                                    <thead><tr><th style={th}>Fecha</th><th style={th}>Documento</th><th style={th}>Estado</th><th style={th}>Productos pendientes</th><th style={{ ...th, ...r }}>Prestado</th><th style={{ ...th, ...r }}>Pend. und</th><th style={{ ...th, ...r }}>Pend. valor</th></tr></thead>
+                                    <thead><tr><th style={th}>Fecha</th><th style={th}>Documento</th><th style={th}>Estado</th><th style={th}>Productos pendientes</th><th style={{ ...th, ...r }}>Prestado</th><th style={{ ...th, ...r }}>Devuelto</th><th style={{ ...th, ...r }}>Pendiente</th></tr></thead>
                                     <tbody>
-                                      {ds.map(d => (
-                                        <tr key={d.id}>
-                                          <td style={{ ...td, whiteSpace: 'nowrap' }}>{d.fecha}</td>
-                                          <td style={{ ...td, fontWeight: 600 }}>{d.doc}</td>
-                                          <td style={{ ...td, fontSize: 12 }}>{d.estado}</td>
-                                          <td style={{ ...td, fontSize: 12 }}>{d.pendientes.map(x => (
-                                            <div key={x.codigo}>{x.nombre || x.codigo} <b>×{num(x.q)}</b> <span style={{ color: 'var(--t-text-muted)' }}>({cop(x.v)})</span></div>
-                                          ))}</td>
-                                          <td style={{ ...td, ...r, color: 'var(--t-text-muted)' }}>{cop(d.prestadoV)}</td>
-                                          <td style={{ ...td, ...r }}>{num(d.valorQ)}</td>
-                                          <td style={{ ...td, ...r, fontWeight: 700, color: col }}>{cop(d.valorV)}</td>
-                                        </tr>
-                                      ))}
-                                      {!ds.length && <tr><td colSpan={7} style={{ ...td, color: 'var(--t-text-muted)' }}>Sin documentos con saldo.</td></tr>}
+                                      {ds.map(d => {
+                                        const [bg, fg, txt] = ESTILO[d.estadoReal];
+                                        return (
+                                          <tr key={d.id}>
+                                            <td style={{ ...td, whiteSpace: 'nowrap' }}>{d.fecha}</td>
+                                            <td style={{ ...td, fontWeight: 600 }}>{d.doc}</td>
+                                            <td style={td}><span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: bg, color: fg }}>{txt}</span></td>
+                                            <td style={{ ...td, fontSize: 12 }}>{d.pendientes.length ? d.pendientes.map(x => (
+                                              <div key={x.codigo}>{x.nombre || x.codigo} <b>×{num(x.q)}</b> <span style={{ color: 'var(--t-text-muted)' }}>({cop(x.v)})</span></div>
+                                            )) : <span style={{ color: 'var(--t-text-muted)' }}>—</span>}</td>
+                                            <td style={{ ...td, ...r, color: 'var(--t-text-muted)' }}>{cop(d.presV)}</td>
+                                            <td style={{ ...td, ...r, color: 'var(--t-text-muted)' }}>{cop(d.abonadoV)}</td>
+                                            <td style={{ ...td, ...r, fontWeight: 700, color: d.pendV > 0.5 ? col : 'var(--t-text-muted)' }}>{d.pendV > 0.5 ? cop(d.pendV) : '—'}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                      {!ds.length && <tr><td colSpan={7} style={{ ...td, color: 'var(--t-text-muted)' }}>Sin documentos con este estado.</td></tr>}
                                     </tbody>
                                   </table>
                                 </div>
@@ -1059,6 +1085,79 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
           Un valor negativo en «Nos debe» o «Le debemos» indica que se devolvió más de lo prestado en lo que cubre el filtro; esos valores no se suman en los totales de deuda.
         </div>
       </div>
+
+      {/* Documentos pendientes de todos los terceros (saldo real) */}
+      {esCruces && (() => {
+        const todos = datos.lista.flatMap(t => t.docs.map(d => ({ ...d, tercero: t.nombre })));
+        const qd = qDoc.trim().toLowerCase();
+        const lado = todos.filter(d => d.lado === verDocs)
+          .filter(d => !qd || d.tercero.toLowerCase().includes(qd) || String(d.doc).toLowerCase().includes(qd)
+            || (d.pendientes || []).some(x => String(x.nombre || '').toLowerCase().includes(qd) || String(x.codigo || '').toLowerCase().includes(qd)))
+          .sort((a, b) => a.tercero.localeCompare(b.tercero) || a.fecha.localeCompare(b.fecha));
+        const nN = todos.filter(d => d.lado === 'nos'), nD = todos.filter(d => d.lado === 'deb');
+        const sum = l => l.reduce((a, d) => a + d.valorV, 0);
+        const col = verDocs === 'nos' ? C_NOS : C_DEB;
+        function excelDocs() {
+          const wb = XLSX.utils.book_new();
+          const cols = [{ h: 'Tercero', w: 38 }, { h: 'Documento', w: 12 }, { h: 'Fecha', w: 11 }, { h: 'Estado', w: 10 }, { h: 'Código', w: 14 },
+            { h: 'Producto pendiente', w: 50 }, { h: 'Cantidad', t: 'num', w: 10 }, { h: 'Valor ($)', t: 'cop', w: 15 }];
+          const filasDe = l => {
+            const out = [];
+            todos.filter(d => d.lado === l).sort((a, b) => a.tercero.localeCompare(b.tercero) || a.fecha.localeCompare(b.fecha))
+              .forEach(d => (d.pendientes || []).forEach(x => out.push([d.tercero, d.doc, d.fecha, d.estado || '', x.codigo, x.nombre, Number(x.q), Math.round(x.v)])));
+            return out;
+          };
+          agregarHoja(wb, 'Nos deben (EPO)', cols, filasDe('nos'), 'Documentos pendientes que nos deben devolver (EPO)', textoFiltrosExcel() + ' · Saldo real según cruces');
+          agregarHoja(wb, 'Debemos devolver (IPE)', cols, filasDe('deb'), 'Documentos pendientes que debemos devolver nosotros (IPE)', textoFiltrosExcel() + ' · Saldo real según cruces');
+          XLSX.writeFile(wb, `documentos_pendientes_${hasta || hoy}.xlsx`);
+        }
+        return (
+          <div style={card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--t-text-primary)' }}>
+                Documentos pendientes por devolver
+                <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--t-text-muted)' }}> · todos los terceros, según los cruces</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <input style={input} value={qDoc} onChange={e => setQDoc(e.target.value)} placeholder="Tercero, documento o producto…" />
+                <Seg value={verDocs} onChange={setVerDocs} opciones={[
+                  ['nos', `Nos deben devolver (${nN.length} · ${cop(sum(nN))})`],
+                  ['deb', `Debemos devolver (${nD.length} · ${cop(sum(nD))})`]]} />
+                <button type="button" onClick={excelDocs} style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>⇣ Excel</button>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 8 }}>
+              {verDocs === 'nos'
+                ? 'Préstamos que hicimos (EPO) y que el tercero todavía no nos ha devuelto completos.'
+                : 'Préstamos que recibimos (IPE) y que todavía no hemos devuelto completos: esto es lo que debemos devolver nosotros.'}
+            </div>
+            <div style={{ overflowX: 'auto', maxHeight: 520, overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr><th style={th}>Tercero</th><th style={th}>Documento</th><th style={th}>Fecha</th><th style={th}>Estado</th><th style={th}>Productos pendientes</th><th style={{ ...th, ...r }}>Valor pendiente</th></tr></thead>
+                <tbody>
+                  {lado.map(d => (
+                    <tr key={d.id}>
+                      <td style={{ ...td, fontSize: 12 }}>{d.tercero}</td>
+                      <td style={{ ...td, fontWeight: 600, whiteSpace: 'nowrap' }}>{d.doc}</td>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>{d.fecha}</td>
+                      <td style={{ ...td, fontSize: 12 }}>{d.estado}</td>
+                      <td style={{ ...td, fontSize: 12 }}>{(d.pendientes || []).map(x => (
+                        <div key={x.codigo}>{x.nombre || x.codigo} <b>×{num(x.q)}</b></div>
+                      ))}</td>
+                      <td style={{ ...td, ...r, fontWeight: 700, color: col }}>{cop(d.valorV)}</td>
+                    </tr>
+                  ))}
+                  {!lado.length && <tr><td colSpan={6} style={{ ...td, textAlign: 'center', color: 'var(--t-text-muted)', padding: 20 }}>Sin documentos pendientes con estos filtros.</td></tr>}
+                </tbody>
+                {lado.length > 0 && (
+                  <tfoot><tr><td style={{ ...td, fontWeight: 700 }} colSpan={5}>Total ({lado.length} documentos)</td>
+                    <td style={{ ...td, ...r, fontWeight: 700, color: col }}>{cop(sum(lado))}</td></tr></tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Productos */}
       <div style={card}>
