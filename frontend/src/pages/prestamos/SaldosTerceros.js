@@ -526,7 +526,48 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
   }
 
   // ── Excel: documentos y productos de un tercero ─────────────────────────
+  // Estado de cuenta en Excel (saldo real según cruces).
+  function exportarEstadoCuentaExcel(det) {
+    const wb = XLSX.utils.book_new();
+    const S = det.sV || { nos: det.nos, deb: det.deb, neto: det.neto };
+    const sub = textoFiltrosExcel() + ` · Saldo real según cruces · Nos debe: ${cop(S.nos)} · Le debemos: ${cop(S.deb)} · Neto: ${cop(S.neto)}`;
+    const cols = [{ h: 'Fecha', w: 11 }, { h: 'Documento', w: 12 }, { h: 'Estado', w: 10 }, { h: 'Código', w: 14 }, { h: 'Producto pendiente', w: 50 },
+      { h: 'Cantidad', t: 'num', w: 10 }, { h: 'Valor ($)', t: 'cop', w: 15 }];
+    const filasLado = lado => {
+      const out = [];
+      det.docs.filter(d => d.lado === lado).sort((a, b) => a.fecha.localeCompare(b.fecha))
+        .forEach(d => (d.pendientes || []).forEach(x => out.push([d.fecha, d.doc, d.estado || '', x.codigo, x.nombre, Number(x.q), Math.round(x.v)])));
+      return out;
+    };
+    const fNos = filasLado('nos'), fDeb = filasLado('deb');
+    const resumen = [
+      ['Tercero', det.nombre],
+      ['Generado', new Date().toLocaleString('es-CO')],
+      ['Cálculo', 'Saldo real: cada préstamo menos lo abonado en sus cruces'],
+      [],
+      ['Concepto', 'Documentos', 'Unidades', 'Valor ($)'],
+      ['Nos debe (EPO pendientes)', new Set(fNos.map(f => f[1])).size, fNos.reduce((a, f) => a + f[5], 0), Math.round(S.nos)],
+      ['Le debemos (IPE pendientes)', new Set(fDeb.map(f => f[1])).size, fDeb.reduce((a, f) => a + f[5], 0), Math.round(S.deb)],
+      ['Neto (positivo = a favor nuestro)', '', '', Math.round(S.neto)],
+    ];
+    const wsR = XLSX.utils.aoa_to_sheet([[`Estado de cuenta de préstamos · ${det.nombre}`], [], ...resumen]);
+    [7, 8, 9].forEach(r0 => { const c = wsR[XLSX.utils.encode_cell({ r: r0, c: 3 })]; if (c && c.t === 'n') c.z = FMT_COP; });
+    wsR['!cols'] = [{ wch: 36 }, { wch: 44 }, { wch: 12 }, { wch: 16 }];
+    XLSX.utils.book_append_sheet(wb, wsR, 'Resumen');
+    agregarHoja(wb, 'Nos debe', cols, fNos, `Lo que nos debe ${det.nombre} (EPO pendientes)`, sub);
+    agregarHoja(wb, 'Le debemos', cols, fDeb, `Lo que le debemos a ${det.nombre} (IPE pendientes)`, sub);
+    if ((det.devSinCruzar || []).length) {
+      agregarHoja(wb, 'Devoluciones sin cruzar', [{ h: 'Fecha', w: 11 }, { h: 'Documento', w: 12 }, { h: 'Tipo', w: 6 }, { h: 'Productos sin cruzar', w: 80 },
+        { h: 'Unidades', t: 'num', w: 10 }, { h: 'Valor ($)', t: 'cop', w: 15 }],
+        [...det.devSinCruzar].sort((a, b) => a.fecha.localeCompare(b.fecha)).map(d => [d.fecha, d.doc, d.sigla, d.productos, Number(d.q), Math.round(d.v)]),
+        'Devoluciones con unidades aún sin cruzar (no descuentan el saldo)', sub);
+    }
+    const nom = det.nombre.replace(/[\\/:*?"<>|]/g, '').trim().replace(/\s+/g, '_');
+    XLSX.writeFile(wb, `estado_cuenta_${nom}_${hasta || hoy}.xlsx`);
+  }
+
   function exportarTerceroExcel(det) {
+    if (esCruces) return exportarEstadoCuentaExcel(det);
     const wb = XLSX.utils.book_new();
     const sub = textoFiltrosExcel()
       + ` · Nos debe: ${fmtV(det.nos)} · Le debemos: ${fmtV(det.deb)} · Neto: ${fmtV(det.neto)}`;
