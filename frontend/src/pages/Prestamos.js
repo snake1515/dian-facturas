@@ -426,7 +426,7 @@ export default function Prestamos() {
           {activeTab === 'kardex'      && <TabKardex prestamos={prestamos} productos={productos} clinicas={clinicas} />}
           {activeTab === 'soportes_pendientes' && <TabSoportesPendientes onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
-          {activeTab === 'saldos_terceros' && <SaldosTerceros prestamos={prestamos} clinicas={clinicas} />}
+          {activeTab === 'saldos_terceros' && <SaldosTerceros prestamos={prestamos} clinicas={clinicas} cruces={cruces} />}
           {activeTab === 'dashboard'   && (
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
               <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} productos={productos} onRefresh={cargarDatos} />

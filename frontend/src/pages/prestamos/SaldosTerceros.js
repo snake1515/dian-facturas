@@ -141,8 +141,49 @@ function agregarHoja(wb, nombre, cols, filas, titulo, subtitulo) {
   XLSX.utils.book_append_sheet(wb, ws, nombre.substring(0, 31));
 }
 
-export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
+// ─── Saldo real según cruces ─────────────────────────────────────────────────
+// Por cada préstamo (EPO/IPE): lo prestado menos lo que ya se le abonó en los
+// cruces (items_cruzados; si el cruce es viejo y no tiene detalle, los ítems
+// de la devolución), más las devoluciones legadas ligadas directo al préstamo.
+// En cruces manuales cuenta el código del préstamo al que se aplicó
+// (codigo_prestamo). Solo cuentan devoluciones con fecha <= corte.
+function abonadoPorCodigo(p, cruces, devPorId, devsLegado, fin) {
+  const a = {};
+  devsLegado.filter(d => d.prestamo_id === p.id && fechaDe(d) <= fin).forEach(d =>
+    (d.items || []).forEach(i => { a[i.codigo] = (a[i.codigo] || 0) + Number(i.cantidad || 0); }));
+  (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
+    const d = devPorId[c.devolucion_id];
+    if (d && fechaDe(d) > fin) return;
+    const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
+    items.forEach(it => { const k = it.codigo_prestamo || it.codigo; a[k] = (a[k] || 0) + Number(it.cantidad || 0); });
+  });
+  return a;
+}
+
+// Unidades de una devolución (IDP/ED) que todavía no se han cruzado con ningún préstamo.
+function disponibleDevolucion(d, cruces) {
+  const asig = {};
+  (cruces || []).filter(c => c.devolucion_id === d.id).forEach(c => {
+    const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
+    items.forEach(it => { asig[it.codigo] = (asig[it.codigo] || 0) + Number(it.cantidad || 0); });
+  });
+  const tot = {};
+  (d.items || []).forEach(i => {
+    if (!tot[i.codigo]) tot[i.codigo] = { codigo: i.codigo, nombre: i.nombre, q: 0, v: 0 };
+    tot[i.codigo].q += Number(i.cantidad || 0);
+    tot[i.codigo].v += Number(i.cantidad || 0) * Number(i.precio_unitario || 0);
+  });
+  return Object.values(tot).map(t => {
+    const q = Math.max(0, t.q - (asig[t.codigo] || 0));
+    return { codigo: t.codigo, nombre: t.nombre, q, v: t.q ? q * (t.v / t.q) : 0 };
+  }).filter(x => x.q > TOL);
+}
+
+export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces = [] }) {
   const hoy = new Date().toISOString().substring(0, 10);
+  // cruces = saldo real (préstamos menos lo abonado en cruces) · movs = todo lo prestado menos todo lo devuelto
+  const [fuente, setFuente]   = useState('cruces');
+  const esCruces = fuente === 'cruces';
   const [modo, setModo]       = useState('valor');     // valor | cantidad
   const [calculo, setCalculo] = useState('corte');     // corte (acumulado) | periodo
   const [anio, setAnio]       = useState('todos');
@@ -197,13 +238,82 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
       return (!ini || f >= ini) && f <= fin && (tercero === 'todos' || claveTercero(p) === tercero);
     });
     const cero = () => ({ epo: 0, idp: 0, ipe: 0, ed: 0 });
+    if (fuente === 'cruces') {
+      const devPorId = {};
+      const devsLegado = [];
+      (prestamos || []).forEach(d => {
+        if (d.tipo === 'devolucion_ingreso' || d.tipo === 'devolucion_egreso') { devPorId[d.id] = d; if (d.prestamo_id) devsLegado.push(d); }
+      });
+      const nuevoT = (k, p) => (porTer[k] = porTer[k] || { k, nombre: nomDe(k, p), V: cero(), Q: cero(), docs: [], prods: {}, ultima: '', devSinCruzar: [] });
+      enRango.forEach(p => {
+        const t = TIPOS[p.tipo];
+        const k = claveTercero(p);
+        const f = fechaDe(p);
+        if (t.signo < 0) {
+          // Devolución (IDP/ED): solo se usa para avisar lo que aún no se ha cruzado.
+          const disp = disponibleDevolucion(p, cruces).filter(itemOk);
+          if (disp.length) {
+            const T = nuevoT(k, p);
+            T.devSinCruzar.push({ id: p.id, fecha: f, doc: p.documento_contable, sigla: t.sigla, lado: t.lado,
+              q: disp.reduce((a, x) => a + x.q, 0), v: disp.reduce((a, x) => a + x.v, 0),
+              productos: disp.map(x => `${x.nombre || x.codigo} ×${num(x.q)}`).join('; ') });
+          }
+          return;
+        }
+        const abon = abonadoPorCodigo(p, cruces, devPorId, devsLegado, fin);
+        const porCod = {};
+        (p.items || []).filter(itemOk).forEach(i => {
+          if (!porCod[i.codigo]) porCod[i.codigo] = { codigo: i.codigo, nombre: i.nombre, q: 0, v: 0 };
+          porCod[i.codigo].q += Number(i.cantidad || 0);
+          porCod[i.codigo].v += Number(i.cantidad || 0) * Number(i.precio_unitario || 0);
+        });
+        const lista = Object.values(porCod);
+        if (qp && !lista.length) return;
+        const T = nuevoT(k, p);
+        const sk = t.sigla.toLowerCase();          // epo | ipe
+        const skAb = sk === 'epo' ? 'idp' : 'ed';  // columna de lo abonado
+        let presV = 0, presQ = 0, pendV = 0, pendQ = 0;
+        const pendientes = [];
+        lista.forEach(c => {
+          const pu = c.q ? c.v / c.q : 0;
+          const pq = Math.max(0, c.q - (abon[c.codigo] || 0));
+          const pv = pq * pu;
+          presV += c.v; presQ += c.q; pendV += pv; pendQ += pq;
+          if (pq > TOL) {
+            pendientes.push({ codigo: c.codigo, nombre: c.nombre, q: pq, v: pv });
+            const pk = String(c.codigo || c.nombre || '—');
+            if (!T.prods[pk]) T.prods[pk] = { codigo: c.codigo || '', nombre: c.nombre || '', nosQ: 0, nosV: 0, debQ: 0, debV: 0 };
+            T.prods[pk][t.lado + 'Q'] += pq; T.prods[pk][t.lado + 'V'] += pv;
+            lineas.push({ fecha: f, doc: p.documento_contable, sigla: t.sigla, txt: 'Pendiente', lado: t.lado, signo: 1,
+              tercero: T.nombre, bodega: p.bodega_nombre || p.bodega_codigo || '', codigo: c.codigo || '', nombre: c.nombre || '',
+              q: pq, pu, v: pv, lote: '' });
+          }
+        });
+        T.V[sk] += presV; T.Q[sk] += presQ;
+        T.V[skAb] += presV - pendV; T.Q[skAb] += presQ - pendQ;
+        if (pendQ > TOL) {
+          T.docs.push({ id: p.id, fecha: f, doc: p.documento_contable, sigla: t.sigla,
+            txt: 'Pendiente: ' + pendientes.map(x => `${x.nombre || x.codigo} ×${num(x.q)}`).join('; '),
+            lado: t.lado, signo: 1, valorV: pendV, valorQ: pendQ, prestadoV: presV, prestadoQ: presQ,
+            estado: p.estado, pendientes, bodega: p.bodega_nombre || p.bodega_codigo || '', obs: p.observaciones || '' });
+          if (!desde || f >= desde) {
+            const mk = f.substring(0, 7);
+            if (!porMes[mk]) porMes[mk] = { k: mk, label: `${MESES[Number(mk.substring(5, 7)) - 1]} ${mk.substring(2, 4)}`,
+              V: { nos: 0, deb: 0, ...cero() }, Q: { nos: 0, deb: 0, ...cero() } };
+            porMes[mk].V[t.lado] += pendV; porMes[mk].Q[t.lado] += pendQ;
+            porMes[mk].V[sk] += pendV; porMes[mk].Q[sk] += pendQ;
+          }
+        }
+        if (f > T.ultima) T.ultima = f;
+      });
+    } else
     enRango.forEach(p => {
       const t = TIPOS[p.tipo];
       const k = claveTercero(p);
       const f = fechaDe(p);
       const items = (p.items || []).filter(itemOk);
       if (qp && !items.length) return;
-      if (!porTer[k]) porTer[k] = { k, nombre: nomDe(k, p), V: cero(), Q: cero(), docs: [], prods: {}, ultima: '' };
+      if (!porTer[k]) porTer[k] = { k, nombre: nomDe(k, p), V: cero(), Q: cero(), docs: [], prods: {}, ultima: '', devSinCruzar: [] };
       const T = porTer[k];
       const sk = t.sigla.toLowerCase();
       let docV = 0, docQ = 0;
@@ -252,7 +362,7 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
     }));
     const meses = Object.values(porMes).sort((a, b) => a.k.localeCompare(b.k));
     return { lista, prods: Object.values(prods), meses, sobrantes, nDocs: enRango.length, lineas };
-  }, [movs, ini, fin, desde, tercero, qp, nombreTercero]);
+  }, [movs, ini, fin, desde, tercero, qp, nombreTercero, fuente, cruces, prestamos]);
 
   // Vista según el modo elegido (valor $ o unidades).
   const datos = useMemo(() => {
@@ -622,6 +732,14 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Seg value={modo} onChange={setModo} opciones={[['valor', '$ Valor'], ['cantidad', 'Unidades']]} />
         </div>
+        <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Seg value={fuente} onChange={v => { setFuente(v); setSel(null); }} opciones={[['cruces', 'Saldo real (según cruces)'], ['movs', 'Prestado − devuelto']]} />
+          <span style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>
+            {esCruces
+              ? 'Cada préstamo menos lo que ya se le abonó en los cruces. Las devoluciones sin cruzar no descuentan: aparecen aparte al abrir cada tercero.'
+              : 'Todo lo prestado menos todo lo devuelto, sin depender de los cruces.'}
+          </span>
+        </div>
         <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <Seg value={calculo} onChange={setCalculo} opciones={[['corte', 'Saldo al corte'], ['periodo', 'Solo el periodo']]} />
@@ -643,8 +761,8 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
 
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-        <Kpi titulo="Nos deben" valor={fmtV(totNos)} color={C_NOS} sub={`${conNos} tercero${conNos === 1 ? '' : 's'} · EPO − IDP`} />
-        <Kpi titulo="Le debemos" valor={fmtV(totDeb)} color={C_DEB} sub={`${conDeb} tercero${conDeb === 1 ? '' : 's'} · IPE − ED`} />
+        <Kpi titulo="Nos deben" valor={fmtV(totNos)} color={C_NOS} sub={`${conNos} tercero${conNos === 1 ? '' : 's'} · ${esCruces ? 'EPO pendientes' : 'EPO − IDP'}`} />
+        <Kpi titulo="Le debemos" valor={fmtV(totDeb)} color={C_DEB} sub={`${conDeb} tercero${conDeb === 1 ? '' : 's'} · ${esCruces ? 'IPE pendientes' : 'IPE − ED'}`} />
         <Kpi titulo="Saldo neto" valor={fmtV(totNos - totDeb)} color={totNos - totDeb >= 0 ? C_NOS : C_DEB}
           sub={totNos - totDeb >= 0 ? 'A favor nuestro' : 'En contra nuestra'} />
         <Kpi titulo="Quien más nos debe" valor={topNos[0] ? fmtV(topNos[0].v) : '—'} sub={topNos[0]?.label || 'Nadie nos debe'} />
@@ -678,8 +796,8 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
               <th style={{ ...th, ...r, color: C_NOS }}>Nos debe</th>
               <th style={{ ...th, ...r, color: C_DEB }}>Le debemos</th>
               <th style={{ ...th, ...r }}>Neto</th>
-              <th style={{ ...th, ...r }}>Prestado (EPO)</th><th style={{ ...th, ...r }}>Devuelto (IDP)</th>
-              <th style={{ ...th, ...r }}>Recibido (IPE)</th><th style={{ ...th, ...r }}>Devolvimos (ED)</th>
+              <th style={{ ...th, ...r }}>Prestado (EPO)</th><th style={{ ...th, ...r }}>{esCruces ? 'Abonado EPO' : 'Devuelto (IDP)'}</th>
+              <th style={{ ...th, ...r }}>Recibido (IPE)</th><th style={{ ...th, ...r }}>{esCruces ? 'Abonado IPE' : 'Devolvimos (ED)'}</th>
               <th style={th}>Último mov.</th>
             </tr></thead>
             <tbody>
@@ -718,6 +836,69 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
                           <button type="button" onClick={() => setSel(null)} style={{ ...input, cursor: 'pointer' }}>Cerrar ✕</button>
                         </div>
                       </div>
+                      {esCruces && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 16 }}>
+                          {[['nos', 'Documentos que nos debe (EPO con saldo)', C_NOS], ['deb', 'Documentos que le debemos (IPE con saldo)', C_DEB]].map(([lado, tit, col]) => {
+                            const ds = detalle.docs.filter(d => d.lado === lado).sort((a, b) => a.fecha.localeCompare(b.fecha));
+                            const tq = ds.reduce((a, d) => a + d.valorQ, 0), tv = ds.reduce((a, d) => a + d.valorV, 0);
+                            return (
+                              <div key={lado}>
+                                <div style={{ fontWeight: 700, fontSize: 13, color: col, marginBottom: 6 }}>
+                                  {tit} · {ds.length} doc{ds.length === 1 ? '' : 's'} · {num(tq)} und · {cop(tv)}
+                                </div>
+                                <div style={{ overflowX: 'auto', maxHeight: 340, overflowY: 'auto' }}>
+                                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                    <thead><tr><th style={th}>Fecha</th><th style={th}>Documento</th><th style={th}>Estado</th><th style={th}>Productos pendientes</th><th style={{ ...th, ...r }}>Prestado</th><th style={{ ...th, ...r }}>Pend. und</th><th style={{ ...th, ...r }}>Pend. valor</th></tr></thead>
+                                    <tbody>
+                                      {ds.map(d => (
+                                        <tr key={d.id}>
+                                          <td style={{ ...td, whiteSpace: 'nowrap' }}>{d.fecha}</td>
+                                          <td style={{ ...td, fontWeight: 600 }}>{d.doc}</td>
+                                          <td style={{ ...td, fontSize: 12 }}>{d.estado}</td>
+                                          <td style={{ ...td, fontSize: 12 }}>{d.pendientes.map(x => (
+                                            <div key={x.codigo}>{x.nombre || x.codigo} <b>×{num(x.q)}</b> <span style={{ color: 'var(--t-text-muted)' }}>({cop(x.v)})</span></div>
+                                          ))}</td>
+                                          <td style={{ ...td, ...r, color: 'var(--t-text-muted)' }}>{cop(d.prestadoV)}</td>
+                                          <td style={{ ...td, ...r }}>{num(d.valorQ)}</td>
+                                          <td style={{ ...td, ...r, fontWeight: 700, color: col }}>{cop(d.valorV)}</td>
+                                        </tr>
+                                      ))}
+                                      {!ds.length && <tr><td colSpan={7} style={{ ...td, color: 'var(--t-text-muted)' }}>Sin documentos con saldo.</td></tr>}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {(detalle.devSinCruzar || []).length > 0 && (
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: 13, color: '#b45309', marginBottom: 4 }}>
+                                Devoluciones con unidades sin cruzar ({detalle.devSinCruzar.length})
+                              </div>
+                              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                                Estas devoluciones existen pero todavía no se han cruzado (o no del todo) con ningún préstamo, así que no descuentan el saldo. Crúzalas en la pestaña Cruces.
+                              </div>
+                              <div style={{ overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                  <thead><tr><th style={th}>Fecha</th><th style={th}>Documento</th><th style={th}>Productos sin cruzar</th><th style={{ ...th, ...r }}>Und</th><th style={{ ...th, ...r }}>Valor</th></tr></thead>
+                                  <tbody>
+                                    {[...detalle.devSinCruzar].sort((a, b) => a.fecha.localeCompare(b.fecha)).map(d => (
+                                      <tr key={d.id}>
+                                        <td style={{ ...td, whiteSpace: 'nowrap' }}>{d.fecha}</td>
+                                        <td style={{ ...td, fontWeight: 600 }}><span style={{ fontSize: 11, fontWeight: 700, padding: '2px 6px', borderRadius: 5, background: 'var(--t-bg-inner)', marginRight: 6 }}>{d.sigla}</span>{d.doc}</td>
+                                        <td style={{ ...td, fontSize: 12 }}>{d.productos}</td>
+                                        <td style={{ ...td, ...r }}>{num(d.q)}</td>
+                                        <td style={{ ...td, ...r }}>{cop(d.v)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {!esCruces && <>
                       <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px', color: 'var(--t-text-primary)' }}>Documentos ({detalle.docs.length}) <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--t-text-muted)' }}>· del más reciente al más antiguo</span></div>
                       <div style={{ overflowX: 'auto', maxHeight: 340, overflowY: 'auto' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -737,6 +918,7 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
                         </table>
                       </div>
                       <div style={{ marginTop: 16 }} />
+                      </>}
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
                         {[['nos', 'Productos que nos debe', C_NOS], ['deb', 'Productos que le debemos', C_DEB]].map(([lado, tit, col]) => {
                           const filas = Object.values(detalle.prods).filter(p => Math.abs(p[lado + 'Q']) > TOL).sort((a, b) => b[lado + 'V'] - a[lado + 'V']);
@@ -852,7 +1034,9 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [] }) {
         <Tendencia meses={datos.meses} fmtV={fmtV} />
       </div>
       <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>
-        Calculado con {datos.nDocs.toLocaleString('es-CO')} documentos EPO, IPE, IDP y ED de la pestaña Movimientos.
+        {esCruces
+          ? `Saldo real: ${datos.nDocs.toLocaleString('es-CO')} documentos; cada EPO/IPE menos lo abonado en sus cruces (devoluciones con fecha hasta el corte).`
+          : `Calculado con ${datos.nDocs.toLocaleString('es-CO')} documentos EPO, IPE, IDP y ED de la pestaña Movimientos.`}
       </div>
     </div>
   );
