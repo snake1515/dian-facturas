@@ -2544,6 +2544,70 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   function actualizarFila(id, campo, valor) {
     setFilasAsignacion(prev => prev.map(f => f.id === id ? { ...f, [campo]: valor } : f));
   }
+  // Aplicar una línea "huérfana" de un cruce ya registrado (código devuelto
+  // que no existe en el préstamo) a un ítem del préstamo. Se edita ese cruce
+  // (PATCH, mismo endpoint que "Editar cruce") guardando codigo_prestamo; si
+  // el ítem del préstamo tiene menos pendiente que la línea, el resto se deja
+  // tal cual en una línea aparte.
+  // Completar un cruce ya registrado con los productos que le faltaron
+  // (ver crucesSinAplicarDe). Se suma a lo que el cruce ya tenga.
+  async function aplicarCruceSinAplicar(grupo) {
+    const c = grupo.cruce;
+    const items = (c.items_cruzados || []).map(it => ({ ...it }));
+    grupo.lineas.forEach(l => {
+      const ex = items.find(it => it.codigo === l.codigo && !it.codigo_prestamo);
+      if (ex) ex.cantidad = Number(ex.cantidad) + l.cantidad;
+      else items.push({ ...l });
+    });
+    setAplicandoHuerfano('c' + c.id); setError('');
+    try {
+      await apiFetch(`/prestamos/cruces/${c.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items_cruzados: items }),
+      });
+      onRefresh();
+    } catch (e) { setError('Error aplicando cruce: ' + e.message); }
+    setAplicandoHuerfano('');
+  }
+
+  const [huerfanoSel, setHuerfanoSel] = React.useState({});
+  const [aplicandoHuerfano, setAplicandoHuerfano] = React.useState('');
+  async function aplicarHuerfano(h, p) {
+    const codP = huerfanoSel[h.key];
+    if (!codP) return;
+    const c = h.cruce;
+    let items;
+    if (h.esNull) {
+      // Cruce viejo sin detalle: se materializa igual que en "Editar cruce"
+      const cantP = {};
+      (p.items || []).forEach(i => { cantP[i.codigo] = (cantP[i.codigo] || 0) + Number(i.cantidad); });
+      items = (c.devolucion_items || []).map(it => ({
+        codigo: it.codigo, nombre: it.nombre, precio_unitario: it.precio_unitario,
+        cantidad: cantP[it.codigo] !== undefined ? Math.min(Number(it.cantidad), cantP[it.codigo]) : Number(it.cantidad),
+      }));
+    } else {
+      items = c.items_cruzados.map(it => ({ ...it }));
+    }
+    const linea = items[h.idx];
+    const itemP = itemsPendientesDe(p, devoluciones, cruces).find(i => i.codigo === codP);
+    if (!linea || !itemP) { setError('Ese ítem del préstamo ya no tiene saldo pendiente.'); return; }
+    const cant = Math.min(Number(linea.cantidad), itemP.pendiente);
+    if (!(cant > 0)) { setError('Ese ítem del préstamo ya no tiene saldo pendiente.'); return; }
+    const resto = Number(linea.cantidad) - cant;
+    const aplicado = { ...linea, cantidad: cant, codigo_prestamo: codP, nombre_prestamo: itemP.nombre };
+    items.splice(h.idx, 1, aplicado, ...(resto > 0 ? [{ ...linea, cantidad: resto }] : []));
+    setAplicandoHuerfano(h.key); setError('');
+    try {
+      await apiFetch(`/prestamos/cruces/${c.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items_cruzados: items }),
+      });
+      setHuerfanoSel(prev => { const n = { ...prev }; delete n[h.key]; return n; });
+      onRefresh();
+    } catch (e) { setError('Error aplicando cruce manual: ' + e.message); }
+    setAplicandoHuerfano('');
+  }
+
   function agregarFilaExtra(filaBase) {
     setFilasAsignacion(prev => [...prev, { ...filaBase, id: `${filaBase.id}_${Date.now()}`, prestamo_id: '', cantidad: 0, codigo_prestamo: '', nombre_prestamo: '' }]);
   }
@@ -3115,6 +3179,14 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
           <div style={{ marginBottom: 14 }}>
             {selPrestamos.map(p => {
               const pendientes = itemsPendientesDe(p, devoluciones, cruces);
+              const huerfanos = lineasHuerfanasDe(p, cruces);
+              const sinAplicar = crucesSinAplicarDe(p, devoluciones, cruces);
+              // Lo que se le está asignando a cada ítem en ESTE cruce (aún sin
+              // registrar), para mostrar el pendiente que quedaría.
+              const ahoraPorCodigo = {};
+              filasAsignacion
+                .filter(f => Number(f.prestamo_id) === p.id && (Number(f.cantidad) || 0) > 0)
+                .forEach(f => { const cod = f.codigo_prestamo || f.codigo; ahoraPorCodigo[cod] = (ahoraPorCodigo[cod] || 0) + Number(f.cantidad); });
               return (
                 <div key={p.id} style={{ marginBottom: 10 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b', marginBottom: 6 }}>
@@ -3125,14 +3197,81 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                       Sin saldo pendiente registrado para este préstamo (según los cruces ya hechos).
                     </div>
                   )}
-                  {pendientes.map(item => (
+                  {pendientes.map(item => {
+                    const ahora = ahoraPorCodigo[item.codigo] || 0;
+                    const quedaria = Math.max(0, item.pendiente - ahora);
+                    return (
                     <div key={item.codigo} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '6px 10px', marginBottom: 4, background: 'var(--t-bg-inner)', borderRadius: 6 }}>
                       <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)', minWidth: 90 }}>{item.codigo}</span>
                       <span style={{ flex: 1, color: 'var(--t-text-primary)' }}>{item.nombre}</span>
                       <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>prestado: {item.cantidad}</span>
-                      <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>pendiente: {item.pendiente}</span>
+                      {ahora > 0 && (
+                        <span style={{ fontSize: 11, color: '#3b82f6', fontWeight: 600 }}>en este cruce: {ahora}</span>
+                      )}
+                      {quedaria > 0
+                        ? <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>pendiente: {quedaria}</span>
+                        : <span style={{ fontSize: 11, color: '#22c55e', fontWeight: 600 }}>✓ queda saldado</span>}
                     </div>
-                  ))}
+                    );
+                  })}
+                  {sinAplicar.length > 0 && (
+                    <div style={{ marginTop: 6, padding: '8px 10px', border: '1px solid #22c55e', borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, color: '#22c55e', fontWeight: 600, marginBottom: 2 }}>
+                        Ya cruzado, pero sin aplicar a {p.documento_contable}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                        Estos cruces existen pero quedaron guardados sin estos productos, por eso siguen saliendo como pendientes. Pulsa Aplicar para abonarlos.
+                      </div>
+                      {sinAplicar.map(g => (
+                        <div key={g.cruce.id} style={{ marginBottom: 6 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 2 }}>
+                            <span style={{ fontWeight: 600 }}>Cruce con {g.devolucion.documento_contable}{g.cruce.grupo_numero ? ` (${g.cruce.grupo_numero})` : ''}</span>
+                            <button onClick={() => aplicarCruceSinAplicar(g)} disabled={aplicandoHuerfano === 'c' + g.cruce.id}
+                              style={{ padding: '3px 10px', fontSize: 11, borderRadius: 5, border: 'none', background: '#22c55e', color: '#fff', cursor: 'pointer' }}>
+                              {aplicandoHuerfano === 'c' + g.cruce.id ? 'Aplicando…' : 'Aplicar'}
+                            </button>
+                          </div>
+                          {g.lineas.map(l => (
+                            <div key={l.codigo} style={{ display: 'flex', gap: 8, fontSize: 11, paddingLeft: 10, color: 'var(--t-text-primary)' }}>
+                              <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)', minWidth: 90 }}>{l.codigo}</span>
+                              <span style={{ flex: 1 }}>{l.nombre}</span>
+                              <span style={{ fontWeight: 600 }}>{l.cantidad} uds</span>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {huerfanos.length > 0 && (
+                    <div style={{ marginTop: 6, padding: '8px 10px', border: '1px solid #3b82f6', borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, color: '#3b82f6', fontWeight: 600, marginBottom: 2 }}>
+                        Ya cruzado con un código que no existe en {p.documento_contable}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+                        La devolución ya descontó estas unidades, pero el préstamo no las ha abonado a ningún ítem (por eso sigue saliendo pendiente). Elige a qué ítem del préstamo corresponden y pulsa Aplicar.
+                      </div>
+                      {huerfanos.map(h => (
+                        <div key={h.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, marginBottom: 4, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 600, minWidth: 60 }}>{h.cruce.devolucion_doc}</span>
+                          <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)' }}>{h.item.codigo}</span>
+                          <span style={{ flex: '1 1 200px', color: 'var(--t-text-primary)' }}>{h.item.nombre}</span>
+                          <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{h.item.cantidad} uds</span>
+                          <select value={huerfanoSel[h.key] || ''}
+                            onChange={e => setHuerfanoSel(prev => ({ ...prev, [h.key]: e.target.value }))}
+                            style={{ padding: '4px 6px', fontSize: 11, borderRadius: 5, border: '1px solid var(--t-border)', background: 'var(--t-bg-card)', color: 'var(--t-text-primary)', maxWidth: 360 }}>
+                            <option value="">— aplicar a ítem del préstamo —</option>
+                            {pendientes.map(ip => (
+                              <option key={ip.codigo} value={ip.codigo}>{ip.codigo} — {ip.nombre} (pendiente: {ip.pendiente})</option>
+                            ))}
+                          </select>
+                          <button onClick={() => aplicarHuerfano(h, p)} disabled={!huerfanoSel[h.key] || aplicandoHuerfano === h.key}
+                            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 5, border: 'none', background: huerfanoSel[h.key] ? '#3b82f6' : 'var(--t-border)', color: '#fff', cursor: huerfanoSel[h.key] ? 'pointer' : 'default' }}>
+                            {aplicandoHuerfano === h.key ? 'Aplicando…' : 'Aplicar'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -6582,6 +6721,55 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
 function etiquetaCruceManual(it) {
   if (!it || !it.codigo_prestamo || it.codigo_prestamo === it.codigo) return null;
   return `↔ aplicado a ${it.codigo_prestamo}${it.nombre_prestamo ? ' ' + it.nombre_prestamo : ''}`;
+}
+
+// Líneas ya cruzadas contra este préstamo cuyo código NO existe en él (la
+// devolución entró con otro código y el cruce se registró antes de existir
+// el cruce manual). La devolución ya las descontó, pero el préstamo no las
+// abona a ningún ítem, así que su pendiente nunca baja. Se listan para
+// poder aplicarlas a un ítem del préstamo.
+// Cruces YA registrados entre este préstamo y una devolución que no le
+// abonaron (o le abonaron de menos) productos que coinciden por código: la
+// devolución todavía tiene esas unidades disponibles y el préstamo las tiene
+// pendientes. Pasa con cruces que quedaron guardados sin productos
+// (items_cruzados vacío), por eso el préstamo seguía saliendo pendiente
+// aunque el cruce existe. Devuelve por cada cruce las líneas que faltan.
+function crucesSinAplicarDe(p, devoluciones = [], cruces = []) {
+  const pendientes = Object.fromEntries(itemsPendientesDe(p, devoluciones, cruces).map(i => [i.codigo, i]));
+  const restantePorCodigo = Object.fromEntries(Object.values(pendientes).map(i => [i.codigo, i.pendiente]));
+  const out = [];
+  (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
+    // Un cruce viejo sin detalle (NULL) ya cuenta el documento completo; no aplica.
+    if (c.items_cruzados === null || c.items_cruzados === undefined) return;
+    const d = (devoluciones || []).find(x => x.id === c.devolucion_id);
+    if (!d) return;
+    const lineas = [];
+    itemsPendientesDeDevolucion(d, cruces).forEach(it => {
+      const falta = restantePorCodigo[it.codigo] || 0;
+      const cant = Math.min(it.pendiente, falta);
+      if (cant > 0) {
+        lineas.push({ codigo: it.codigo, nombre: it.nombre, precio_unitario: it.precio_unitario, cantidad: cant });
+        restantePorCodigo[it.codigo] = falta - cant; // no sugerir lo mismo en dos cruces
+      }
+    });
+    if (lineas.length > 0) out.push({ cruce: c, devolucion: d, lineas });
+  });
+  return out;
+}
+
+function lineasHuerfanasDe(p, cruces = []) {
+  const codigosP = new Set((p.items || []).map(i => i.codigo));
+  const out = [];
+  (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
+    const esNull = c.items_cruzados === null || c.items_cruzados === undefined;
+    const items = esNull ? (c.devolucion_items || []) : c.items_cruzados;
+    items.forEach((it, idx) => {
+      if (!(Number(it.cantidad) > 0)) return;
+      if (codigosP.has(it.codigo_prestamo || it.codigo)) return;
+      out.push({ key: `${c.id}_${idx}`, cruce: c, idx, esNull, item: it });
+    });
+  });
+  return out;
 }
 
 function itemsPendientesDe(p, devoluciones, cruces = []) {
