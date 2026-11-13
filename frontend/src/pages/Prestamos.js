@@ -2799,6 +2799,12 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     return e === 'cerrado' ? '#22c55e' : e === 'parcial' ? '#f59e0b' : 'var(--t-text-muted)';
   }
 
+  // Tercero de un documento (mismo criterio que Saldos por tercero).
+  const terceroDe = p => (p.clinica_id != null ? 'id:' + p.clinica_id : 'n:' + String(p.clinica_nombre || '').trim().toUpperCase());
+  const tercerosPrestSel = new Set(selPrestamos.map(terceroDe));
+  // Devoluciones seleccionadas que son de un tercero distinto al de los préstamos elegidos
+  const devolucionesOtroTercero = selPrestamos.length > 0 ? selDevoluciones.filter(d => !tercerosPrestSel.has(terceroDe(d))) : [];
+
   async function cruzar() {
     if (selPrestamos.length === 0 || selDevoluciones.length === 0) {
       setError('Selecciona al menos un préstamo y una devolución'); return;
@@ -2903,6 +2909,23 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
         }
       });
     });
+
+    // Cruce entre terceros distintos: casi siempre es un error al elegir la
+    // devolución (deja el saldo de los dos terceros descuadrado). Se pide
+    // confirmación explícita antes de registrarlo.
+    const paresOtroTercero = pares.filter(par => {
+      const p = selPrestamos.find(x => x.id === Number(par.prestamo_id));
+      const d = selDevoluciones.find(x => x.id === Number(par.devolucion_id));
+      return p && d && terceroDe(p) !== terceroDe(d);
+    });
+    if (paresOtroTercero.length > 0) {
+      const txt = paresOtroTercero.map(par => {
+        const p = selPrestamos.find(x => x.id === Number(par.prestamo_id));
+        const d = selDevoluciones.find(x => x.id === Number(par.devolucion_id));
+        return `• ${p.documento_contable} (${p.clinica_nombre || 'sin tercero'}) ↔ ${d.documento_contable} (${d.clinica_nombre || 'sin tercero'})`;
+      }).join('\n');
+      if (!window.confirm(`ATENCIÓN: vas a cruzar documentos de TERCEROS DISTINTOS:\n\n${txt}\n\nEsto descuadra el saldo de ambos terceros. Solo continúa si es un acuerdo real entre las partes. ¿Registrar de todos modos?`)) return;
+    }
 
     setSaving(true); setError('');
     try {
@@ -3106,6 +3129,9 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginTop: 4 }}>
                   {d.clinica_nombre} · {fmtFecha(d.fecha)} · {totalItems(d)} uds
+                  {selPrestamos.length > 0 && !tercerosPrestSel.has(terceroDe(d)) && (
+                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: '#ef4444' }}>⚠ otro tercero</span>
+                  )}
                 </div>
                 {d.observaciones && (
                   <div style={{ fontSize: 10, color: 'var(--t-text-muted)', marginTop: 2, opacity: 0.7, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>
@@ -3180,6 +3206,16 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               </>
             )}
           </div>
+
+          {devolucionesOtroTercero.length > 0 && (
+            <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', fontSize: 12, color: '#ef4444' }}>
+              <b>⚠ Tercero distinto:</b> {devolucionesOtroTercero.map(d => `${d.documento_contable} es de ${d.clinica_nombre || 'sin tercero'}`).join(' · ')}
+              {', pero el préstamo seleccionado es de '}{[...new Set(selPrestamos.map(p => p.clinica_nombre || 'sin tercero'))].join(', ')}.
+              <div style={{ color: 'var(--t-text-muted)', marginTop: 4 }}>
+                Cruzar documentos de terceros distintos descuadra el saldo de ambos. Verifica que hayas elegido la devolución correcta; solo continúa si es un acuerdo real entre las partes.
+              </div>
+            </div>
+          )}
 
           {/* Productos de los préstamos seleccionados — referencia visual
               mientras se asigna, para ver de un vistazo qué código/nombre

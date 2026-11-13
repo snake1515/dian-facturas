@@ -252,3 +252,20 @@ export function calcularPlanAjuste(prestamos = [], cruces = []) {
   });
   return Object.values(terceros);
 }
+
+// Cruces registrados entre un préstamo y una devolución de TERCEROS DISTINTOS.
+// Casi siempre son errores al elegir la devolución en la pestaña Cruces
+// (descuadran el saldo de los dos terceros); se listan para revisarlos.
+export function crucesEntreTerceros(prestamos = [], cruces = []) {
+  const porId = {};
+  (prestamos || []).forEach(p => { porId[p.id] = p; });
+  return (cruces || []).map(c => {
+    const p = porId[c.prestamo_id], d = porId[c.devolucion_id];
+    if (!p || !d || claveTerceroDe(p) === claveTerceroDe(d)) return null;
+    const items = itemsDeCruce(c);
+    // Si la devolución menciona en sus observaciones el préstamo, es más probable que sea intencional
+    const menciona = mencionados(d).has(docNorm(p));
+    return { cruce: c, prestamo: p, devolucion: d, items, menciona,
+      valor: items.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_unitario || 0), 0) };
+  }).filter(Boolean).sort((a, b) => String(a.prestamo.clinica_nombre).localeCompare(String(b.prestamo.clinica_nombre)) || fechaDe(a.prestamo).localeCompare(fechaDe(b.prestamo)));
+}

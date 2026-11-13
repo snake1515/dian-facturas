@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { calcularPlanAjuste } from './planAjusteCalc';
+import { calcularPlanAjuste, crucesEntreTerceros } from './planAjusteCalc';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Plan de ajuste de saldos — todos los terceros.
@@ -54,6 +54,8 @@ function Kpi({ titulo, antes, despues, color }) {
 
 export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
   const plan = useMemo(() => calcularPlanAjuste(prestamos, cruces), [prestamos, cruces]);
+  const entreTerceros = useMemo(() => crucesEntreTerceros(prestamos, cruces), [prestamos, cruces]);
+  const [verEntre, setVerEntre] = useState(false);
   const [q, setQ] = useState('');
   const [abierto, setAbierto] = useState(null);
   const [marcadas, setMarcadas] = useState({}); // id acción -> bool (si no está, usa el valor por defecto del tipo)
@@ -169,6 +171,11 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
     const dev = [];
     lista.forEach(t => t.devSinCruzar.forEach(d => d.items.forEach(i => dev.push([t.nombre, d.devolucion.documento_contable, fechaDe(d.devolucion), i.codigo, i.nombre, Number(i.q), Math.round(i.v)]))));
     hoja('Devoluciones sin cruzar', ['Tercero', 'Devolución', 'Fecha', 'Código', 'Producto', 'Cantidad', 'Valor ($)'], dev, [36, 11, 11, 13, 46, 9, 13]);
+    hoja('Cruces entre terceros', ['Cruce', 'Préstamo', 'Tercero préstamo', 'Fecha préstamo', 'Devolución', 'Tercero devolución', 'Fecha devolución', 'Productos cruzados', 'Valor ($)', '¿La devolución menciona el préstamo?', 'Observaciones devolución'],
+      entreTerceros.map(x => [x.cruce.grupo_numero || '', x.prestamo.documento_contable, x.prestamo.clinica_nombre || '', fechaDe(x.prestamo),
+        x.devolucion.documento_contable, x.devolucion.clinica_nombre || '', fechaDe(x.devolucion),
+        x.items.map(it => `${it.nombre || it.codigo} ×${num(it.cantidad)}`).join('; '), Math.round(x.valor), x.menciona ? 'Sí' : 'No',
+        String(x.devolucion.observaciones || '').substring(0, 300)]), [11, 10, 34, 11, 10, 34, 11, 50, 13, 12, 60]);
     XLSX.writeFile(wb, `plan_ajuste_saldos_${new Date().toISOString().substring(0, 10)}.xlsx`);
   }
 
@@ -198,6 +205,43 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
           <div style={{ fontSize: 12, color: 'var(--t-text-muted)' }}>sin préstamo que coincida: revisar a mano</div>
         </div>
       </div>
+
+      {entreTerceros.length > 0 && (
+        <div style={{ ...card, borderColor: '#ef4444' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div>
+              <b style={{ color: '#ef4444', fontSize: 14 }}>⚠ {entreTerceros.length} cruce(s) entre terceros distintos</b>
+              <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>
+                Préstamos pagados con la devolución de otro tercero ({cop(entreTerceros.reduce((s, x) => s + x.valor, 0))}). Casi siempre es un error al elegir la devolución y descuadra el saldo de ambos terceros.
+                Revisa los soportes: si es un error, revierte el cruce en Historial de Cruces y crúzalo con la devolución correcta.
+              </div>
+            </div>
+            <button style={btn} onClick={() => setVerEntre(v => !v)}>{verEntre ? 'Ocultar' : 'Ver cuáles'}</button>
+          </div>
+          {verEntre && (
+            <div style={{ overflowX: 'auto', maxHeight: 420, overflowY: 'auto', marginTop: 10 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr><th style={th}>Cruce</th><th style={th}>Préstamo</th><th style={th}>Devolución</th><th style={th}>Productos cruzados</th><th style={{ ...th, ...r }}>Valor</th><th style={th}>Observación de la devolución</th></tr></thead>
+                <tbody>
+                  {entreTerceros.map(x => (
+                    <tr key={x.cruce.id}>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>{x.cruce.grupo_numero || '—'}</td>
+                      <td style={td}><b>{x.prestamo.documento_contable}</b><div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{x.prestamo.clinica_nombre} · {fechaDe(x.prestamo)}</div></td>
+                      <td style={td}><b>{x.devolucion.documento_contable}</b><div style={{ fontSize: 11, color: '#ef4444' }}>{x.devolucion.clinica_nombre} · {fechaDe(x.devolucion)}</div></td>
+                      <td style={{ ...td, fontSize: 12 }}>{x.items.length ? x.items.map((it, i) => <div key={i}>{it.nombre || it.codigo} <b>×{num(it.cantidad)}</b></div>) : <span style={{ color: 'var(--t-text-muted)' }}>(sin productos)</span>}</td>
+                      <td style={{ ...td, ...r }}>{cop(x.valor)}</td>
+                      <td style={{ ...td, fontSize: 11, color: 'var(--t-text-muted)', maxWidth: 360 }}>
+                        {x.menciona && <div style={{ color: '#15803d', fontWeight: 700 }}>✓ La devolución menciona este préstamo</div>}
+                        {String(x.devolucion.observaciones || '').substring(0, 220)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {(aplicando || resultado) && (
         <div style={{ ...card, borderColor: aplicando ? 'var(--t-accent)' : (resultado.errores.length ? '#ef4444' : '#22c55e') }}>
