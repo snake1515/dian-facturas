@@ -552,7 +552,55 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
   // ── PDF: listado de documentos de un tercero ────────────────────────────
   // Arma una página lista para imprimir y abre el diálogo del navegador,
   // donde se elige "Guardar como PDF" (no requiere librerías adicionales).
+  // Estado de cuenta (saldo real según cruces): documentos con saldo de cada lado.
+  function imprimirEstadoCuentaPdf(det) {
+    const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const seccion = (lado, titulo, color) => {
+      const ds = det.docs.filter(d => d.lado === lado).sort((a, b) => a.fecha.localeCompare(b.fecha));
+      const tq = ds.reduce((a, d) => a + d.valorQ, 0), tv = ds.reduce((a, d) => a + d.valorV, 0);
+      const filas = ds.map(d => d.pendientes.map((x, i) => `<tr>
+        ${i === 0 ? `<td class="nw" rowspan="${d.pendientes.length}">${esc(d.fecha)}</td><td rowspan="${d.pendientes.length}"><b>${esc(d.doc)}</b></td>` : ''}
+        <td class="nw">${esc(x.codigo)}</td><td>${esc(x.nombre)}</td><td class="r nw">${esc(num(x.q))}</td><td class="r nw">${esc(cop(x.v))}</td></tr>`).join('')).join('');
+      return `<h2 style="color:${color}">${esc(titulo)} · ${ds.length} documento(s) · ${esc(num(tq))} und · ${esc(cop(tv))}</h2>
+        <table><thead><tr><th>Fecha</th><th>Documento</th><th>Código</th><th>Producto pendiente</th><th class="r">Cant.</th><th class="r">Valor</th></tr></thead>
+        <tbody>${filas || '<tr><td colspan="6">Sin documentos con saldo.</td></tr>'}</tbody>
+        <tfoot><tr><td colspan="4"><b>Total</b></td><td class="r nw"><b>${esc(num(tq))}</b></td><td class="r nw"><b>${esc(cop(tv))}</b></td></tr></tfoot></table>`;
+    };
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Estado de cuenta ${esc(det.nombre)}</title>
+      <style>
+        @page { size: letter; margin: 14mm 12mm 16mm; }
+        body { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 11px; margin: 0; }
+        h1 { font-size: 16px; margin: 0 0 4px; } h2 { font-size: 13px; margin: 18px 0 6px; }
+        .f { color: #555; font-size: 10px; margin-bottom: 8px; }
+        .tot { font-size: 12px; margin: 6px 0 4px; } .tot b { margin-right: 14px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f1f5f9; text-align: left; font-size: 10px; text-transform: uppercase; padding: 6px; border-bottom: 1.5px solid #94a3b8; }
+        td { padding: 5px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+        tfoot td { border-top: 1.5px solid #94a3b8; }
+        thead { display: table-header-group; } tr { page-break-inside: avoid; }
+        .r { text-align: right; } .nw { white-space: nowrap; }
+      </style></head><body>
+      <h1>Estado de cuenta de préstamos · ${esc(det.nombre)}</h1>
+      <div class="f">Saldo real según cruces · ${esc(textoFiltrosExcel())}</div>
+      <div class="tot"><b style="color:${C_NOS}">Nos debe ${esc(cop(det.sV ? det.sV.nos : det.nos))}</b><b style="color:${C_DEB}">Le debemos ${esc(cop(det.sV ? det.sV.deb : det.deb))}</b><b>Neto ${esc(cop(det.sV ? det.sV.neto : det.neto))}</b></div>
+      ${seccion('nos', 'Lo que nos debe (EPO pendientes)', C_NOS)}
+      ${seccion('deb', 'Lo que le debemos (IPE pendientes)', C_DEB)}
+      </body></html>`;
+    const fr = document.createElement('iframe');
+    fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(fr);
+    const w = fr.contentWindow;
+    w.document.open(); w.document.write(html); w.document.close();
+    const prevTitle = document.title;
+    document.title = `Estado de cuenta ${det.nombre}`.replace(/[\\/:*?"<>|]/g, '');
+    setTimeout(() => {
+      w.focus(); w.print();
+      setTimeout(() => { document.title = prevTitle; fr.remove(); }, 1000);
+    }, 250);
+  }
+
   function imprimirDocsPdf(det) {
+    if (esCruces) return imprimirEstadoCuentaPdf(det);
     const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const docs = [...det.docs].sort((a, b) => b.fecha.localeCompare(a.fecha));
     const filas = docs.map(d => `<tr>
