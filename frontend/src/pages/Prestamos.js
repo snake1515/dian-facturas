@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import * as XLSX from 'xlsx';
 import SaldosTerceros from './prestamos/SaldosTerceros';
+import PlanAjuste from './prestamos/PlanAjuste';
 
 // ─── Constantes ────────────────────────────────────────────────────────────────
 
@@ -387,6 +388,7 @@ export default function Prestamos() {
     { id: 'reportes',    label: 'Reportes' },
     { id: 'dashboard',   label: 'Dashboard' },
     { id: 'saldos_terceros', label: 'Saldos por tercero' },
+    { id: 'plan_ajuste', label: 'Plan de ajuste' },
     { id: 'pendientes_cierre', label: 'Pendientes de cierre' },
   ];
 
@@ -427,6 +429,7 @@ export default function Prestamos() {
           {activeTab === 'soportes_pendientes' && <TabSoportesPendientes onRefresh={cargarDatos} />}
           {activeTab === 'reportes'    && <TabReportes prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} />}
           {activeTab === 'saldos_terceros' && <SaldosTerceros prestamos={prestamos} clinicas={clinicas} cruces={cruces} />}
+          {activeTab === 'plan_ajuste' && <PlanAjuste prestamos={prestamos} cruces={cruces} onRefresh={cargarDatos} />}
           {activeTab === 'dashboard'   && (
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
               <DashboardPrestamosInteractivo prestamos={prestamos} devoluciones={devoluciones} cruces={cruces} clinicas={clinicas} productos={productos} onRefresh={cargarDatos} />
