@@ -277,11 +277,14 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
         const skAb = sk === 'epo' ? 'idp' : 'ed';  // columna de lo abonado
         let presV = 0, presQ = 0, pendV = 0, pendQ = 0;
         const pendientes = [];
+        const productos = []; // todos los productos del préstamo (cerrados incluidos), para los Excel
         lista.forEach(c => {
           const pu = c.q ? c.v / c.q : 0;
           const pq = Math.max(0, c.q - (abon[c.codigo] || 0));
           const pv = pq * pu;
           presV += c.v; presQ += c.q; pendV += pv; pendQ += pq;
+          productos.push({ codigo: c.codigo, nombre: c.nombre, presQ: c.q, presV: c.v, devQ: c.q - pq, devV: c.v - pv, pendQ: pq, pendV: pv,
+            estado: pq <= TOL ? 'cerrado' : (c.q - pq <= TOL ? 'abierto' : 'parcial') });
           if (pq > TOL) {
             pendientes.push({ codigo: c.codigo, nombre: c.nombre, q: pq, v: pv });
             const pk = String(c.codigo || c.nombre || '—');
@@ -296,8 +299,14 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
         T.V[skAb] += presV - pendV; T.Q[skAb] += presQ - pendQ;
         // Estado real según los cruces (no la etiqueta guardada en el documento)
         const estadoReal = pendQ <= TOL ? 'cerrado' : (presQ - pendQ <= TOL ? 'abierto' : 'parcial');
+        // Con qué devoluciones se cruzó (y en qué consecutivo CRU)
+        const devolucionesTxt = [
+          ...devsLegado.filter(d => d.prestamo_id === p.id && fechaDe(d) <= fin).map(d => d.documento_contable),
+          ...(cruces || []).filter(c => c.prestamo_id === p.id && (!devPorId[c.devolucion_id] || fechaDe(devPorId[c.devolucion_id]) <= fin))
+            .map(c => c.devolucion_doc + (c.grupo_numero ? ` (${c.grupo_numero})` : '')),
+        ].join(', ');
         T.prestamosTodos.push({ id: p.id, fecha: f, doc: p.documento_contable, sigla: t.sigla, lado: t.lado, estadoReal,
-          presQ, presV, pendQ, pendV, abonadoV: presV - pendV, pendientes });
+          presQ, presV, pendQ, pendV, abonadoV: presV - pendV, pendientes, productos, devolucionesTxt, tercero: T.nombre });
         if (pendQ > TOL) {
           T.docs.push({ id: p.id, fecha: f, doc: p.documento_contable, sigla: t.sigla,
             txt: 'Pendiente: ' + pendientes.map(x => `${x.nombre || x.codigo} ×${num(x.q)}`).join('; '),
@@ -533,6 +542,26 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
   }
 
   // ── Excel: documentos y productos de un tercero ─────────────────────────
+  // Filas de "todos los documentos" (cerrados, parciales y abiertos) y de su detalle por producto.
+  const ETQ = { abierto: 'Abierto', parcial: 'Parcial', cerrado: 'Cerrado' };
+  const colsDocsTodos = [{ h: 'Tercero', w: 34 }, { h: 'Documento', w: 11 }, { h: 'Fecha', w: 11 }, { h: 'Estado', w: 9 },
+    { h: 'Prestado (und)', t: 'num', w: 11 }, { h: 'Devuelto (und)', t: 'num', w: 11 }, { h: 'Pendiente (und)', t: 'num', w: 11 },
+    { h: 'Prestado ($)', t: 'cop', w: 14 }, { h: 'Devuelto ($)', t: 'cop', w: 14 }, { h: 'Pendiente ($)', t: 'cop', w: 14 },
+    { h: 'Cruzado con (devoluciones)', w: 50 }];
+  const filaDocTodos = d => [d.tercero, d.doc, d.fecha, ETQ[d.estadoReal], Number(d.presQ), Number(d.presQ - d.pendQ), Number(d.pendQ),
+    Math.round(d.presV), Math.round(d.abonadoV), Math.round(d.pendV), d.devolucionesTxt || ''];
+  const colsProdTodos = [{ h: 'Tercero', w: 30 }, { h: 'Documento', w: 11 }, { h: 'Fecha', w: 11 }, { h: 'Estado doc.', w: 10 },
+    { h: 'Código', w: 13 }, { h: 'Producto', w: 44 }, { h: 'Estado producto', w: 10 },
+    { h: 'Prestado (und)', t: 'num', w: 10 }, { h: 'Devuelto (und)', t: 'num', w: 10 }, { h: 'Pendiente (und)', t: 'num', w: 10 },
+    { h: 'Prestado ($)', t: 'cop', w: 13 }, { h: 'Devuelto ($)', t: 'cop', w: 13 }, { h: 'Pendiente ($)', t: 'cop', w: 13 }];
+  const filasProdTodos = ds => {
+    const out = [];
+    ds.forEach(d => (d.productos || []).forEach(x => out.push([d.tercero, d.doc, d.fecha, ETQ[d.estadoReal], x.codigo, x.nombre, ETQ[x.estado],
+      Number(x.presQ), Number(x.devQ), Number(x.pendQ), Math.round(x.presV), Math.round(x.devV), Math.round(x.pendV)])));
+    return out;
+  };
+  const ordenDocs = (a, b) => (a.tercero || '').localeCompare(b.tercero || '') || a.fecha.localeCompare(b.fecha);
+
   // Estado de cuenta en Excel (saldo real según cruces).
   function exportarEstadoCuentaExcel(det) {
     const wb = XLSX.utils.book_new();
@@ -563,6 +592,13 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
     XLSX.utils.book_append_sheet(wb, wsR, 'Resumen');
     agregarHoja(wb, 'Nos debe', cols, fNos, `Lo que nos debe ${det.nombre} (EPO pendientes)`, sub);
     agregarHoja(wb, 'Le debemos', cols, fDeb, `Lo que le debemos a ${det.nombre} (IPE pendientes)`, sub);
+    const todosT = [...(det.prestamosTodos || [])].sort(ordenDocs);
+    agregarHoja(wb, 'Todos EPO (nos deben)', colsDocsTodos, todosT.filter(d => d.lado === 'nos').map(filaDocTodos),
+      `Todos los préstamos que le hicimos a ${det.nombre} (EPO): cerrados, parciales y abiertos`, sub);
+    agregarHoja(wb, 'Todos IPE (debemos)', colsDocsTodos, todosT.filter(d => d.lado === 'deb').map(filaDocTodos),
+      `Todos los préstamos que nos hizo ${det.nombre} (IPE): cerrados, parciales y abiertos`, sub);
+    agregarHoja(wb, 'Detalle por producto', colsProdTodos, filasProdTodos(todosT),
+      `Detalle por producto de todos los préstamos con ${det.nombre}`, sub);
     if ((det.devSinCruzar || []).length) {
       agregarHoja(wb, 'Devoluciones sin cruzar', [{ h: 'Fecha', w: 11 }, { h: 'Documento', w: 12 }, { h: 'Tipo', w: 6 }, { h: 'Productos sin cruzar', w: 80 },
         { h: 'Unidades', t: 'num', w: 10 }, { h: 'Valor ($)', t: 'cop', w: 15 }],
@@ -1109,7 +1145,14 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
           };
           agregarHoja(wb, 'Nos deben (EPO)', cols, filasDe('nos'), 'Documentos pendientes que nos deben devolver (EPO)', textoFiltrosExcel() + ' · Saldo real según cruces');
           agregarHoja(wb, 'Debemos devolver (IPE)', cols, filasDe('deb'), 'Documentos pendientes que debemos devolver nosotros (IPE)', textoFiltrosExcel() + ' · Saldo real según cruces');
-          XLSX.writeFile(wb, `documentos_pendientes_${hasta || hoy}.xlsx`);
+          const todosDocs = datos.lista.flatMap(t => t.prestamosTodos || []).sort(ordenDocs);
+          agregarHoja(wb, 'Todos EPO', colsDocsTodos, todosDocs.filter(d => d.lado === 'nos').map(filaDocTodos),
+            'Todos los préstamos que hicimos (EPO): cerrados, parciales y abiertos', textoFiltrosExcel() + ' · Saldo real según cruces');
+          agregarHoja(wb, 'Todos IPE', colsDocsTodos, todosDocs.filter(d => d.lado === 'deb').map(filaDocTodos),
+            'Todos los préstamos que recibimos (IPE): cerrados, parciales y abiertos', textoFiltrosExcel() + ' · Saldo real según cruces');
+          agregarHoja(wb, 'Detalle por producto', colsProdTodos, filasProdTodos(todosDocs),
+            'Detalle por producto de todos los préstamos (EPO e IPE)', textoFiltrosExcel() + ' · Saldo real según cruces');
+          XLSX.writeFile(wb, `documentos_prestamos_${hasta || hoy}.xlsx`);
         }
         return (
           <div style={card}>
