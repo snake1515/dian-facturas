@@ -2832,6 +2832,14 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       return;
     }
 
+    // Una línea con cantidad pero sin préstamo destino (multicruce) se
+    // ignoraba en silencio: ahora se avisa para que no quede sin cruzar.
+    const sinDestino = filasAsignacion.filter(f => (Number(f.cantidad) || 0) > 0 && !f.prestamo_id);
+    if (sinDestino.length > 0) {
+      setError('Elige a qué préstamo va cada producto con cantidad: ' + sinDestino.map(f => `${f.devolucion_doc} — ${f.nombre}`).join(' · '));
+      return;
+    }
+
     // Agrupar filas válidas (con préstamo destino y cantidad > 0) en pares
     // préstamo↔devolución, cada uno con exactamente los productos/cantidades
     // que el usuario asignó ahí — así un mismo producto puede terminar
@@ -2852,7 +2860,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     }
     const pares = Object.values(gruposMap);
     if (pares.length === 0) {
-      setError('Asigna una cantidad mayor a cero a algún préstamo'); return;
+      setError('No has seleccionado ningún producto: asigna una cantidad mayor a cero a al menos un producto antes de registrar el cruce.'); return;
     }
 
     // Sobrante: por cada devolución, cuánto de cada producto quedó sin
@@ -3424,12 +3432,26 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
 
           {error && <div style={{ color: '#ef4444', fontSize: 12, marginBottom: 8 }}>{error}</div>}
 
-          <button onClick={cruzar} disabled={saving} style={{
-            padding: '8px 20px', background: 'var(--t-accent)', color: '#fff',
-            border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-          }}>
-            {saving ? 'Guardando…' : '🔗 Registrar cruce'}
-          </button>
+          {(() => {
+            const hayProductos = filasAsignacion.some(f => (Number(f.cantidad) || 0) > 0);
+            return (
+              <>
+                <button onClick={cruzar} disabled={saving || !hayProductos}
+                  title={hayProductos ? '' : 'Asigna una cantidad mayor a cero a al menos un producto'}
+                  style={{
+                    padding: '8px 20px', background: hayProductos ? 'var(--t-accent)' : 'var(--t-border)', color: '#fff',
+                    border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: hayProductos ? 'pointer' : 'not-allowed',
+                  }}>
+                  {saving ? 'Guardando…' : '🔗 Registrar cruce'}
+                </button>
+                {!hayProductos && (
+                  <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--t-text-muted)' }}>
+                    Asigna una cantidad a al menos un producto para poder registrar el cruce.
+                  </span>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 

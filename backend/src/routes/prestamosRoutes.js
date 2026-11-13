@@ -1262,6 +1262,22 @@ router.post('/cruces', async (req, res) => {
     if (!Array.isArray(pares) || pares.length === 0)
       return res.status(400).json({ error: 'Se requiere al menos un par préstamo/devolución' });
 
+    // No se permite registrar cruces sin productos: cada par debe traer al
+    // menos un producto (código) con cantidad mayor a cero. Un cruce sin
+    // detalle de productos quedaba guardado vacío (o en NULL, que el resto
+    // del sistema interpreta como "todo el documento"), y era la causa de
+    // préstamos que figuraban cruzados pero seguían con todo pendiente.
+    for (const par of pares) {
+      const items = par.items_cruzados;
+      const validos = Array.isArray(items) ? items.filter(it => it && it.codigo && Number(it.cantidad) > 0) : [];
+      if (validos.length === 0) {
+        return res.status(400).json({ error: 'No se puede registrar un cruce sin productos: asigna una cantidad mayor a cero a al menos un producto de cada préstamo/devolución.' });
+      }
+      if (validos.length !== items.length) {
+        return res.status(400).json({ error: 'Hay productos del cruce sin código o con cantidad en cero; revisa las cantidades antes de registrar.' });
+      }
+    }
+
     const client = await pool.connect();
     let numero, documentos = [];
     try {
