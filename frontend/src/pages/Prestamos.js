@@ -1249,7 +1249,10 @@ function DetallePrestamoModal({ prestamo, devoluciones, cruces = [], prestamos =
                           {productosCruzados.map((it, i) => (
                             <tr key={i}>
                               <td style={{ padding: '4px 8px', fontSize: 12, fontFamily: 'monospace', color: 'var(--t-text-muted)' }}>{it.codigo}</td>
-                              <td style={{ padding: '4px 8px', fontSize: 12 }}>{it.nombre}</td>
+                              <td style={{ padding: '4px 8px', fontSize: 12 }}>
+                                {it.nombre}
+                                {etiquetaCruceManual(it) && <div style={{ fontSize: 11, color: '#3b82f6' }}>{etiquetaCruceManual(it)}</div>}
+                              </td>
                               <td style={{ padding: '4px 8px', fontSize: 12, textAlign: 'right' }}>{it.cantidad}</td>
                             </tr>
                           ))}
@@ -2542,7 +2545,41 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     setFilasAsignacion(prev => prev.map(f => f.id === id ? { ...f, [campo]: valor } : f));
   }
   function agregarFilaExtra(filaBase) {
-    setFilasAsignacion(prev => [...prev, { ...filaBase, id: `${filaBase.id}_${Date.now()}`, prestamo_id: '', cantidad: 0 }]);
+    setFilasAsignacion(prev => [...prev, { ...filaBase, id: `${filaBase.id}_${Date.now()}`, prestamo_id: '', cantidad: 0, codigo_prestamo: '', nombre_prestamo: '' }]);
+  }
+
+  // Cruce manual ítem por ítem: SOLO para los productos de la devolución que
+  // no están pendientes en ninguno de los préstamos elegidos (las ED/IDP a
+  // veces ingresan con un código distinto al que salió en el EPO/IPE). Se
+  // elige contra qué ítem pendiente del préstamo se aplica esa cantidad; se
+  // guarda en items_cruzados como codigo_prestamo/nombre_prestamo, y el
+  // saldo del préstamo se descuenta de ese código.
+  // valor = '' (quitar) o `${prestamo_id}|${codigo}`.
+  function asignarCruceManual(fila, valor, disponibleDevol) {
+    setFilasAsignacion(prev => {
+      if (!valor) {
+        return prev.map(f => f.id === fila.id ? { ...f, prestamo_id: '', codigo_prestamo: '', nombre_prestamo: '', cantidad: 0 } : f);
+      }
+      const sep = valor.indexOf('|');
+      const pid = Number(valor.substring(0, sep));
+      const codP = valor.substring(sep + 1);
+      const prest = selPrestamos.find(p => p.id === pid);
+      const itemP = prest ? itemsPendientesDe(prest, devoluciones, cruces).find(i => i.codigo === codP) : null;
+      if (!itemP) return prev;
+      // Lo que ese ítem del préstamo todavía puede recibir, descontando lo
+      // que otras líneas de ESTE cruce ya le están asignando.
+      const yaAsignadoAlItem = prev
+        .filter(f => f.id !== fila.id && Number(f.prestamo_id) === pid && (f.codigo_prestamo || f.codigo) === codP)
+        .reduce((a, f) => a + (Number(f.cantidad) || 0), 0);
+      // Y lo que queda de este producto de la devolución sin repartir en otras líneas.
+      const yaUsadoDevol = prev
+        .filter(f => f.id !== fila.id && f.devolucion_id === fila.devolucion_id && f.codigo === fila.codigo)
+        .reduce((a, f) => a + (Number(f.cantidad) || 0), 0);
+      const cant = Math.max(0, Math.min(itemP.pendiente - yaAsignadoAlItem, disponibleDevol - yaUsadoDevol));
+      return prev.map(f => f.id === fila.id
+        ? { ...f, prestamo_id: pid, codigo_prestamo: codP, nombre_prestamo: itemP.nombre, cantidad: cant }
+        : f);
+    });
   }
   function quitarFila(id) {
     setFilasAsignacion(prev => prev.filter(f => f.id !== id));
@@ -2714,11 +2751,11 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       const asignadoPorCodigo = {};
       filasAsignacion
         .filter(f => Number(f.prestamo_id) === p.id && (Number(f.cantidad) || 0) > 0)
-        .forEach(f => { asignadoPorCodigo[f.codigo] = (asignadoPorCodigo[f.codigo] || 0) + Number(f.cantidad); });
+        .forEach(f => { const cod = f.codigo_prestamo || f.codigo; asignadoPorCodigo[cod] = (asignadoPorCodigo[cod] || 0) + Number(f.cantidad); });
       Object.entries(asignadoPorCodigo).forEach(([codigo, cant]) => {
         const disponible = pendientePorCodigo[codigo] || 0;
         if (cant > disponible) {
-          const nombre = filasAsignacion.find(f => f.codigo === codigo)?.nombre || codigo;
+          const nombre = (p.items || []).find(i => i.codigo === codigo)?.nombre || filasAsignacion.find(f => f.codigo === codigo)?.nombre || codigo;
           excesos.push(`${p.documento_contable} — ${nombre}: intentas asignar ${cant} uds pero solo tiene ${disponible} pendiente(s)`);
         }
       });
@@ -2738,7 +2775,13 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       if (!f.prestamo_id || cant <= 0) continue;
       const key = `${f.prestamo_id}_${f.devolucion_id}`;
       if (!gruposMap[key]) gruposMap[key] = { prestamo_id: f.prestamo_id, devolucion_id: f.devolucion_id, items_cruzados: [] };
-      gruposMap[key].items_cruzados.push({ codigo: f.codigo, nombre: f.nombre, cantidad: cant, precio_unitario: f.precio_unitario });
+      const itemCruce = { codigo: f.codigo, nombre: f.nombre, cantidad: cant, precio_unitario: f.precio_unitario };
+      // Cruce manual: se guarda a qué ítem del préstamo se aplicó
+      if (f.codigo_prestamo && f.codigo_prestamo !== f.codigo) {
+        itemCruce.codigo_prestamo = f.codigo_prestamo;
+        itemCruce.nombre_prestamo = f.nombre_prestamo || '';
+      }
+      gruposMap[key].items_cruzados.push(itemCruce);
     }
     const pares = Object.values(gruposMap);
     if (pares.length === 0) {
@@ -2769,7 +2812,8 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     const sobranteDetalle = [];
     selDevoluciones.forEach(d => {
       (d.items || []).forEach(item => {
-        if (!codigosPendientesSeleccionados.has(item.codigo)) return; // no le pertenece a ningún préstamo de esta acción: se deja pendiente, no es sobrante
+        const tieneCruceManual = filasAsignacion.some(f => f.devolucion_id === d.id && f.codigo === item.codigo && f.codigo_prestamo);
+        if (!codigosPendientesSeleccionados.has(item.codigo) && !tieneCruceManual) return; // no le pertenece a ningún préstamo de esta acción: se deja pendiente, no es sobrante
         const asignadoAntes = cruces
           .filter(c => c.devolucion_id === d.id)
           .flatMap(c => c.items_cruzados || [])
@@ -3121,8 +3165,9 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                   const asignado = filasItem.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
                   const sobra = disponible - asignado;
                   const noPerteneceASeleccion = selPrestamos.length > 0 && !codigosPendientesSeleccionados.has(item.codigo);
+                  const conCruceManual = noPerteneceASeleccion && filasItem.some(f => f.codigo_prestamo);
                   return (
-                    <div key={item.codigo} style={{ marginBottom: 8, padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 6, border: noPerteneceASeleccion ? '1px solid #ef4444' : 'none' }}>
+                    <div key={item.codigo} style={{ marginBottom: 8, padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 6, border: conCruceManual ? '1px solid #3b82f6' : noPerteneceASeleccion ? '1px solid #ef4444' : 'none' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 6 }}>
                         <span style={{ fontFamily: 'monospace', color: 'var(--t-text-muted)', minWidth: 90 }}>{item.codigo}</span>
                         <span style={{ flex: 1, color: 'var(--t-text-primary)' }}>{item.nombre}</span>
@@ -3130,12 +3175,53 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                           disponible: {disponible}{disponible !== Number(item.cantidad) ? ` de ${item.cantidad}` : ''}
                         </span>
                       </div>
-                      {noPerteneceASeleccion && (
+                      {noPerteneceASeleccion && !conCruceManual && (
                         <div style={{ fontSize: 11, color: '#ef4444', marginBottom: 6 }}>
                           ⚠ Ninguno de los préstamos seleccionados tiene este producto pendiente — probablemente pertenezca a otro préstamo. Verifica antes de asignarle cantidad.
+                          <div style={{ color: 'var(--t-text-muted)', marginTop: 2 }}>
+                            Si la devolución ingresó con un código distinto al del préstamo, elige abajo contra qué ítem del préstamo se cruza.
+                          </div>
                         </div>
                       )}
-                      {filasItem.map((fila, idx) => (
+                      {conCruceManual && (
+                        <div style={{ fontSize: 11, color: '#3b82f6', marginBottom: 6 }}>
+                          ↔ Cruce manual: el código devuelto es distinto, se aplicará contra el ítem del préstamo elegido.
+                        </div>
+                      )}
+                      {noPerteneceASeleccion && filasItem.map((fila, idx) => (
+                        <div key={fila.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, marginLeft: 14, flexWrap: 'wrap' }}>
+                          <select value={fila.codigo_prestamo ? `${fila.prestamo_id}|${fila.codigo_prestamo}` : ''}
+                            onChange={e => asignarCruceManual(fila, e.target.value, disponible)}
+                            style={{ padding: '4px 6px', fontSize: 11, borderRadius: 5, border: '1px solid ' + (fila.codigo_prestamo ? '#3b82f6' : 'var(--t-border)'), background: 'var(--t-bg-card)', color: 'var(--t-text-primary)', maxWidth: 520, flex: '1 1 320px' }}>
+                            <option value="">— cruzar manualmente contra ítem del préstamo —</option>
+                            {selPrestamos.map(p => (
+                              <optgroup key={p.id} label={p.documento_contable}>
+                                {itemsPendientesDe(p, devoluciones, cruces).map(ip => (
+                                  <option key={ip.codigo} value={`${p.id}|${ip.codigo}`}>
+                                    {ip.codigo} — {ip.nombre} (pendiente: {ip.pendiente})
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ))}
+                          </select>
+                          <input type="number" min={0} max={disponible} value={fila.cantidad}
+                            disabled={!fila.codigo_prestamo}
+                            onChange={e => actualizarFila(fila.id, 'cantidad', Number(e.target.value))}
+                            style={{ width: 64, padding: '4px 6px', fontSize: 11, borderRadius: 5, border: '1px solid var(--t-border)', background: 'var(--t-bg-card)', color: 'var(--t-text-primary)', opacity: fila.codigo_prestamo ? 1 : 0.5 }} />
+                          <span style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>uds</span>
+                          {filasItem.length > 1 && (
+                            <button onClick={() => quitarFila(fila.id)} title="Quitar esta línea"
+                              style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 13 }}>✕</button>
+                          )}
+                          {idx === filasItem.length - 1 && fila.codigo_prestamo && sobra > 0 && (
+                            <button onClick={() => agregarFilaExtra(fila)}
+                              style={{ fontSize: 11, color: 'var(--t-accent)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                              + repartir a otro ítem
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      {!noPerteneceASeleccion && filasItem.map((fila, idx) => (
                         <div key={fila.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, marginLeft: 14, flexWrap: 'wrap' }}>
                           {selPrestamos.length > 1 && (
                             <select value={fila.prestamo_id}
@@ -3161,7 +3247,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                           )}
                         </div>
                       ))}
-                      {sobra > 0 && (
+                      {sobra > 0 && (!noPerteneceASeleccion || conCruceManual) && (
                         <div style={{ marginLeft: 14, marginTop: 4, fontSize: 11, color: '#f59e0b' }}>
                           ⚠ {sobra} unidad(es) de {item.nombre} sin asignar — quedará marcado como sobrante
                         </div>
@@ -3369,12 +3455,14 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
     }
   }
 
-  function actualizarCantidadEditItem(codigo, valor) {
-    setEditItems(prev => prev.map(it => it.codigo === codigo ? { ...it, cantidad: valor } : it));
+  // Por posición (no por código): con el cruce manual un mismo código
+  // devuelto puede aparecer en varias líneas aplicadas a ítems distintos.
+  function actualizarCantidadEditItem(idx, valor) {
+    setEditItems(prev => prev.map((it, i) => i === idx ? { ...it, cantidad: valor } : it));
   }
 
-  function quitarEditItem(codigo) {
-    setEditItems(prev => prev.filter(it => it.codigo !== codigo));
+  function quitarEditItem(idx) {
+    setEditItems(prev => prev.filter((_, i) => i !== idx));
   }
 
   async function guardarEdicionCruce() {
@@ -3485,7 +3573,7 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
       const devueltoPorCodigo = {};
       (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
         const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
-        items.forEach(it => { devueltoPorCodigo[it.codigo] = (devueltoPorCodigo[it.codigo] || 0) + Number(it.cantidad); });
+        items.forEach(it => { const cod = it.codigo_prestamo || it.codigo; devueltoPorCodigo[cod] = (devueltoPorCodigo[cod] || 0) + Number(it.cantidad); });
       });
       totalesPorCodigo(p.items).forEach(item => {
         const devuelto = devueltoPorCodigo[item.codigo] || 0;
@@ -3845,10 +3933,13 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
                             if (itemsMostrar.length === 0) {
                               return <tr><td colSpan={3} style={{ padding: '6px 8px', color: 'var(--t-text-muted)' }}>Sin items registrados</td></tr>;
                             }
-                            return itemsMostrar.map(item => (
-                              <tr key={item.codigo}>
+                            return itemsMostrar.map((item, ix) => (
+                              <tr key={`${item.codigo}_${item.codigo_prestamo || ''}_${ix}`}>
                                 <td style={{ padding: '4px 8px', color: 'var(--t-text-primary)', fontFamily: 'monospace' }}>{item.codigo}</td>
-                                <td style={{ padding: '4px 8px', color: 'var(--t-text-primary)' }}>{item.nombre}</td>
+                                <td style={{ padding: '4px 8px', color: 'var(--t-text-primary)' }}>
+                                  {item.nombre}
+                                  {etiquetaCruceManual(item) && <div style={{ fontSize: 11, color: '#3b82f6' }}>{etiquetaCruceManual(item)}</div>}
+                                </td>
                                 <td style={{ padding: '4px 8px', color: 'var(--t-text-muted)' }}>{item.cantidad}</td>
                               </tr>
                             ));
@@ -3939,17 +4030,20 @@ function TabHistorialCruces({ prestamos, cruces, productos, clinicas, onRefresh 
                     {editItems.length === 0 && (
                       <tr><td colSpan={4} style={{ padding: 12, textAlign: 'center', color: 'var(--t-text-muted)' }}>Sin productos — se eliminarán todos si guardas así.</td></tr>
                     )}
-                    {editItems.map(it => (
-                      <tr key={it.codigo} style={{ borderTop: '1px solid var(--t-border)' }}>
+                    {editItems.map((it, idx) => (
+                      <tr key={`${it.codigo}_${it.codigo_prestamo || ''}_${idx}`} style={{ borderTop: '1px solid var(--t-border)' }}>
                         <td style={{ padding: '5px 8px' }}>{it.codigo}</td>
-                        <td style={{ padding: '5px 8px' }}>{it.nombre}</td>
+                        <td style={{ padding: '5px 8px' }}>
+                          {it.nombre}
+                          {etiquetaCruceManual(it) && <div style={{ fontSize: 11, color: '#3b82f6' }}>{etiquetaCruceManual(it)}</div>}
+                        </td>
                         <td style={{ padding: '5px 8px' }}>
                           <input type="number" min="0" value={it.cantidad}
-                            onChange={e => actualizarCantidadEditItem(it.codigo, e.target.value)}
+                            onChange={e => actualizarCantidadEditItem(idx, e.target.value)}
                             style={{ width: '100%', padding: '4px 6px', border: '1px solid var(--t-border)', borderRadius: 5, fontSize: 12, background: 'var(--t-bg-card)', color: 'var(--t-text-primary)', boxSizing: 'border-box' }} />
                         </td>
                         <td style={{ padding: '5px 8px', textAlign: 'center' }}>
-                          <button onClick={() => quitarEditItem(it.codigo)} title="Quitar este producto del cruce"
+                          <button onClick={() => quitarEditItem(idx)} title="Quitar este producto del cruce"
                             style={{ border: 'none', background: 'transparent', color: '#ef4444', cursor: 'pointer', fontSize: 14 }}>
                             ✕
                           </button>
@@ -5754,8 +5848,20 @@ function construirDetallePrestamo(prestamo, cruces) {
     });
   });
 
+  // Cruces manuales (la devolución entró con otro código): lo aplicado a
+  // mano se suma al código del préstamo elegido. Los ítems normales siguen
+  // contándose exactamente igual que antes (por coincidencia de código).
+  const manualPorCodigo = {};
+  crucesDe.forEach(c => {
+    (c.items_cruzados || []).forEach(it => {
+      if (!it.codigo_prestamo || it.codigo_prestamo === it.codigo) return;
+      pagadoPorCodigo[it.codigo_prestamo] = (pagadoPorCodigo[it.codigo_prestamo] || 0) + Number(it.cantidad);
+      if (!manualPorCodigo[it.codigo_prestamo]) manualPorCodigo[it.codigo_prestamo] = { documento_devolucion: c.devolucion_doc, grupo_numero: c.grupo_numero || '' };
+    });
+  });
+
   // Mapear qué cruce y devolución cubrió cada producto (para el Excel)
-  const crucePorCodigo = {};   // codigo -> { documento_devolucion, grupo_numero }
+  const crucePorCodigo = { ...manualPorCodigo };   // codigo -> { documento_devolucion, grupo_numero }
   devolucionesDoc.forEach(d => {
     (d.items || []).forEach(i => {
       if (!crucePorCodigo[i.codigo]) {
@@ -6069,29 +6175,37 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
     const detalleProductos = [];
     const filasProducto = [];
 
+    // Cruce manual: código devuelto -> código del préstamo al que se aplicó
+    // en ESTE par (solo cuando se registró a mano con códigos distintos).
+    const manualDe = {};
+    (c.items_cruzados || []).forEach(x => {
+      if (x.codigo_prestamo && x.codigo_prestamo !== x.codigo && !manualDe[x.codigo]) manualDe[x.codigo] = x.codigo_prestamo;
+    });
+
     itemsDevueltos.forEach(it => {
       const codigo = it.codigo;
-      const perteneceAlPrestamo = Object.prototype.hasOwnProperty.call(est.saldoPorCodigo, codigo);
-      const precio = est.precioPorCodigo[codigo] != null ? est.precioPorCodigo[codigo] : Number(it.precio_unitario || 0);
+      const codigoP = Object.prototype.hasOwnProperty.call(est.saldoPorCodigo, codigo) ? codigo : (manualDe[codigo] || codigo);
+      const perteneceAlPrestamo = Object.prototype.hasOwnProperty.call(est.saldoPorCodigo, codigoP);
+      const precio = est.precioPorCodigo[codigoP] != null ? est.precioPorCodigo[codigoP] : Number(it.precio_unitario || 0);
 
       // Lo que queda del pool compartido de esta devolución para este código,
       // topado por lo que este préstamo puntual todavía tiene pendiente.
       const poolDisponible = Math.max(pool[codigo] || 0, 0);
-      const disponiblePrestamo = Math.max(est.saldoPorCodigo[codigo] || 0, 0);
+      const disponiblePrestamo = Math.max(est.saldoPorCodigo[codigoP] || 0, 0);
       const aplicada = Math.min(poolDisponible, disponiblePrestamo);
 
       pool[codigo] = poolDisponible - aplicada;
-      if (perteneceAlPrestamo) est.saldoPorCodigo[codigo] = disponiblePrestamo - aplicada;
+      if (perteneceAlPrestamo) est.saldoPorCodigo[codigoP] = disponiblePrestamo - aplicada;
 
       if (aplicada > 0) {
-        detalleProductos.push(`${est.nombrePorCodigo[codigo] || it.nombre || codigo} (${aplicada})`);
+        detalleProductos.push(`${est.nombrePorCodigo[codigoP] || it.nombre || codigo} (${aplicada})`);
       }
 
-      // Producto del préstamo (EPO/IPE) que corresponde por código — sólo se
-      // llena si el código de la devolución realmente existe en el préstamo.
+      // Producto del préstamo (EPO/IPE) que corresponde por código (o por
+      // cruce manual) — sólo se llena si existe realmente en el préstamo.
       filasProducto.push({
-        codigo_producto_prestamo: perteneceAlPrestamo ? codigo : '',
-        descripcion_producto_prestamo: perteneceAlPrestamo ? (est.nombrePorCodigo[codigo] || '') : '',
+        codigo_producto_prestamo: perteneceAlPrestamo ? codigoP : '',
+        descripcion_producto_prestamo: perteneceAlPrestamo ? (est.nombrePorCodigo[codigoP] || '') : '',
         producto_devuelto: it.nombre || est.nombrePorCodigo[codigo] || codigo,
         codigo_producto_devuelto: codigo,
         cantidad_devuelta_producto: aplicada,
@@ -6104,11 +6218,11 @@ function construirReporteCrucesCronologico(prestamos, cruces) {
         sobrante_valor_producto: 0,
         // Cantidad/valor total prestado de ESTE producto específico dentro
         // del préstamo (no del documento completo).
-        cantidad_total_producto: perteneceAlPrestamo ? (est.cantidadTotalPorCodigo[codigo] || 0) : 0,
-        valor_total_producto: perteneceAlPrestamo ? (est.valorTotalPorCodigo[codigo] || 0) : 0,
+        cantidad_total_producto: perteneceAlPrestamo ? (est.cantidadTotalPorCodigo[codigoP] || 0) : 0,
+        valor_total_producto: perteneceAlPrestamo ? (est.valorTotalPorCodigo[codigoP] || 0) : 0,
         // Saldo pendiente de ESTE producto puntual después de este cruce.
-        saldo_pendiente_cantidad_producto: perteneceAlPrestamo ? Math.max(est.saldoPorCodigo[codigo] || 0, 0) : 0,
-        saldo_pendiente_valor_producto: perteneceAlPrestamo ? Math.max(est.saldoPorCodigo[codigo] || 0, 0) * precio : 0,
+        saldo_pendiente_cantidad_producto: perteneceAlPrestamo ? Math.max(est.saldoPorCodigo[codigoP] || 0, 0) : 0,
+        saldo_pendiente_valor_producto: perteneceAlPrestamo ? Math.max(est.saldoPorCodigo[codigoP] || 0, 0) * precio : 0,
         _codigo: codigo,
         _precio: precio,
       });
@@ -6463,6 +6577,13 @@ function ModalReporteCruces({ prestamos, cruces, clinicas, onClose }) {
 
 // ─── Reporte detallado de pendientes por devolver (por producto y clínica) ─────
 
+// Texto "→ aplicado a <código> <nombre>" para un ítem cruzado manualmente
+// (la devolución entró con un código distinto al que salió en el préstamo).
+function etiquetaCruceManual(it) {
+  if (!it || !it.codigo_prestamo || it.codigo_prestamo === it.codigo) return null;
+  return `↔ aplicado a ${it.codigo_prestamo}${it.nombre_prestamo ? ' ' + it.nombre_prestamo : ''}`;
+}
+
 function itemsPendientesDe(p, devoluciones, cruces = []) {
   const devueltoPorCodigo = {};
 
@@ -6484,7 +6605,9 @@ function itemsPendientesDe(p, devoluciones, cruces = []) {
   (cruces || []).filter(c => c.prestamo_id === p.id).forEach(c => {
     const items = (c.items_cruzados !== null && c.items_cruzados !== undefined) ? c.items_cruzados : (c.devolucion_items || []);
     items.forEach(it => {
-      devueltoPorCodigo[it.codigo] = (devueltoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
+      // Cruce manual: se descuenta del código del préstamo al que se aplicó
+      const cod = it.codigo_prestamo || it.codigo;
+      devueltoPorCodigo[cod] = (devueltoPorCodigo[cod] || 0) + Number(it.cantidad);
     });
   });
 

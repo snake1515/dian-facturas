@@ -1292,13 +1292,19 @@ router.post('/cruces', async (req, res) => {
         if (existentes.length > 0) {
           const existente = existentes[0];
           const mapaItems = new Map();
-          (existente.items_cruzados || []).forEach(it => mapaItems.set(it.codigo, { ...it }));
+          // Llave = código devuelto + código del préstamo al que se aplica
+          // (cruce manual ítem por ítem, cuando la devolución entra con un
+          // código distinto al que salió en el préstamo). Sin codigo_prestamo
+          // la llave es la misma de siempre.
+          const llaveItem = it => `${it.codigo}|${it.codigo_prestamo || ''}`;
+          (existente.items_cruzados || []).forEach(it => mapaItems.set(llaveItem(it), { ...it }));
           (par.items_cruzados || []).forEach(it => {
-            if (mapaItems.has(it.codigo)) {
-              const acc = mapaItems.get(it.codigo);
+            const k = llaveItem(it);
+            if (mapaItems.has(k)) {
+              const acc = mapaItems.get(k);
               acc.cantidad = Number(acc.cantidad) + Number(it.cantidad);
             } else {
-              mapaItems.set(it.codigo, { ...it });
+              mapaItems.set(k, { ...it });
             }
           });
           const itemsFusionados = mapaItems.size > 0 ? Array.from(mapaItems.values()) : null;
@@ -1344,11 +1350,19 @@ router.post('/cruces', async (req, res) => {
       );
       for (const doc of docsAValidar) {
         const { rows: crucesDoc } = await client.query(
-          `SELECT items_cruzados FROM prestamo_cruces WHERE prestamo_id = $1 OR devolucion_id = $1`, [doc.id]
+          `SELECT prestamo_id, devolucion_id, items_cruzados FROM prestamo_cruces WHERE prestamo_id = $1 OR devolucion_id = $1`, [doc.id]
         );
         const asignadoPorCodigo = {};
+        const codigosDoc = new Set((doc.items || []).map(i => i.codigo));
         crucesDoc.forEach(c => (c.items_cruzados || []).forEach(it => {
-          asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
+          // Del lado del préstamo cuenta el código del préstamo al que se
+          // aplicó (codigo_prestamo en cruces manuales); del lado de la
+          // devolución, siempre el código devuelto.
+          const cod = c.prestamo_id === doc.id ? (it.codigo_prestamo || it.codigo) : it.codigo;
+          if (c.prestamo_id === doc.id && it.codigo_prestamo && !codigosDoc.has(it.codigo_prestamo)) {
+            throw new Error(`No se puede registrar: el cruce manual apunta al código ${it.codigo_prestamo}, que no existe en ${doc.documento_contable}.`);
+          }
+          asignadoPorCodigo[cod] = (asignadoPorCodigo[cod] || 0) + Number(it.cantidad);
         }));
         for (const item of (doc.items || [])) {
           const asignado = asignadoPorCodigo[item.codigo] || 0;
@@ -1435,13 +1449,15 @@ router.patch('/cruces/:id', authMiddleware, adminOnly, async (req, res) => {
       );
       for (const doc of docs) {
         const { rows: crucesDoc } = await client.query(
-          `SELECT id, items_cruzados FROM prestamo_cruces WHERE prestamo_id = $1 OR devolucion_id = $1`, [doc.id]
+          `SELECT id, prestamo_id, items_cruzados FROM prestamo_cruces WHERE prestamo_id = $1 OR devolucion_id = $1`, [doc.id]
         );
         const asignadoPorCodigo = {};
         crucesDoc.forEach(c => {
           const items = c.id === actual.id ? nuevosItems : c.items_cruzados; // este cruce ya con el valor propuesto
           (items || []).forEach(it => {
-            asignadoPorCodigo[it.codigo] = (asignadoPorCodigo[it.codigo] || 0) + Number(it.cantidad);
+            // Lado préstamo: código del préstamo al que se aplicó (cruce manual)
+            const cod = c.prestamo_id === doc.id ? (it.codigo_prestamo || it.codigo) : it.codigo;
+            asignadoPorCodigo[cod] = (asignadoPorCodigo[cod] || 0) + Number(it.cantidad);
           });
         });
         for (const item of (doc.items || [])) {
@@ -1731,15 +1747,18 @@ async function calcularCorreccionSobreasignacion(client) {
 
     for (const it of items) {
       const codigo = it.codigo;
+      // Cruce manual: la devolución entró con otro código; del lado del
+      // préstamo se topa contra el código al que realmente se aplicó.
+      const codigoP = it.codigo_prestamo || codigo;
       const cantidad = Number(it.cantidad) || 0;
       if (cantidad <= 0) continue;
 
       if (!usadoPrestamo[fila.prestamo_id]) usadoPrestamo[fila.prestamo_id] = {};
       if (!usadoDevolucion[fila.devolucion_id]) usadoDevolucion[fila.devolucion_id] = {};
 
-      const capP = capDe(fila.prestamo_id, codigo);
+      const capP = capDe(fila.prestamo_id, codigoP);
       const capD = capDe(fila.devolucion_id, codigo);
-      const usadoP = usadoPrestamo[fila.prestamo_id][codigo] || 0;
+      const usadoP = usadoPrestamo[fila.prestamo_id][codigoP] || 0;
       const usadoD = usadoDevolucion[fila.devolucion_id][codigo] || 0;
       // capP/capD === null significa que ese documento NO TIENE ese código
       // entre sus propios productos — es decir, ese préstamo nunca prestó
@@ -1754,7 +1773,7 @@ async function calcularCorreccionSobreasignacion(client) {
       const keep = Math.min(cantidad, remainingP, remainingD);
       const exceso = cantidad - keep;
 
-      usadoPrestamo[fila.prestamo_id][codigo] = usadoP + keep;
+      usadoPrestamo[fila.prestamo_id][codigoP] = usadoP + keep;
       usadoDevolucion[fila.devolucion_id][codigo] = usadoD + keep;
 
       if (keep > 0) nuevosItems.push({ ...it, cantidad: keep });
