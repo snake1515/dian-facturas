@@ -2804,6 +2804,9 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
   const tercerosPrestSel = new Set(selPrestamos.map(terceroDe));
   // Devoluciones seleccionadas que son de un tercero distinto al de los préstamos elegidos
   const devolucionesOtroTercero = selPrestamos.length > 0 ? selDevoluciones.filter(d => !tercerosPrestSel.has(terceroDe(d))) : [];
+  // Devoluciones con fecha anterior (más de 15 días) a algún préstamo elegido: no pueden pagarlo
+  const diasEntre = (a, b) => (Date.parse(String(a).substring(0, 10)) - Date.parse(String(b).substring(0, 10))) / 86400000;
+  const devolucionesAnteriores = selDevoluciones.filter(d => selPrestamos.some(p => diasEntre(p.fecha, d.fecha) > 15));
 
   async function cruzar() {
     if (selPrestamos.length === 0 || selDevoluciones.length === 0) {
@@ -2918,6 +2921,12 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
       const d = selDevoluciones.find(x => x.id === Number(par.devolucion_id));
       return p && d && terceroDe(p) !== terceroDe(d);
     });
+    const paresFecha = pares.filter(par => {
+      const p = selPrestamos.find(x => x.id === Number(par.prestamo_id));
+      const d = selDevoluciones.find(x => x.id === Number(par.devolucion_id));
+      return p && d && diasEntre(p.fecha, d.fecha) > 15;
+    });
+    if (paresFecha.length > 0 && !window.confirm('ATENCIÓN: hay devoluciones con fecha ANTERIOR al préstamo que pagarían (' + paresFecha.length + ' par(es)). Una devolución no puede pagar un préstamo hecho después. ¿Registrar de todos modos?')) return;
     if (paresOtroTercero.length > 0) {
       const txt = paresOtroTercero.map(par => {
         const p = selPrestamos.find(x => x.id === Number(par.prestamo_id));
@@ -3207,6 +3216,11 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
             )}
           </div>
 
+          {devolucionesAnteriores.length > 0 && (
+            <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', fontSize: 12, color: '#ef4444' }}>
+              <b>⚠ Fecha:</b> {devolucionesAnteriores.map(d => `${d.documento_contable} (${fmtFecha(d.fecha)})`).join(', ')} es anterior al préstamo seleccionado ({selPrestamos.map(p => `${p.documento_contable} ${fmtFecha(p.fecha)}`).join(', ')}). Una devolución no puede pagar un préstamo que se hizo después; verifica que sea la devolución correcta.
+            </div>
+          )}
           {devolucionesOtroTercero.length > 0 && (
             <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', fontSize: 12, color: '#ef4444' }}>
               <b>⚠ Tercero distinto:</b> {devolucionesOtroTercero.map(d => `${d.documento_contable} es de ${d.clinica_nombre || 'sin tercero'}`).join(' · ')}

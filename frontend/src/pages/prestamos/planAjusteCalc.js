@@ -23,6 +23,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TOL = 1e-6;
+// Una devolución no puede pagar un préstamo registrado después de ella. Se
+// tolera un desfase corto de registro (el préstamo se digitó unos días tarde).
+const TOLERANCIA_DIAS = 15;
+const fechaValida = (p, d) => {
+  const fp = Date.parse(String(p.fecha || '').substring(0, 10));
+  const fd = Date.parse(String(d.fecha || '').substring(0, 10));
+  if (isNaN(fp) || isNaN(fd)) return true;
+  return fd >= fp - TOLERANCIA_DIAS * 86400000;
+};
+export { fechaValida, TOLERANCIA_DIAS };
 const ES_PRESTAMO = { egreso: 'nos', ingreso: 'deb' };
 const DEV_PARA = { egreso: 'devolucion_ingreso', ingreso: 'devolucion_egreso' };
 
@@ -140,6 +150,7 @@ export function calcularPlanAjuste(prestamos = [], cruces = []) {
     if (c.items_cruzados === null || c.items_cruzados === undefined) return;
     const p = porId[c.prestamo_id], d = porId[c.devolucion_id];
     if (!p || !d || !pend[p.id] || !disp[d.id]) return;
+    if (claveTerceroDe(p) !== claveTerceroDe(d) || !fechaValida(p, d)) return;
     const lineas = [];
     Object.entries(disp[d.id]).forEach(([cod, x]) => {
       const y = pend[p.id][cod];
@@ -162,7 +173,7 @@ export function calcularPlanAjuste(prestamos = [], cruces = []) {
   Object.values(porTerTipo).forEach(l => l.sort((a, b) => fechaDe(a).localeCompare(fechaDe(b)) || a.id - b.id));
   const nuevos = {}; // pid|did -> accion
   devoluciones.slice().sort((a, b) => fechaDe(a).localeCompare(fechaDe(b)) || a.id - b.id).forEach(d => {
-    const cands = candidatosOrdenados(d, porTerTipo[claveTerceroDe(d) + '|' + d.tipo] || []);
+    const cands = candidatosOrdenados(d, (porTerTipo[claveTerceroDe(d) + '|' + d.tipo] || []).filter(p => fechaValida(p, d)));
     Object.entries(disp[d.id]).forEach(([cod, x]) => {
       if (x.q <= TOL) return;
       for (const p of cands) {
@@ -187,7 +198,7 @@ export function calcularPlanAjuste(prestamos = [], cruces = []) {
 
   // ── C. Sugerencias de cruce manual (código distinto, nombre parecido) ──
   devoluciones.slice().sort((a, b) => fechaDe(a).localeCompare(fechaDe(b)) || a.id - b.id).forEach(d => {
-    const cands = candidatosOrdenados(d, porTerTipo[claveTerceroDe(d) + '|' + d.tipo] || []);
+    const cands = candidatosOrdenados(d, (porTerTipo[claveTerceroDe(d) + '|' + d.tipo] || []).filter(p => fechaValida(p, d)));
     const men = mencionados(d);
     Object.entries(disp[d.id]).forEach(([cod, x]) => {
       if (x.q <= TOL) return;
@@ -268,4 +279,21 @@ export function crucesEntreTerceros(prestamos = [], cruces = []) {
     return { cruce: c, prestamo: p, devolucion: d, items, menciona,
       valor: items.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_unitario || 0), 0) };
   }).filter(Boolean).sort((a, b) => String(a.prestamo.clinica_nombre).localeCompare(String(b.prestamo.clinica_nombre)) || fechaDe(a.prestamo).localeCompare(fechaDe(b.prestamo)));
+}
+
+// Cruces registrados donde la devolución es anterior al préstamo (más allá de
+// la tolerancia) o el tipo no corresponde (p. ej. un EPO pagado con un ED).
+export function crucesSospechosos(prestamos = [], cruces = []) {
+  const porId = {};
+  (prestamos || []).forEach(p => { porId[p.id] = p; });
+  const compatible = (p, d) => (p.tipo === 'ingreso' && d.tipo === 'devolucion_egreso') || (p.tipo === 'egreso' && d.tipo === 'devolucion_ingreso');
+  return (cruces || []).map(c => {
+    const p = porId[c.prestamo_id], d = porId[c.devolucion_id];
+    if (!p || !d) return null;
+    const motivo = !compatible(p, d) ? 'Tipo de documento incompatible' : (!fechaValida(p, d) ? 'La devolución es anterior al préstamo' : null);
+    if (!motivo) return null;
+    const items = itemsDeCruce(c);
+    return { cruce: c, prestamo: p, devolucion: d, items, motivo, menciona: mencionados(d).has(docNorm(p)),
+      valor: items.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_unitario || 0), 0) };
+  }).filter(Boolean);
 }
