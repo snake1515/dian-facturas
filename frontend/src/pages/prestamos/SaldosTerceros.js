@@ -669,6 +669,17 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
       <div class="tot"><b style="color:${C_NOS}">Nos debe ${esc(cop(det.sV ? det.sV.nos : det.nos))}</b><b style="color:${C_DEB}">Le debemos ${esc(cop(det.sV ? det.sV.deb : det.deb))}</b><b>Neto ${esc(cop(det.sV ? det.sV.neto : det.neto))}</b></div>
       ${seccion('nos', 'Lo que nos debe (EPO pendientes)', C_NOS)}
       ${seccion('deb', 'Lo que le debemos (IPE pendientes)', C_DEB)}
+      ${(() => {
+        const todos = [...(det.prestamosTodos || [])].sort((a, b) => a.lado.localeCompare(b.lado) || a.fecha.localeCompare(b.fecha));
+        if (!todos.length) return '';
+        const ET = { abierto: 'Abierto', parcial: 'Parcial', cerrado: 'Cerrado' };
+        const filas = todos.map(d => `<tr><td class="nw">${esc(d.fecha)}</td><td><b>${esc(d.doc)}</b></td><td>${d.lado === 'nos' ? 'EPO (nos debe)' : 'IPE (debemos)'}</td>
+          <td>${esc(ET[d.estadoReal])}</td><td class="r nw">${esc(cop(d.presV))}</td><td class="r nw">${esc(cop(d.abonadoV))}</td><td class="r nw">${esc(cop(d.pendV))}</td>
+          <td>${esc(d.devolucionesTxt || '—')}</td></tr>`).join('');
+        return `<h2>Todos los préstamos con ${esc(det.nombre)} (cerrados, parciales y abiertos) · ${todos.length}</h2>
+          <table><thead><tr><th>Fecha</th><th>Documento</th><th>Tipo</th><th>Estado</th><th class="r">Prestado</th><th class="r">Devuelto</th><th class="r">Pendiente</th><th>Cruzado con</th></tr></thead>
+          <tbody>${filas}</tbody></table>`;
+      })()}
       </body></html>`;
     const fr = document.createElement('iframe');
     fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
@@ -961,9 +972,9 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: 8 }}>
-                          <button type="button" onClick={() => imprimirDocsPdf(detalle)} disabled={!detalle.docs.length}
+                          <button type="button" onClick={() => imprimirDocsPdf(detalle)} disabled={!(detalle.docs.length || (detalle.prestamosTodos || []).length || (detalle.devSinCruzar || []).length)}
                             title="Abre la impresión: elija «Guardar como PDF»" style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>🖨 Imprimir / PDF</button>
-                          <button type="button" onClick={() => exportarTerceroExcel(detalle)} disabled={!detalle.docs.length}
+                          <button type="button" onClick={() => exportarTerceroExcel(detalle)} disabled={!(detalle.docs.length || (detalle.prestamosTodos || []).length || (detalle.devSinCruzar || []).length)}
                             title="Descarga los documentos y productos de este tercero en Excel" style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>📊 Excel</button>
                           <button type="button" onClick={() => setSel(null)} style={{ ...input, cursor: 'pointer' }}>Cerrar ✕</button>
                         </div>
