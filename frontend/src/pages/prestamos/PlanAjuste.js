@@ -68,7 +68,6 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
     const fin = { nos: t.antes.nos, deb: t.antes.deb };
     t.acciones.forEach(a => { if (estaMarcada(a)) fin[a.lado] -= a.valor; });
     return { ...t, fin };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [plan, marcadas]);
 
   const totales = filas.reduce((s, t) => ({
