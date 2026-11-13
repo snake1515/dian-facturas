@@ -3303,7 +3303,9 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
                   const filasItem = filasAsignacion.filter(f => f.devolucion_id === d.id && f.codigo === item.codigo);
                   const asignado = filasItem.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
                   const sobra = disponible - asignado;
-                  const noPerteneceASeleccion = selPrestamos.length > 0 && !codigosPendientesSeleccionados.has(item.codigo);
+                  // Si ya no queda nada disponible de este producto, no hay nada que
+                  // asignar: no se muestra el aviso rojo ni el selector manual.
+                  const noPerteneceASeleccion = selPrestamos.length > 0 && !codigosPendientesSeleccionados.has(item.codigo) && disponible > 0;
                   const conCruceManual = noPerteneceASeleccion && filasItem.some(f => f.codigo_prestamo);
                   return (
                     <div key={item.codigo} style={{ marginBottom: 8, padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 6, border: conCruceManual ? '1px solid #3b82f6' : noPerteneceASeleccion ? '1px solid #ef4444' : 'none' }}>
