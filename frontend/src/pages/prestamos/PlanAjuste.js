@@ -223,7 +223,7 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
             <div>
               <b style={{ color: '#ef4444', fontSize: 14 }}>⚠ {entreTerceros.length} cruce(s) sospechoso(s): entre terceros distintos, con la devolución anterior al préstamo o con tipo incompatible</b>
               <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 2 }}>
-                Préstamos pagados con la devolución de otro tercero ({cop(entreTerceros.reduce((s, x) => s + x.valor, 0))}). Casi siempre es un error al elegir la devolución y descuadra el saldo de ambos terceros.
+                Valor cruzado en estos casos: {cop(entreTerceros.reduce((s, x) => s + x.valor, 0))}. Casi siempre es un error al elegir el préstamo o la devolución, y descuadra el saldo (el motivo de cada uno aparece en rojo debajo del número de cruce).
                 Revisa los soportes: si es un error, revierte el cruce en Historial de Cruces y crúzalo con la devolución correcta.
               </div>
             </div>
