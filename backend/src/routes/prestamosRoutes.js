@@ -66,6 +66,11 @@ async function subirPDF(file, carpeta) {
 router.get('/soporte/*', async (req, res) => {
   try {
     const filepath = req.params[0]; // prestamos/documentos/1782014160410_pdf_factura_27663.pdf
+    // Solo archivos del módulo de préstamos (esta ruta queda pública porque los
+    // PDF se abren con enlaces directos, sin encabezado de autorización).
+    if (!/^prestamos\//.test(filepath) || filepath.includes('..')) {
+      return res.status(404).json({ error: 'Archivo no encontrado' });
+    }
     const buffer = await storageService.descargarArchivo(filepath);
     
     // Detectar tipo de archivo por extensión
@@ -85,6 +90,12 @@ router.get('/soporte/*', async (req, res) => {
     res.status(404).json({ error: 'Archivo no encontrado', detalle: e.message });
   }
 });
+
+// ─── Todo lo que sigue exige sesión iniciada ───────────────────────────────
+// Antes, la mayoría de rutas de préstamos respondían sin token: cualquiera con
+// la URL del backend podía listar préstamos/cruces, registrar o revertir
+// cruces e incluso purgar documentos. Solo /soporte/* (arriba) queda pública.
+router.use(authMiddleware);
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  CLÍNICAS
@@ -305,7 +316,7 @@ router.post('/sincronizar-categorias', authMiddleware, adminOnly, async (req, re
 });
 
 // Limpiar tabla productos
-router.delete('/productos/clear', async (req, res) => {
+router.delete('/productos/clear', adminOnly, async (req, res) => {
   try {
     await pool.query('DELETE FROM prestamo_productos');
     res.json({ ok: true });
@@ -457,7 +468,7 @@ router.post('/devoluciones', upload.single('soporte'), async (req, res) => {
 //  PURGA MASIVA
 // ═══════════════════════════════════════════════════════════════════════════
 
-router.delete('/purgar', async (req, res) => {
+router.delete('/purgar', adminOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
