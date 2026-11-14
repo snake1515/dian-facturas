@@ -793,55 +793,54 @@ router.post('/reparar-items', async (req, res) => {
 // Recalcula el estado de un documento (préstamo o devolución) sumando
 // TODOS los cruces en los que participa, sin importar si es de un lado u otro
 async function recalcularEstadoDocumento(client, documentoId) {
-  const { rows: [doc] } = await client.query('SELECT items FROM prestamos WHERE id = $1', [documentoId]);
+  // Estado real, producto por producto — la MISMA regla que usan Saldos por
+  // tercero, el Plan de ajuste y la pestaña Cruces:
+  //  · Préstamo (EPO/IPE): por cada código, lo prestado contra lo abonado en
+  //    sus cruces (items_cruzados; en cruces manuales cuenta el código del
+  //    préstamo al que se aplicó — codigo_prestamo; en cruces viejos sin
+  //    detalle (NULL), los ítems de la devolución) y en devoluciones legadas
+  //    ligadas directo al préstamo (prestamos.prestamo_id). Cada código se topa
+  //    en lo prestado, así un producto de más no "cierra" otro que falta.
+  //  · Devolución (IDP/ED): por cada código, lo devuelto contra lo aplicado en
+  //    sus cruces (cruce viejo sin detalle = el documento completo). Una
+  //    devolución legada ligada directo a un préstamo cuenta como aplicada.
+  //  cerrado = no queda nada · abierto = no se ha aplicado nada · parcial = el resto.
+  const { rows: [doc] } = await client.query('SELECT id, tipo, items, prestamo_id FROM prestamos WHERE id = $1', [documentoId]);
   if (!doc) return null;
-  const misItems = doc.items || [];
-  const totalDoc = misItems.reduce((s, i) => s + Number(i.cantidad), 0);
-  // Cuánto necesito de cada código propio — se usa para topar lo que aporta
-  // cada cruce antiguo (ver sumarCruce) y no dejar que un producto abundante
-  // en el documento contrario "cubra" a otro producto distinto que nunca se
-  // tocó realmente.
-  const misCantidadesPorCodigo = {};
-  misItems.forEach(i => { misCantidadesPorCodigo[i.codigo] = Number(i.cantidad); });
+  const necesito = {};
+  (doc.items || []).forEach(i => { necesito[i.codigo] = (necesito[i.codigo] || 0) + Number(i.cantidad || 0); });
+  const totalDoc = Object.values(necesito).reduce((a, b) => a + b, 0);
+  const aplicado = {};
+  const sumar = (cod, q) => { aplicado[cod] = (aplicado[cod] || 0) + Number(q || 0); };
+  const esDevolucion = doc.tipo === 'devolucion_ingreso' || doc.tipo === 'devolucion_egreso';
 
-  // Cuando el cruce ya tiene items_cruzados (la asignación real por producto
-  // registrada desde el panel de "Cruzar" — único o multicruce), se usa esa
-  // cantidad exacta, que es dato preciso y no necesita ninguna heurística.
-  const { rows: comoPrest } = await client.query(
-    `SELECT c.items_cruzados, d.items AS items_documento
-     FROM prestamo_cruces c JOIN prestamos d ON d.id = c.devolucion_id
-     WHERE c.prestamo_id = $1`,
-    [documentoId]
-  );
-  const { rows: comoDevo } = await client.query(
-    `SELECT c.items_cruzados, p.items AS items_documento
-     FROM prestamo_cruces c JOIN prestamos p ON p.id = c.prestamo_id
-     WHERE c.devolucion_id = $1`,
-    [documentoId]
-  );
-
-  function sumarCruce(row) {
-    if (row.items_cruzados) return row.items_cruzados.reduce((a, i) => a + Number(i.cantidad), 0);
-    // Cruce de antes de items_cruzados (quedó NULL): no hay dato exacto de
-    // cuánto se cruzó de cada producto en ESE par puntual, así que se
-    // aproxima comparando producto por producto (mismo código) contra el
-    // documento contrario completo, topando cada código a lo que este
-    // documento realmente necesita de él. Antes se sumaba el documento
-    // contrario entero sin filtrar por código, lo que hacía que un producto
-    // sobrante (p. ej. jeringas) "cerrara" el documento aunque otro producto
-    // muy distinto (p. ej. furosemida) nunca se hubiera devuelto — quedaba
-    // al revés: documentos con saldo real pendiente salían CERRADO, y
-    // devoluciones que sí entregaron todo salían PARCIAL.
-    const items = row.items_documento || [];
-    return items.reduce((a, i) => {
-      const necesito = misCantidadesPorCodigo[i.codigo];
-      if (necesito === undefined) return a; // producto sin relación con este documento
-      return a + Math.min(Number(i.cantidad), necesito);
-    }, 0);
+  if (esDevolucion) {
+    if (doc.prestamo_id) {
+      Object.entries(necesito).forEach(([cod, q]) => sumar(cod, q));
+    } else {
+      const { rows } = await client.query('SELECT items_cruzados FROM prestamo_cruces WHERE devolucion_id = $1', [documentoId]);
+      rows.forEach(r => {
+        const items = r.items_cruzados === null || r.items_cruzados === undefined ? (doc.items || []) : r.items_cruzados;
+        items.forEach(it => sumar(it.codigo, it.cantidad));
+      });
+    }
+  } else {
+    const { rows: cr } = await client.query(
+      `SELECT c.items_cruzados, d.items AS items_devolucion
+       FROM prestamo_cruces c JOIN prestamos d ON d.id = c.devolucion_id
+       WHERE c.prestamo_id = $1`, [documentoId]);
+    cr.forEach(r => {
+      const items = r.items_cruzados === null || r.items_cruzados === undefined ? (r.items_devolucion || []) : r.items_cruzados;
+      items.forEach(it => sumar(it.codigo_prestamo || it.codigo, it.cantidad));
+    });
+    const { rows: legado } = await client.query('SELECT items FROM prestamos WHERE prestamo_id = $1', [documentoId]);
+    legado.forEach(d => (d.items || []).forEach(it => sumar(it.codigo, it.cantidad)));
   }
-  const cruzado = [...comoPrest, ...comoDevo].reduce((s, r) => s + sumarCruce(r), 0);
 
-  const nuevoEstado = totalDoc === 0 ? 'abierto' : cruzado >= totalDoc ? 'cerrado' : cruzado > 0 ? 'parcial' : 'abierto';
+  const cubierto = Object.entries(necesito).reduce((a, [cod, q]) => a + Math.min(q, aplicado[cod] || 0), 0);
+  const nuevoEstado = totalDoc <= 0 ? 'abierto'
+    : cubierto >= totalDoc - 1e-6 ? 'cerrado'
+    : cubierto > 1e-6 ? 'parcial' : 'abierto';
   await client.query('UPDATE prestamos SET estado = $1 WHERE id = $2', [nuevoEstado, documentoId]);
   return nuevoEstado;
 }
