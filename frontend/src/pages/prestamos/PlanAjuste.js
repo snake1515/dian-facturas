@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { calcularPlanAjuste, crucesEntreTerceros, crucesSospechosos } from './planAjusteCalc';
+import { calcularPlanAjuste, crucesEntreTerceros, crucesSospechosos, devolucionesSinCruzar } from './planAjusteCalc';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Plan de ajuste de saldos — todos los terceros.
@@ -59,6 +59,9 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
     ...crucesSospechosos(prestamos, cruces),
   ], [prestamos, cruces]);
   const [verEntre, setVerEntre] = useState(false);
+  const sinCruzar = useMemo(() => devolucionesSinCruzar(prestamos, cruces), [prestamos, cruces]);
+  const [qSin, setQSin] = useState('');
+  const [ladoSin, setLadoSin] = useState('todos');
   const [q, setQ] = useState('');
   const [verTodos, setVerTodos] = useState(false); // por defecto solo terceros con correcciones por aplicar
   const [abierto, setAbierto] = useState(null);
@@ -175,8 +178,10 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
     lista.forEach(t => t.pendientes.forEach(pp => pp.items.forEach(i => deuda.push([t.nombre, pp.lado === 'nos' ? 'Nos debe' : 'Le debemos', pp.prestamo.documento_contable, fechaDe(pp.prestamo), i.codigo, i.nombre, Number(i.q), Math.round(i.v)]))));
     hoja('Saldo que queda', ['Tercero', 'Lado', 'Préstamo', 'Fecha', 'Código', 'Producto', 'Cantidad', 'Valor ($)'], deuda, [36, 11, 10, 11, 13, 46, 9, 13]);
     const dev = [];
-    lista.forEach(t => t.devSinCruzar.forEach(d => d.items.forEach(i => dev.push([t.nombre, d.devolucion.documento_contable, fechaDe(d.devolucion), i.codigo, i.nombre, Number(i.q), Math.round(i.v)]))));
-    hoja('Devoluciones sin cruzar', ['Tercero', 'Devolución', 'Fecha', 'Código', 'Producto', 'Cantidad', 'Valor ($)'], dev, [36, 11, 11, 13, 46, 9, 13]);
+    sinCruzar.forEach(d => d.items.forEach(i => dev.push([d.tercero, d.sigla, d.devolucion.documento_contable, fechaDe(d.devolucion),
+      d.parcial ? 'Parcial' : 'Sin ningún cruce', i.codigo, i.nombre, Number(i.total), Number(i.q), Math.round(i.v), String(d.devolucion.observaciones || '').substring(0, 300)])));
+    hoja('Devoluciones sin cruzar', ['Tercero', 'Tipo', 'Devolución', 'Fecha', 'Situación', 'Código', 'Producto', 'Cant. devuelta', 'Cant. sin cruzar', 'Valor sin cruzar ($)', 'Observaciones'],
+      dev, [34, 6, 11, 11, 14, 13, 44, 10, 10, 14, 60]);
     hoja('Cruces sospechosos', ['Cruce', 'Motivo', 'Préstamo', 'Tercero préstamo', 'Fecha préstamo', 'Devolución', 'Tercero devolución', 'Fecha devolución', 'Productos cruzados', 'Valor ($)', '¿La devolución menciona el préstamo?', 'Observaciones devolución'],
       entreTerceros.map(x => [x.cruce.grupo_numero || '', x.motivo, x.prestamo.documento_contable, x.prestamo.clinica_nombre || '', fechaDe(x.prestamo),
         x.devolucion.documento_contable, x.devolucion.clinica_nombre || '', fechaDe(x.devolucion),
@@ -419,6 +424,72 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
           "Después" se calcula con las correcciones marcadas. Completar cruces requiere usuario administrador. Los cruces nuevos de cada tercero se registran en un solo cruce agrupado (un consecutivo CRU y su PDF).
         </div>
       </div>
+
+      {/* Devoluciones con unidades sin cruzar (estado actual) */}
+      {(() => {
+        const qs = qSin.trim().toLowerCase();
+        const ls = sinCruzar
+          .filter(d => ladoSin === 'todos' || d.lado === ladoSin)
+          .filter(d => !qs || String(d.tercero).toLowerCase().includes(qs) || String(d.devolucion.documento_contable).toLowerCase().includes(qs)
+            || d.items.some(i => String(i.nombre || '').toLowerCase().includes(qs) || String(i.codigo || '').toLowerCase().includes(qs)));
+        const tot = ls.reduce((s, d) => s + d.v, 0);
+        const porTer = {};
+        ls.forEach(d => { (porTer[d.tercero] = porTer[d.tercero] || []).push(d); });
+        return (
+          <div style={card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: '#b45309' }}>
+                Devoluciones sin cruzar <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--t-text-muted)' }}>· {ls.length} devolución(es) · {cop(tot)}</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <input value={qSin} onChange={e => setQSin(e.target.value)} placeholder="Tercero, documento o producto…"
+                  style={{ padding: '7px 9px', fontSize: 13, border: '1px solid var(--t-border)', borderRadius: 7, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
+                <select value={ladoSin} onChange={e => setLadoSin(e.target.value)}
+                  style={{ padding: '7px 9px', fontSize: 13, border: '1px solid var(--t-border)', borderRadius: 7, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }}>
+                  <option value="todos">IDP y ED</option>
+                  <option value="nos">IDP (nos devolvieron)</option>
+                  <option value="deb">ED (devolvimos nosotros)</option>
+                </select>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginBottom: 10 }}>
+              Devoluciones con unidades que hoy no están aplicadas a ningún préstamo, así que no descuentan ningún saldo. Pueden ser pago de un préstamo que no se registró,
+              de un préstamo con un producto de nombre muy distinto, una devolución de más o un documento con el tercero equivocado. La observación suele indicar a qué préstamo corresponde:
+              si lo encuentras, crúzalo en la pestaña Cruces (con el desplegable de cruce manual si el código es distinto).
+            </div>
+            <div style={{ overflowX: 'auto', maxHeight: 560, overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr><th style={th}>Devolución</th><th style={th}>Situación</th><th style={th}>Productos sin cruzar</th><th style={{ ...th, ...r }}>Valor</th><th style={th}>Observación</th></tr></thead>
+                <tbody>
+                  {Object.entries(porTer).map(([ter, ds]) => (
+                    <React.Fragment key={ter}>
+                      <tr><td colSpan={5} style={{ ...td, background: 'var(--t-bg-inner)', fontWeight: 700 }}>
+                        {ter} <span style={{ fontWeight: 400, color: 'var(--t-text-muted)', fontSize: 12 }}>· {ds.length} devolución(es) · {cop(ds.reduce((s, d) => s + d.v, 0))}</span>
+                      </td></tr>
+                      {ds.map(d => (
+                        <tr key={d.devolucion.id}>
+                          <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 5, marginRight: 6, color: '#fff', background: d.sigla === 'IDP' ? '#3b82f6' : '#ef4444' }}>{d.sigla}</span>
+                            <b>{d.devolucion.documento_contable}</b>
+                            <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{fechaDe(d.devolucion)}</div>
+                          </td>
+                          <td style={{ ...td, fontSize: 12, whiteSpace: 'nowrap' }}>{d.parcial ? `Parcial (${d.nCruces} cruce${d.nCruces === 1 ? '' : 's'})` : 'Sin ningún cruce'}</td>
+                          <td style={{ ...td, fontSize: 12 }}>{d.items.map(i => (
+                            <div key={i.codigo}><span style={{ color: 'var(--t-text-muted)', fontFamily: 'monospace' }}>{i.codigo}</span> {i.nombre} <b>×{num(i.q)}</b>{i.q < i.total ? <span style={{ color: 'var(--t-text-muted)' }}> de {num(i.total)}</span> : null}</div>
+                          ))}</td>
+                          <td style={{ ...td, ...r }}>{cop(d.v)}</td>
+                          <td style={{ ...td, fontSize: 11, color: 'var(--t-text-muted)', maxWidth: 380 }}>{String(d.devolucion.observaciones || '').substring(0, 240)}</td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                  {!ls.length && <tr><td colSpan={5} style={{ ...td, textAlign: 'center', color: 'var(--t-text-muted)', padding: 20 }}>✓ No hay devoluciones sin cruzar con estos filtros.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

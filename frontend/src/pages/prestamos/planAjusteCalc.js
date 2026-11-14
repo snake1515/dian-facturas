@@ -297,3 +297,30 @@ export function crucesSospechosos(prestamos = [], cruces = []) {
       valor: items.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_unitario || 0), 0) };
   }).filter(Boolean);
 }
+
+// Devoluciones (IDP/ED) con unidades que HOY no están aplicadas a ningún
+// préstamo (estado actual, sin simular correcciones).
+export function devolucionesSinCruzar(prestamos = [], cruces = []) {
+  const out = [];
+  (prestamos || []).filter(d => (d.tipo === 'devolucion_ingreso' || d.tipo === 'devolucion_egreso') && !d.prestamo_id).forEach(d => {
+    const asig = {};
+    (cruces || []).filter(c => c.devolucion_id === d.id).forEach(c =>
+      itemsDeCruce(c).forEach(it => { asig[it.codigo] = (asig[it.codigo] || 0) + Number(it.cantidad || 0); }));
+    const m = {};
+    (d.items || []).forEach(i => {
+      if (!m[i.codigo]) m[i.codigo] = { codigo: i.codigo, nombre: i.nombre, q: 0, v: 0 };
+      m[i.codigo].q += Number(i.cantidad || 0);
+      m[i.codigo].v += Number(i.cantidad || 0) * Number(i.precio_unitario || 0);
+    });
+    const items = Object.values(m).map(x => {
+      const q = Math.max(0, x.q - (asig[x.codigo] || 0));
+      return { codigo: x.codigo, nombre: x.nombre, q, total: x.q, v: x.q ? q * (x.v / x.q) : 0 };
+    }).filter(x => x.q > TOL);
+    if (!items.length) return;
+    const nCruces = (cruces || []).filter(c => c.devolucion_id === d.id).length;
+    out.push({ devolucion: d, tercero: d.clinica_nombre || 'Sin tercero', sigla: d.tipo === 'devolucion_ingreso' ? 'IDP' : 'ED',
+      lado: d.tipo === 'devolucion_ingreso' ? 'nos' : 'deb', items, nCruces,
+      parcial: nCruces > 0, q: items.reduce((s, x) => s + x.q, 0), v: items.reduce((s, x) => s + x.v, 0) });
+  });
+  return out.sort((a, b) => String(a.tercero).localeCompare(String(b.tercero)) || fechaDe(a.devolucion).localeCompare(fechaDe(b.devolucion)));
+}
