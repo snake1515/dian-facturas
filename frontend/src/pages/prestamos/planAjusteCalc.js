@@ -45,7 +45,9 @@ const RUIDO = new Set(['REG', 'DE', 'LA', 'EL', 'EN', 'Y', 'CON', 'X', 'POR', 'P
 function tokens(nombre) {
   return String(nombre || '').toUpperCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/(\d)\s+(MG|MCG|ML|G|UI|MEQ|FR|%)/g, '$1$2')
+    .replace(/(\d)\s*[.,]\s*(\d)/g, '$1.$2')
+    .replace(/(\d)\s+(MG|MCG|ML|G|GR|UI|MEQ|FR|%|L)\b/g, '$1$2')
+    .replace(/\s*\/\s*/g, '/')
     .replace(/[^A-Z0-9%./ ]/g, ' ')
     .split(/\s+/).filter(t => t && !RUIDO.has(t));
 }
@@ -57,15 +59,24 @@ export function parecido(a, b) {
   const fuerte = t => t.find(x => /[A-Z]{4,}/.test(x));
   const fa = fuerte(ta), fb = fuerte(tb);
   if (!fa || !fb || fa !== fb) return 0;
-  const sa = new Set(ta), sb = new Set(tb);
+  // Para el parecido se comparan también los átomos de concentración por separado
+  const at = t => t.flatMap(x => (/\d/.test(x) ? x.split('/') : [x])).filter(x => x && x !== '-');
+  const sa = new Set(at(ta)), sb = new Set(at(tb));
   const inter = [...sa].filter(x => sb.has(x)).length;
   const union = new Set([...sa, ...sb]).size;
   // Concentraciones (números con unidad) distintas → muy probablemente otro producto
-  const conc = t => t.filter(x => /\d/.test(x));
+  // Concentraciones como átomos número+unidad: "600MG/4ML" → 600MG, 4ML
+  const conc = t => [...new Set(t.flatMap(x => x.split('/')).filter(x => /^\d/.test(x)))];
   const ca = conc(ta), cb = conc(tb);
-  const concChoca = ca.length && cb.length && !ca.some(x => cb.includes(x));
+  // Choque de concentración: misma unidad (%, MG, ML…) con valores distintos
+  const porUnidad = l => l.reduce((m, x) => { const u = x.replace(/^[\d.]+/, '') || '#'; (m[u] = m[u] || new Set()).add(x); return m; }, {});
+  const ua = porUnidad(ca), ub = porUnidad(cb);
+  const concChoca = Object.keys(ua).some(u => ub[u] && ![...ua[u]].some(x => ub[u].has(x)));
   const j = inter / union;
-  return concChoca ? j * 0.4 : j;
+  // Cobertura: cuánto del nombre más corto aparece en el otro (los nombres
+  // largos traen marca, laboratorio o presentación que el corto no tiene)
+  const cobertura = inter / Math.min(sa.size, sb.size);
+  return concChoca ? j * 0.4 : Math.max(j, 0.9 * cobertura);
 }
 
 // Préstamos que una devolución menciona en sus observaciones ("PAGO DEL IPE 744",
