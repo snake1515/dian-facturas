@@ -60,6 +60,7 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
   ], [prestamos, cruces]);
   const [verEntre, setVerEntre] = useState(false);
   const [q, setQ] = useState('');
+  const [verTodos, setVerTodos] = useState(false); // por defecto solo terceros con correcciones por aplicar
   const [abierto, setAbierto] = useState(null);
   const [marcadas, setMarcadas] = useState({}); // id acción -> bool (si no está, usa el valor por defecto del tipo)
   const [aplicando, setAplicando] = useState('');
@@ -85,8 +86,10 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
   }), { antesNos: 0, antesDeb: 0, finNos: 0, finDeb: 0, n: { completar: 0, nuevo: 0, manual: 0 }, sinCruzar: 0 });
 
   const qq = q.trim().toLowerCase();
+  const conCorrecciones = t => t.acciones.length > 0;
+  const nSinNada = filas.filter(t => (t.antes.nos > 0.5 || t.antes.deb > 0.5 || t.devSinCruzar.length) && !conCorrecciones(t)).length;
   const lista = filas
-    .filter(t => t.antes.nos > 0.5 || t.antes.deb > 0.5 || t.acciones.length || t.devSinCruzar.length)
+    .filter(t => verTodos ? (t.antes.nos > 0.5 || t.antes.deb > 0.5 || t.acciones.length || t.devSinCruzar.length) : conCorrecciones(t))
     .filter(t => !qq || String(t.nombre).toLowerCase().includes(qq))
     .sort((a, b) => (b.antes.nos + b.antes.deb) - (a.antes.nos + a.antes.deb));
 
@@ -265,7 +268,14 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
 
       <div style={card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-          <div style={{ fontWeight: 700, fontSize: 14 }}>Terceros <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--t-text-muted)' }}>· clic para ver y aplicar sus correcciones</span></div>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>
+            {verTodos ? 'Todos los terceros' : 'Terceros con correcciones por aplicar'}
+            <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--t-text-muted)' }}> · clic para ver y aplicar sus correcciones</span>
+            <label style={{ display: 'block', fontWeight: 400, fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4, cursor: 'pointer' }}>
+              <input type="checkbox" checked={verTodos} onChange={e => setVerTodos(e.target.checked)} style={{ marginRight: 6 }} />
+              Mostrar también los {nSinNada} tercero(s) sin correcciones (su saldo ya es el real; lo que queda se revisa con soportes)
+            </label>
+          </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar tercero…"
               style={{ padding: '7px 9px', fontSize: 13, border: '1px solid var(--t-border)', borderRadius: 7, background: 'var(--t-bg-inner)', color: 'var(--t-text-primary)' }} />
@@ -399,7 +409,9 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
                   </React.Fragment>
                 );
               })}
-              {!lista.length && <tr><td colSpan={9} style={{ ...td, textAlign: 'center', color: 'var(--t-text-muted)', padding: 24 }}>No hay terceros con saldo.</td></tr>}
+              {!lista.length && <tr><td colSpan={9} style={{ ...td, textAlign: 'center', color: 'var(--t-text-muted)', padding: 24 }}>
+                {verTodos ? 'No hay terceros con saldo.' : '✓ No hay correcciones pendientes: todos los saldos están al día según los cruces. Lo que queda pendiente es deuda real o devoluciones sin cruzar para revisar con soportes (marca la casilla de arriba para verlas).'}
+              </td></tr>}
             </tbody>
           </table>
         </div>
