@@ -798,14 +798,12 @@ async function recalcularEstadoDocumento(client, documentoId) {
   //  · Préstamo (EPO/IPE): por cada código, lo prestado contra lo abonado en
   //    sus cruces (items_cruzados; en cruces manuales cuenta el código del
   //    préstamo al que se aplicó — codigo_prestamo; en cruces viejos sin
-  //    detalle (NULL), los ítems de la devolución) y en devoluciones legadas
-  //    ligadas directo al préstamo (prestamos.prestamo_id). Cada código se topa
-  //    en lo prestado, así un producto de más no "cierra" otro que falta.
+  //    detalle (NULL), los ítems de la devolución). Cada código se topa en lo
+  //    prestado, así un producto de más no "cierra" otro que falta.
   //  · Devolución (IDP/ED): por cada código, lo devuelto contra lo aplicado en
-  //    sus cruces (cruce viejo sin detalle = el documento completo). Una
-  //    devolución legada ligada directo a un préstamo cuenta como aplicada.
+  //    sus cruces (cruce viejo sin detalle = el documento completo).
   //  cerrado = no queda nada · abierto = no se ha aplicado nada · parcial = el resto.
-  const { rows: [doc] } = await client.query('SELECT id, tipo, items, prestamo_id FROM prestamos WHERE id = $1', [documentoId]);
+  const { rows: [doc] } = await client.query('SELECT id, tipo, items FROM prestamos WHERE id = $1', [documentoId]);
   if (!doc) return null;
   const necesito = {};
   (doc.items || []).forEach(i => { necesito[i.codigo] = (necesito[i.codigo] || 0) + Number(i.cantidad || 0); });
@@ -815,15 +813,11 @@ async function recalcularEstadoDocumento(client, documentoId) {
   const esDevolucion = doc.tipo === 'devolucion_ingreso' || doc.tipo === 'devolucion_egreso';
 
   if (esDevolucion) {
-    if (doc.prestamo_id) {
-      Object.entries(necesito).forEach(([cod, q]) => sumar(cod, q));
-    } else {
-      const { rows } = await client.query('SELECT items_cruzados FROM prestamo_cruces WHERE devolucion_id = $1', [documentoId]);
-      rows.forEach(r => {
-        const items = r.items_cruzados === null || r.items_cruzados === undefined ? (doc.items || []) : r.items_cruzados;
-        items.forEach(it => sumar(it.codigo, it.cantidad));
-      });
-    }
+    const { rows } = await client.query('SELECT items_cruzados FROM prestamo_cruces WHERE devolucion_id = $1', [documentoId]);
+    rows.forEach(r => {
+      const items = r.items_cruzados === null || r.items_cruzados === undefined ? (doc.items || []) : r.items_cruzados;
+      items.forEach(it => sumar(it.codigo, it.cantidad));
+    });
   } else {
     const { rows: cr } = await client.query(
       `SELECT c.items_cruzados, d.items AS items_devolucion
@@ -833,8 +827,6 @@ async function recalcularEstadoDocumento(client, documentoId) {
       const items = r.items_cruzados === null || r.items_cruzados === undefined ? (r.items_devolucion || []) : r.items_cruzados;
       items.forEach(it => sumar(it.codigo_prestamo || it.codigo, it.cantidad));
     });
-    const { rows: legado } = await client.query('SELECT items FROM prestamos WHERE prestamo_id = $1', [documentoId]);
-    legado.forEach(d => (d.items || []).forEach(it => sumar(it.codigo, it.cantidad)));
   }
 
   const cubierto = Object.entries(necesito).reduce((a, [cod, q]) => a + Math.min(q, aplicado[cod] || 0), 0);
