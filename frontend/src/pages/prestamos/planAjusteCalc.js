@@ -184,7 +184,13 @@ export function calcularPlanAjuste(prestamos = [], cruces = []) {
   Object.values(porTerTipo).forEach(l => l.sort((a, b) => fechaDe(a).localeCompare(fechaDe(b)) || a.id - b.id));
   const nuevos = {}; // pid|did -> accion
   devoluciones.slice().sort((a, b) => fechaDe(a).localeCompare(fechaDe(b)) || a.id - b.id).forEach(d => {
-    const cands = candidatosOrdenados(d, (porTerTipo[claveTerceroDe(d) + '|' + d.tipo] || []).filter(p => fechaValida(p, d)));
+    const pool = porTerTipo[claveTerceroDe(d) + '|' + d.tipo] || [];
+    const cands = candidatosOrdenados(d, pool.filter(p => fechaValida(p, d)));
+    // Si la observación de la devolución nombra préstamos de este tercero y el
+    // candidato no es ninguno de ellos, el cruce NO se marca solo: pasa a
+    // "revisar" (sin marcar), porque la descripción no corresponde.
+    const men = mencionados(d);
+    const mencionaAlguno = pool.some(p => men.has(docNorm(p)));
     Object.entries(disp[d.id]).forEach(([cod, x]) => {
       if (x.q <= TOL) return;
       for (const p of cands) {
@@ -192,6 +198,13 @@ export function calcularPlanAjuste(prestamos = [], cruces = []) {
         const y = pend[p.id][cod];
         if (!y || y.q <= TOL) continue;
         const q = Math.min(x.q, y.q);
+        if (mencionaAlguno && !men.has(docNorm(p))) {
+          acciones.push({ tipo: 'manual', prestamo: p, devolucion: d,
+            nota: `La observación de ${d.documento_contable} menciona ${[...men].join(', ')}, no ${p.documento_contable}: verifica con soportes`,
+            lineas: [{ codigo: cod, nombre: x.nombre, cantidad: q, precio_unitario: x.pu, valor: q * y.pu }] });
+          mover(p.id, d.id, cod, cod, q);
+          continue;
+        }
         const k = p.id + '|' + d.id;
         if (!nuevos[k]) {
           // Si ya existe un cruce para este par, se completa ese (PATCH) en vez de crear otro

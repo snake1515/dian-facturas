@@ -171,7 +171,7 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
       estaMarcada(a) ? 'Sí' : 'No', a.lado === 'nos' ? 'Nos debe' : 'Le debemos',
       a.prestamo.documento_contable, fechaDe(a.prestamo), a.devolucion.documento_contable, fechaDe(a.devolucion), a.grupo_numero || '',
       l.codigo, l.nombre, l.codigo_prestamo || l.codigo, l.nombre_prestamo || l.nombre, Number(l.cantidad), Math.round(l.valor),
-      a.similitud ? Math.round(a.similitud * 100) + '%' : '']))));
+      a.similitud ? Math.round(a.similitud * 100) + '%' : (a.nota || '')]))));
     hoja('Correcciones', ['Tercero', 'Tipo', 'Marcada', 'Lado', 'Préstamo', 'Fecha préstamo', 'Devolución', 'Fecha devolución', 'Cruce', 'Código devuelto', 'Producto devuelto', 'Código préstamo', 'Producto préstamo', 'Cantidad', 'Valor ($)', 'Parecido'],
       acc, [34, 26, 8, 11, 10, 11, 11, 11, 11, 13, 40, 13, 40, 9, 13, 8]);
     const deuda = [];
@@ -355,7 +355,7 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
                                               <span style={{ color: 'var(--t-text-muted)', fontFamily: 'monospace' }}>{l.codigo}</span> {l.nombre}
                                               {l.codigo_prestamo && <div style={{ color: C_MAN }}>↔ {l.codigo_prestamo} {l.nombre_prestamo}{a.similitud ? ` · parecido ${Math.round(a.similitud * 100)}%` : ''}</div>}
                                             </div>
-                                          ))}</td>
+                                          ))}{a.nota && <div style={{ color: '#ef4444', fontSize: 11, marginTop: 2 }}>⚠ {a.nota}</div>}</td>
                                           <td style={{ ...td, ...r }}>{a.lineas.map((l, i) => <div key={i}>{num(l.cantidad)}</div>)}</td>
                                           <td style={{ ...td, ...r }}>{cop(a.valor)}</td>
                                         </tr>
