@@ -3358,8 +3358,22 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
               <div key={d.id} style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-accent)', marginBottom: 6 }}>
                   {d.documento_contable} devuelve:
+                  {(() => {
+                    // Productos ya cruzados por completo: no se muestran (no hay nada que asignar)
+                    const ocultos = (d.items || []).filter(it => (disponibleDevolPorCodigo[it.codigo] ?? 0) <= 0).length;
+                    return ocultos > 0 ? (
+                      <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--t-text-muted)', marginLeft: 8 }}>
+                        ({ocultos} producto{ocultos === 1 ? '' : 's'} ya cruzado{ocultos === 1 ? '' : 's'} por completo, no se muestra{ocultos === 1 ? '' : 'n'})
+                      </span>
+                    ) : null;
+                  })()}
                 </div>
-                {(d.items || []).map(item => {
+                {!(d.items || []).some(it => (disponibleDevolPorCodigo[it.codigo] ?? 0) > 0) && (
+                  <div style={{ fontSize: 12, color: 'var(--t-text-muted)', padding: '8px 10px', background: 'var(--t-bg-inner)', borderRadius: 6, marginBottom: 8 }}>
+                    ✓ Esta devolución ya no tiene unidades disponibles para cruzar: todo está aplicado a sus préstamos.
+                  </div>
+                )}
+                {(d.items || []).filter(item => (disponibleDevolPorCodigo[item.codigo] ?? 0) > 0).map(item => {
                   const disponible = disponibleDevolPorCodigo[item.codigo] ?? 0;
                   const filasItem = filasAsignacion.filter(f => f.devolucion_id === d.id && f.codigo === item.codigo);
                   const asignado = filasItem.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
