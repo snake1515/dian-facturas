@@ -2767,7 +2767,20 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
     return true;
   }
 
+  // Documentos que todavía tienen algo por cruzar: préstamos con unidades
+  // pendientes y devoluciones con unidades sin aplicar. Los que ya no tienen
+  // saldo no se ofrecen para cruzar (salvo que se pida verlos o estén elegidos).
+  const [verSinSaldo, setVerSinSaldo] = useState(false);
+  const idsConSaldo = React.useMemo(() => {
+    const set = new Set();
+    prestamosBase.forEach(p => { if (itemsPendientesDe(p, devoluciones, cruces).some(i => i.pendiente > 0)) set.add(p.id); });
+    devoluciones.forEach(d => { if (!d.prestamo_id && itemsPendientesDeDevolucion(d, cruces).some(i => i.pendiente > 0)) set.add(d.id); });
+    return set;
+  }, [prestamos, cruces]);
+  const visiblePorSaldo = (doc, seleccionados) => verSinSaldo || idsConSaldo.has(doc.id) || seleccionados.some(x => x.id === doc.id);
+
   const prestFiltrados = prestamosBase.filter(p =>
+    visiblePorSaldo(p, selPrestamos) &&
     matchDoc(p, filtroPrest.toLowerCase()) && matchFecha(p, anioPrest, mesPrest, fDesdePrest, fHastaPrest) &&
     (estadoPrest.length === 0 || estadoPrest.includes(p.estado)) &&
     (!tipoPrest || p.tipo === tipoPrest)
@@ -2786,6 +2799,7 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
         sp.tipo === 'egreso' ? 'devolucion_ingreso' : 'devolucion_egreso'));
       if (!tiposRequeridos.has(p.tipo)) return false;
     }
+    if (!visiblePorSaldo(p, selDevoluciones)) return false;
     return matchDoc(p, filtroDevol.toLowerCase()) && matchFecha(p, anioDevol, mesDevol, fDesdeDevol, fHastaDevol) &&
       (estadoDevol.length === 0 || estadoDevol.includes(p.estado)) &&
       (!tipoDevol || p.tipo === tipoDevol);
@@ -2976,6 +2990,11 @@ function TabCruces({ prestamos, cruces, productos, clinicas, onRefresh }) {
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
             Préstamos (EPO / IPE)
+            <label style={{ marginLeft: 10, fontWeight: 400, fontSize: 11, textTransform: 'none', letterSpacing: 0, cursor: 'pointer', color: 'var(--t-text-muted)' }}
+              title="Por defecto solo se muestran préstamos y devoluciones que todavía tienen unidades por cruzar">
+              <input type="checkbox" checked={verSinSaldo} onChange={e => setVerSinSaldo(e.target.checked)} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+              mostrar también los que ya no tienen saldo por cruzar
+            </label>
           </div>
           <input value={filtroPrest} onChange={e => setFiltroPrest(e.target.value)}
             placeholder="Buscar documento, clínica, producto o código…" style={{ ...inputS, marginBottom: 8 }} />
