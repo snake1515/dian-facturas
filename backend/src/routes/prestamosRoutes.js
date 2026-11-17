@@ -1428,6 +1428,26 @@ router.post('/cruces', async (req, res) => {
 });
 
 // Editar tipo_cruce / observaciones de un cruce — solo admin
+// Marcar / desmarcar un cruce sospechoso como revisado (justificado con
+// soporte). Solo guarda la nota: no toca cantidades ni estados.
+router.patch('/cruces/:id/revision', adminOnly, async (req, res) => {
+  try {
+    const nota = req.body && req.body.nota != null ? String(req.body.nota).trim() : '';
+    const quien = (req.user && (req.user.nombre || req.user.email || req.user.id)) || null;
+    const { rows } = nota
+      ? await pool.query(
+          'UPDATE prestamo_cruces SET revisado_nota = $1, revisado_at = NOW(), revisado_por = $2 WHERE id = $3 RETURNING id, revisado_nota, revisado_at, revisado_por',
+          [nota, quien == null ? null : String(quien), req.params.id])
+      : await pool.query(
+          'UPDATE prestamo_cruces SET revisado_nota = NULL, revisado_at = NULL, revisado_por = NULL WHERE id = $1 RETURNING id',
+          [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Cruce no encontrado' });
+    res.json(rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.patch('/cruces/:id', authMiddleware, adminOnly, async (req, res) => {
   const client = await pool.connect();
   try {

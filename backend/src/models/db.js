@@ -220,6 +220,13 @@ const initDB = async () => {
       -- (se sigue tratando como antes: se asume el documento contrario completo).
       ALTER TABLE prestamo_cruces ADD COLUMN IF NOT EXISTS items_cruzados JSONB;
 
+      -- Revisión manual de cruces que la auditoría marca como sospechosos
+      -- (devolución anterior al préstamo, etc.) pero que están justificados
+      -- con soporte: se guarda la justificación para sacarlos del aviso rojo.
+      ALTER TABLE prestamo_cruces ADD COLUMN IF NOT EXISTS revisado_nota TEXT;
+      ALTER TABLE prestamo_cruces ADD COLUMN IF NOT EXISTS revisado_at TIMESTAMP;
+      ALTER TABLE prestamo_cruces ADD COLUMN IF NOT EXISTS revisado_por VARCHAR(150);
+
       -- Marca a nivel de grupo (no por par individual) cuando, al registrar el
       -- cruce, quedaron unidades de algún producto de una devolución sin
       -- asignar a ningún préstamo — para poder avisarlo en el historial y

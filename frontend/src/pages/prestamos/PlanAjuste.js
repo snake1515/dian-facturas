@@ -54,11 +54,34 @@ function Kpi({ titulo, antes, despues, color }) {
 
 export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
   const plan = useMemo(() => calcularPlanAjuste(prestamos, cruces), [prestamos, cruces]);
-  const entreTerceros = useMemo(() => [
+  const sospechososTodos = useMemo(() => [
     ...crucesEntreTerceros(prestamos, cruces).map(x => ({ ...x, motivo: 'Terceros distintos' })),
     ...crucesSospechosos(prestamos, cruces),
   ], [prestamos, cruces]);
+  // Los que ya se revisaron con soporte (tienen justificación) salen del aviso rojo
+  const entreTerceros = useMemo(() => sospechososTodos.filter(x => !x.cruce.revisado_nota), [sospechososTodos]);
+  const revisados = useMemo(() => sospechososTodos.filter(x => x.cruce.revisado_nota), [sospechososTodos]);
   const [verEntre, setVerEntre] = useState(false);
+  const [verRevisados, setVerRevisados] = useState(false);
+  const [guardandoRev, setGuardandoRev] = useState(null);
+  async function marcarRevision(x, quitar) {
+    let nota = null;
+    if (!quitar) {
+      nota = window.prompt(`Justificación para ${x.cruce.grupo_numero || 'el cruce'} (${x.prestamo.documento_contable} ← ${x.devolucion.documento_contable}).\nEj.: "Corrección del EPO-16 según soporte del IDP-8"`, '');
+      if (nota === null) return;
+      nota = nota.trim();
+      if (!nota) { window.alert('Escribe una justificación para marcarlo como revisado.'); return; }
+    } else if (!window.confirm(`¿Quitar la revisión de ${x.cruce.grupo_numero || 'este cruce'}? Volverá al aviso de cruces sospechosos.`)) return;
+    setGuardandoRev(x.cruce.id);
+    try {
+      await apiFetch(`/prestamos/cruces/${x.cruce.id}/revision`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nota: quitar ? null : nota }) });
+      if (onRefresh) await onRefresh();
+    } catch (e) {
+      window.alert('No se pudo guardar la revisión: ' + (e.message || e));
+    } finally {
+      setGuardandoRev(null);
+    }
+  }
   const sinCruzar = useMemo(() => devolucionesSinCruzar(prestamos, cruces), [prestamos, cruces]);
   const [qSin, setQSin] = useState('');
   const [ladoSin, setLadoSin] = useState('todos');
@@ -182,11 +205,11 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
       d.parcial ? 'Parcial' : 'Sin ningún cruce', i.codigo, i.nombre, Number(i.total), Number(i.q), Math.round(i.v), String(d.devolucion.observaciones || '').substring(0, 300)])));
     hoja('Devoluciones sin cruzar', ['Tercero', 'Tipo', 'Devolución', 'Fecha', 'Situación', 'Código', 'Producto', 'Cant. devuelta', 'Cant. sin cruzar', 'Valor sin cruzar ($)', 'Observaciones'],
       dev, [34, 6, 11, 11, 14, 13, 44, 10, 10, 14, 60]);
-    hoja('Cruces sospechosos', ['Cruce', 'Motivo', 'Préstamo', 'Tercero préstamo', 'Fecha préstamo', 'Devolución', 'Tercero devolución', 'Fecha devolución', 'Productos cruzados', 'Valor ($)', '¿La devolución menciona el préstamo?', 'Observaciones devolución'],
-      entreTerceros.map(x => [x.cruce.grupo_numero || '', x.motivo, x.prestamo.documento_contable, x.prestamo.clinica_nombre || '', fechaDe(x.prestamo),
+    hoja('Cruces sospechosos', ['Cruce', 'Motivo', 'Revisado', 'Justificación', 'Préstamo', 'Tercero préstamo', 'Fecha préstamo', 'Devolución', 'Tercero devolución', 'Fecha devolución', 'Productos cruzados', 'Valor ($)', '¿La devolución menciona el préstamo?', 'Observaciones devolución'],
+      sospechososTodos.map(x => [x.cruce.grupo_numero || '', x.motivo, x.cruce.revisado_nota ? 'Sí' : 'No', x.cruce.revisado_nota || '', x.prestamo.documento_contable, x.prestamo.clinica_nombre || '', fechaDe(x.prestamo),
         x.devolucion.documento_contable, x.devolucion.clinica_nombre || '', fechaDe(x.devolucion),
         x.items.map(it => `${it.nombre || it.codigo} ×${num(it.cantidad)}`).join('; '), Math.round(x.valor), x.menciona ? 'Sí' : 'No',
-        String(x.devolucion.observaciones || '').substring(0, 300)]), [11, 24, 10, 34, 11, 10, 34, 11, 50, 13, 12, 60]);
+        String(x.devolucion.observaciones || '').substring(0, 300)]), [11, 24, 9, 50, 10, 34, 11, 10, 34, 11, 50, 13, 12, 60]);
     XLSX.writeFile(wb, `plan_ajuste_saldos_${new Date().toISOString().substring(0, 10)}.xlsx`);
   }
 
@@ -232,7 +255,7 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
           {verEntre && (
             <div style={{ overflowX: 'auto', maxHeight: 420, overflowY: 'auto', marginTop: 10 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr><th style={th}>Cruce</th><th style={th}>Préstamo</th><th style={th}>Devolución</th><th style={th}>Productos cruzados</th><th style={{ ...th, ...r }}>Valor</th><th style={th}>Observación de la devolución</th></tr></thead>
+                <thead><tr><th style={th}>Cruce</th><th style={th}>Préstamo</th><th style={th}>Devolución</th><th style={th}>Productos cruzados</th><th style={{ ...th, ...r }}>Valor</th><th style={th}>Observación de la devolución</th><th style={th}></th></tr></thead>
                 <tbody>
                   {entreTerceros.map(x => (
                     <tr key={x.cruce.id}>
@@ -244,6 +267,49 @@ export default function PlanAjuste({ prestamos = [], cruces = [], onRefresh }) {
                       <td style={{ ...td, fontSize: 11, color: 'var(--t-text-muted)', maxWidth: 360 }}>
                         {x.menciona && <div style={{ color: '#15803d', fontWeight: 700 }}>✓ La devolución menciona este préstamo</div>}
                         {String(x.devolucion.observaciones || '').substring(0, 220)}
+                      </td>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                        <button style={btn} disabled={guardandoRev === x.cruce.id} onClick={() => marcarRevision(x, false)}
+                          title="Si el cruce está bien según los soportes, márcalo con una justificación y sale de este aviso">
+                          {guardandoRev === x.cruce.id ? 'Guardando…' : '✓ Marcar como revisado'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {revisados.length > 0 && (
+        <div style={{ ...card, padding: '10px 16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13 }}>
+              <b style={{ color: '#15803d' }}>✓ {revisados.length} cruce(s) revisado(s) y justificado(s)</b>
+              <span style={{ color: 'var(--t-text-muted)' }}> · la auditoría los marca (por fecha, tipo o tercero) pero están respaldados con soporte · {cop(revisados.reduce((s, x) => s + x.valor, 0))}</span>
+            </span>
+            <button style={btn} onClick={() => setVerRevisados(v => !v)}>{verRevisados ? 'Ocultar' : 'Ver cuáles'}</button>
+          </div>
+          {verRevisados && (
+            <div style={{ overflowX: 'auto', maxHeight: 360, overflowY: 'auto', marginTop: 10 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr><th style={th}>Cruce</th><th style={th}>Préstamo</th><th style={th}>Devolución</th><th style={th}>Productos</th><th style={{ ...th, ...r }}>Valor</th><th style={th}>Justificación</th><th style={th}></th></tr></thead>
+                <tbody>
+                  {revisados.map(x => (
+                    <tr key={x.cruce.id}>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>{x.cruce.grupo_numero || '—'}<div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{x.motivo}</div></td>
+                      <td style={td}><b>{x.prestamo.documento_contable}</b><div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{fechaDe(x.prestamo)}</div></td>
+                      <td style={td}><b>{x.devolucion.documento_contable}</b><div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{fechaDe(x.devolucion)}</div></td>
+                      <td style={{ ...td, fontSize: 12 }}>{x.items.map((it, i) => <div key={i}>{it.nombre || it.codigo} <b>×{num(it.cantidad)}</b></div>)}</td>
+                      <td style={{ ...td, ...r }}>{cop(x.valor)}</td>
+                      <td style={{ ...td, fontSize: 12, maxWidth: 380 }}>
+                        {x.cruce.revisado_nota}
+                        <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>{x.cruce.revisado_por ? `${x.cruce.revisado_por} · ` : ''}{x.cruce.revisado_at ? String(x.cruce.revisado_at).substring(0, 10) : ''}</div>
+                      </td>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                        <button style={btn} disabled={guardandoRev === x.cruce.id} onClick={() => marcarRevision(x, true)}>Quitar revisión</button>
                       </td>
                     </tr>
                   ))}
