@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { descargarReporteAbiertos } from './reporteAbiertos';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Saldos por tercero — dashboard calculado SOLO con los documentos de la
@@ -896,6 +897,10 @@ export default function SaldosTerceros({ prestamos = [], clinicas = [], cruces =
               style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>⇣ Excel compacto</button>
             <button type="button" onClick={exportarExcesos} title="Documentos y productos donde se devolvió más de lo prestado"
               style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>⇣ Devoluciones de más</button>
+            <button type="button" onClick={() => descargarReporteAbiertos(
+                tercero === 'todos' ? prestamos : (prestamos || []).filter(p => claveTercero(p) === tercero), cruces, hasta)}
+              title="Préstamos abiertos y parciales a la fecha de corte, por tercero: resumen, tabla dinámica de Excel y, en los parciales, las devoluciones aplicadas"
+              style={{ ...input, cursor: 'pointer', fontWeight: 600 }}>⇣ Abiertos y parciales (tabla dinámica)</button>
             <button type="button" onClick={exportar} title="Todos los datos del dashboard en 10 hojas"
               style={{ ...input, cursor: 'pointer', fontWeight: 600, background: 'var(--t-accent)', color: '#fff', border: 'none' }}>⇣ Excel completo</button>
           </div>
