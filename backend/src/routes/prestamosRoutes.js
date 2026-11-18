@@ -2102,7 +2102,17 @@ router.delete('/:id/soporte', async (req, res) => {
 // dejando solo letras/números en mayúscula — mismo criterio que el frontend,
 // para poder comparar "EPO851" (documento) con "EPO-851" (nombre de archivo).
 function normalizarCodigoDoc(txt) {
-  return String(txt || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  // "EPO-0001", "EPO001" y "EPO1" son el mismo documento: se quitan los
+  // ceros a la izquierda del consecutivo.
+  return String(txt || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^([A-Z]+)0*(\d+)$/, '$1$2');
+}
+// Código de documento a partir del nombre de un archivo: toma el prefijo y el
+// consecutivo del inicio del nombre ("EPO-0001 soporte.pdf" → "EPO1"); si el
+// nombre no empieza así, compara el nombre completo normalizado.
+function codigoDocDeArchivo(nombre) {
+  const base = String(nombre || '').replace(/\.[a-z0-9]{2,5}$/i, '').toUpperCase();
+  const m = base.match(/^\s*([A-Z]+)[\s\-_.#]*0*(\d+)(?!\d)/);
+  return m ? m[1] + m[2] : normalizarCodigoDoc(base);
 }
 
 // Carga masiva de soportes: cada PDF que SÍ encuentra su documento se adjunta
@@ -2116,8 +2126,7 @@ router.post('/soportes-pendientes', upload.array('soportes', 200), async (req, r
     const pendientes = [];
 
     for (const file of (req.files || [])) {
-      const nombreBase = file.originalname.replace(/\.pdf$/i, '');
-      const codigoArchivo = normalizarCodigoDoc(nombreBase);
+      const codigoArchivo = codigoDocDeArchivo(file.originalname);
       const match = prestamosTodos.find(p => normalizarCodigoDoc(p.documento_contable) === codigoArchivo);
 
       if (match) {
@@ -2156,8 +2165,7 @@ router.post('/soportes-pendientes/sincronizar', async (req, res) => {
     const adjuntados = [];
 
     for (const pend of pendientes) {
-      const nombreBase = pend.nombre_archivo.replace(/\.pdf$/i, '');
-      const codigoArchivo = normalizarCodigoDoc(nombreBase);
+      const codigoArchivo = codigoDocDeArchivo(pend.nombre_archivo);
       const match = prestamosTodos.find(p => normalizarCodigoDoc(p.documento_contable) === codigoArchivo);
       if (!match) continue;
 

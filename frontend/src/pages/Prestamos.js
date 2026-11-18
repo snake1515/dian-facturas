@@ -69,6 +69,22 @@ const CATEGORIAS_COLORES = {
   'LABORATORIO CLINICO':        { bg: '#F1EFE8', color: '#444441' },
 };
 
+// Sube PDFs a /prestamos/soportes-pendientes en tandas (para cargas grandes,
+// p. ej. recuperar cientos de soportes) y junta los resultados.
+async function subirSoportesEnTandas(files, onProgreso) {
+  const TANDA = 20;
+  const adjuntados = [], pendientes = [];
+  for (let i = 0; i < files.length; i += TANDA) {
+    const formData = new FormData();
+    files.slice(i, i + TANDA).forEach(f => formData.append('soportes', f));
+    const data = await apiFetch('/prestamos/soportes-pendientes', { method: 'POST', body: formData, headers: {} });
+    adjuntados.push(...(data.adjuntados || []));
+    pendientes.push(...(data.pendientes || []));
+    if (onProgreso) onProgreso(Math.min(files.length, i + TANDA), files.length);
+  }
+  return { adjuntados, pendientes };
+}
+
 function getCategoriaFromCodigo(codigo) {
   if (!codigo) return null;
   const cod10 = String(codigo).padStart(10, '0');
@@ -710,9 +726,7 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
     setResultadoLote(null);
 
     try {
-      const formData = new FormData();
-      files.forEach(f => formData.append('soportes', f));
-      const data = await apiFetch('/prestamos/soportes-pendientes', { method: 'POST', body: formData, headers: {} });
+      const data = await subirSoportesEnTandas(files);
 
       const subidos = (data.adjuntados || []).map(a => `${a.archivo} → ${a.documento}`);
       const noEncontrados = (data.pendientes || []).map(p => `${p.nombre_archivo} (guardado en "Soportes pendientes")`);
@@ -722,9 +736,9 @@ function TabMovimientos({ prestamos, devoluciones, clinicas, productos = [], cru
       // Aviso nativo del navegador — no depende de estilos ni de que el modal
       // se renderice correctamente, siempre se ve.
       let resumen = `Carga de PDFs terminada.\n\n✓ Adjuntados correctamente: ${subidos.length}`;
-      if (subidos.length > 0) resumen += `\n${subidos.map(s => '  • ' + s).join('\n')}`;
+      if (subidos.length > 0) resumen += `\n${subidos.slice(0, 40).map(s => '  • ' + s).join('\n')}${subidos.length > 40 ? `\n  … y ${subidos.length - 40} más` : ''}`;
       resumen += `\n\n📥 Sin coincidencia (guardados en "Soportes pendientes"): ${noEncontrados.length}`;
-      if (noEncontrados.length > 0) resumen += `\n${(data.pendientes || []).map(p => '  • ' + p.nombre_archivo).join('\n')}`;
+      if (noEncontrados.length > 0) resumen += `\n${(data.pendientes || []).slice(0, 40).map(p => '  • ' + p.nombre_archivo).join('\n')}${noEncontrados.length > 40 ? `\n  … y ${noEncontrados.length - 40} más` : ''}`;
       window.alert(resumen);
 
       onRefresh();
@@ -4776,12 +4790,10 @@ function TabSoportesPendientes({ onRefresh }) {
     setSubiendo(true);
     setError('');
     try {
-      const formData = new FormData();
-      files.forEach(f => formData.append('soportes', f));
-      const data = await apiFetch('/prestamos/soportes-pendientes', { method: 'POST', body: formData, headers: {} });
+      const data = await subirSoportesEnTandas(files);
       const adjuntados = data.adjuntados || [];
       if (adjuntados.length > 0) {
-        window.alert(`${adjuntados.length} archivo(s) encontraron documento y se adjuntaron de una vez:\n${adjuntados.map(a => `• ${a.archivo} → ${a.documento}`).join('\n')}`);
+        window.alert(`${adjuntados.length} archivo(s) encontraron documento y se adjuntaron de una vez:\n${adjuntados.slice(0, 40).map(a => `• ${a.archivo} → ${a.documento}`).join('\n')}${adjuntados.length > 40 ? `\n… y ${adjuntados.length - 40} más` : ''}`);
         onRefresh && onRefresh();
       }
       await cargar();
