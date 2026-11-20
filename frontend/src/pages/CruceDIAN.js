@@ -67,6 +67,31 @@ export default function CruceDIAN() {
   const [archivo, setArchivo] = useState(null);
   const [procesando, setProcesando] = useState(false);
   const [generandoZip, setGenerandoZip] = useState(false);
+  // Renglones resaltados en ámbar (clic en el renglón o PDF descargado). Solo en pantalla.
+  const [marcadas, setMarcadas] = useState(() => new Set());
+  const [bajandoPdf, setBajandoPdf] = useState(null);
+  const claveFila = (dian, factura) => `${dian.numero}|${factura?.id || ''}`;
+  const toggleMarca = (k) => setMarcadas(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+
+  // Descarga el PDF de una factura encontrada, nombrado con el N° DIAN
+  const descargarPdfFila = async (e, dian, factura) => {
+    e.stopPropagation();
+    const k = claveFila(dian, factura);
+    setBajandoPdf(k);
+    try {
+      const resp = await api.get(`/facturas/${factura.id}/pdf`, { responseType: 'blob', timeout: 120000 });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(resp.data);
+      a.download = `${String(dian.numero || factura.numero || 'factura').replace(/[\\/:*?"<>|\s]+/g, '')}.pdf`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      setMarcadas(prev => new Set(prev).add(k));
+    } catch (err) {
+      let msg = err.message;
+      try { const t = await err.response?.data?.text?.(); if (t) msg = JSON.parse(t).error || msg; } catch (x) { /* respuesta no JSON */ }
+      alert('❌ No se pudo descargar el PDF: ' + msg);
+    } finally { setBajandoPdf(null); }
+  };
   const [resultado, setResultado] = useState(null);
   const [tabActiva, setTabActiva] = useState('cruzadas');
   const [vista, setVista] = useState('obra'); // 'obra' | 'administrativa'
@@ -277,6 +302,7 @@ export default function CruceDIAN() {
       });
 
       setResultado({ cruzadas, noCruzadas, total: regsFiltrados.length });
+      setMarcadas(new Set());
     } catch (err) {
       alert('Error procesando archivo: ' + err.message);
       console.error(err);
@@ -639,20 +665,40 @@ const selectSt = {
             ))}
           </div>
 
+          {/* Resaltado ámbar: al pasar el mouse y en los renglones marcados */}
+          <style>{`
+            .cruce-fila { cursor: pointer; }
+            .cruce-fila:hover > td { background: rgba(245, 158, 11, .10); }
+            .cruce-fila.marcada > td { background: rgba(245, 158, 11, .24); }
+            .cruce-fila.marcada > td:first-child { box-shadow: inset 3px 0 0 #f59e0b; }
+          `}</style>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)', marginBottom: 6 }}>
+            Clic en un renglón para resaltarlo en ámbar{marcadas.size > 0 && <> · {marcadas.size} resaltado(s) · <button type="button" onClick={() => setMarcadas(new Set())}
+              style={{ background: 'none', border: 'none', color: '#f59e0b', cursor: 'pointer', fontSize: 11, padding: 0, textDecoration: 'underline' }}>quitar todos</button></>}
+          </div>
+
           {tabActiva === 'cruzadas' && (
             <div style={{ background: 'var(--t-bg-card)', border: '1px solid var(--t-border)', borderRadius: 10, overflow: 'hidden' }}>
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: 'var(--t-bg-sidebar)' }}>
-                      {['Tipo','N° DIAN','Fecha Emisión','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'].map(h => (
+                      {['PDF','Tipo','N° DIAN','Fecha Emisión','Emisor DIAN','Valor DIAN','Estado','Notas','Responsable App','Responsable DIAN','N° App','Proveedor App','Total App','Estado Contable','Doc. Ingreso','Estado Entrega'].map(h => (
                         <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--t-text-muted)', fontWeight: 500, whiteSpace: 'nowrap', borderBottom: '1px solid var(--t-border)' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {resultadoVista.cruzadas.map((item, i) => { const { dian, factura } = item; return (
-                      <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
+                    {resultadoVista.cruzadas.map((item, i) => { const { dian, factura } = item; const k = claveFila(dian, factura); return (
+                      <tr key={i} className={`cruce-fila${marcadas.has(k) ? ' marcada' : ''}`} onClick={() => toggleMarca(k)}
+                        title="Clic para resaltar / quitar resaltado" style={{ borderBottom: '1px solid #1a2234' }}>
+                        <td style={{ padding: '6px 8px' }}>
+                          <button type="button" onClick={(e) => descargarPdfFila(e, dian, factura)} disabled={bajandoPdf === k}
+                            title={`Descargar el PDF como ${dian.numero}.pdf`}
+                            style={{ background: 'transparent', border: '1px solid var(--t-border)', borderRadius: 5, color: 'var(--t-text-secondary)', fontSize: 12, padding: '2px 7px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                            {bajandoPdf === k ? '⏳' : '📄 PDF'}
+                          </button>
+                        </td>
                         <td style={{ padding: '8px 12px' }}>
                           <span style={{ background: factura.tipo === 'FE' ? '#1e3a5f' : '#052e16', color: factura.tipo === 'FE' ? '#60a5fa' : '#4ade80', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{factura.tipo}</span>
                         </td>
@@ -710,8 +756,9 @@ const selectSt = {
                     </tr>
                   </thead>
                   <tbody>
-                    {resultadoVista.noCruzadas.map((item, i) => { const { dian } = item; return (
-                      <tr key={i} style={{ borderBottom: '1px solid #1a2234' }}>
+                    {resultadoVista.noCruzadas.map((item, i) => { const { dian } = item; const k = claveFila(dian, null); return (
+                      <tr key={i} className={`cruce-fila${marcadas.has(k) ? ' marcada' : ''}`} onClick={() => toggleMarca(k)}
+                        title="Clic para resaltar / quitar resaltado" style={{ borderBottom: '1px solid #1a2234' }}>
                         <td style={{ padding: '8px 12px', color: '#f87171', fontFamily: 'monospace' }}>{dian.numero}</td>
                         <td style={{ padding: '8px 12px' }}>
                           {dian.cufe ? (
