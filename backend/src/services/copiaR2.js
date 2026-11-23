@@ -6,7 +6,7 @@ const { R2_ACTIVO } = require('./storageService');
 const BUCKET = 'facturas';
 const SUPA = () => process.env.SUPABASE_URL;
 const KEY = () => process.env.SUPABASE_SERVICE_KEY;
-const PARALELO = 4;
+const PARALELO = Number(process.env.R2_COPIA_PARALELO) || 12;
 
 let estado = { fase: 'inactivo' };
 
