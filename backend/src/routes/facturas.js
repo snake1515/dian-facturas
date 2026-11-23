@@ -496,11 +496,28 @@ router.get('/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// Nombre del archivo descargado: "NUMERO-PROVEEDOR.pdf" (p. ej. FV123-FERRETITO.pdf)
+const nombreDescarga = (numero, proveedor, id, ext) => {
+  const limpio = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const num = limpio(numero).replace(/\s+/g, '') || `factura_${id}`;
+  const prov = limpio(proveedor).toUpperCase().slice(0, 60).trim().replace(/[.\s]+$/, '');
+  return `${prov ? `${num}-${prov}` : num}.${ext}`;
+};
+const enviarAdjunto = (res, filename, tipo, buffer) => {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_');
+  res.setHeader('Content-Type', tipo);
+  res.setHeader('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+  res.setHeader('Content-Length', buffer.length);
+  res.send(buffer);
+};
+
 // ── GET /api/facturas/:id/pdf ─────────────────────────────────────────────────
 // Obtiene el PDF de una factura: primero del Storage y, si falla, desde el
 // correo original de Gmail. Devuelve { buffer, numero } o { motivo }.
 async function obtenerPdfFactura(id) {
-  const result = await pool.query('SELECT pdf_path, numero, origen, gmail_message_id FROM facturas WHERE id = $1', [id]);
+  const result = await pool.query('SELECT pdf_path, numero, proveedor_nombre, origen, gmail_message_id FROM facturas WHERE id = $1', [id]);
   if (!result.rows.length) return { noExiste: true, motivo: 'Factura no encontrada' };
   const f = result.rows[0];
 
@@ -544,7 +561,7 @@ async function obtenerPdfFactura(id) {
     }
   }
 
-  return buffer ? { buffer, numero: f.numero } : { motivo: motivo || 'PDF no disponible' };
+  return buffer ? { buffer, numero: f.numero, proveedor: f.proveedor_nombre } : { motivo: motivo || 'PDF no disponible' };
 }
 
 router.get('/:id/pdf', authMiddleware, async (req, res) => {
@@ -553,11 +570,7 @@ router.get('/:id/pdf', authMiddleware, async (req, res) => {
     const r = await obtenerPdfFactura(id);
     if (!r.buffer) return res.status(404).json({ error: r.motivo });
 
-    const filename = `factura_${r.numero || id}.pdf`;
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Length', r.buffer.length);
-    res.send(r.buffer);
+    enviarAdjunto(res, nombreDescarga(r.numero, r.proveedor, id, 'pdf'), 'application/pdf', r.buffer);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al descargar PDF' });
@@ -623,7 +636,7 @@ router.post('/zip-pdfs', authMiddleware, async (req, res) => {
 router.get('/:id/xml', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT xml_path, xml_raw, numero FROM facturas WHERE id = $1', [id]);
+    const result = await pool.query('SELECT xml_path, xml_raw, numero, proveedor_nombre FROM facturas WHERE id = $1', [id]);
     if (!result.rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
     let buffer = null;
     // El XML está completo en la base (xml_raw): se usa primero y no se gasta Storage
@@ -635,11 +648,7 @@ router.get('/:id/xml', authMiddleware, async (req, res) => {
     // Respaldo: el contenido del XML también se guarda en la columna xml_raw
     if (!buffer && result.rows[0].xml_raw) buffer = Buffer.from(result.rows[0].xml_raw, 'utf-8');
     if (!buffer) return res.status(404).json({ error: 'XML no disponible' });
-    const filename = `factura_${result.rows[0].numero || id}.xml`;
-    res.setHeader('Content-Type', 'application/xml');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Length', buffer.length);
-    res.send(buffer);
+    enviarAdjunto(res, nombreDescarga(result.rows[0].numero, result.rows[0].proveedor_nombre, id, 'xml'), 'application/xml', buffer);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al descargar XML' });

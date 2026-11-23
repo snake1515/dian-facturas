@@ -28,7 +28,10 @@ const descargarArchivo = async (id, tipo) => {
     const blob = await res.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = tipo + '_factura_' + id + (tipo === 'pdf' ? '.pdf' : '.xml');
+    // El servidor manda el nombre "NUMERO-PROVEEDOR.pdf"; si no llega, se usa el de antes
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/i);
+    a.download = m ? decodeURIComponent(m[1]) : tipo + '_factura_' + id + (tipo === 'pdf' ? '.pdf' : '.xml');
     a.click();
     URL.revokeObjectURL(a.href);
   } catch (err) { alert('Error al descargar: ' + err.message); }
