@@ -74,4 +74,24 @@ router.get('/migracion/estado', authMiddleware, adminOnly, (req, res) => {
   res.json(migracion.obtenerEstado());
 });
 
+// ── Copia de archivos de Supabase Storage a Cloudflare R2 ───────────────────
+const copiaR2 = require('../services/copiaR2');
+
+router.get('/r2/vista-previa', authMiddleware, adminOnly, async (req, res) => {
+  try { res.json(await copiaR2.vistaPrevia()); }
+  catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+router.post('/r2/iniciar', authMiddleware, adminOnly, (req, res) => {
+  try {
+    if (req.body?.confirmacion !== 'COPIAR') return res.status(400).json({ error: 'Confirmación requerida' });
+    copiaR2.iniciar();
+    res.json({ ok: true });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+router.get('/r2/estado', authMiddleware, adminOnly, (req, res) => {
+  res.json(copiaR2.obtenerEstado());
+});
+
 module.exports = router;

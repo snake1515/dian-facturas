@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import api from '../services/api';
 import MigracionBD from './MigracionBD';
+import CopiaR2 from './CopiaR2';
 
 const mb = (b) => (b == null ? '—' : (b / 1024 / 1024).toFixed(1) + ' MB');
 const LIMITE = 1024 * 1024 * 1024; // 1 GB (plan gratis de Supabase)
@@ -78,6 +79,7 @@ export default function LimpiezaStorage() {
 
   return (
     <div>
+      <CopiaR2 />
       <MigracionBD />
 
       <h3 style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0', marginBottom: 8, marginTop: 0 }}>Consumo de la base de datos (egress)</h3>
