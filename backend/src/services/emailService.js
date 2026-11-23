@@ -1,6 +1,6 @@
 const { google } = require('googleapis');
 const { pool } = require('../models/db');
-const { descargarArchivo } = require('./storageService');
+const { descargarArchivo, esArchivoGmail } = require('./storageService');
 
 // Obtiene cliente OAuth2 autenticado con el refresh token guardado en BD
 const getGmailClient = async () => {
@@ -66,28 +66,40 @@ const reenviarFactura = async ({ facturaId, destinatarios, mensaje, usuarioId })
 
   // Descargar adjuntos desde Supabase Storage
   const attachments = [];
-  if (factura.pdf_path) {
-    try {
-      const pdfBuffer = await descargarArchivo(factura.pdf_path);
+  if (factura.pdf_path || factura.gmail_message_id) {
+    let pdfBuffer = null;
+    const deGmail = factura.gmail_message_id && (!factura.pdf_path || esArchivoGmail(factura.pdf_path));
+    if (factura.pdf_path && !deGmail) {
+      try { pdfBuffer = await descargarArchivo(factura.pdf_path); }
+      catch (err) { console.error('No se pudo descargar PDF:', err.message); }
+    }
+    if (!pdfBuffer && factura.gmail_message_id) {
+      try {
+        const { recuperarPdfDesdeGmail } = require('./gmailService');
+        const rec = await recuperarPdfDesdeGmail(factura.gmail_message_id);
+        if (rec) pdfBuffer = rec.buffer;
+      } catch (err) { console.error('No se pudo traer el PDF desde Gmail:', err.message); }
+    }
+    if (pdfBuffer) {
       attachments.push({
-        filename: factura.pdf_path.split('/').pop() || 'factura.pdf',
+        filename: (factura.pdf_path || '').split('/').pop() || `factura_${factura.numero}.pdf`,
         content: pdfBuffer,
         contentType: 'application/pdf',
       });
-    } catch (err) {
-      console.error('No se pudo descargar PDF:', err.message);
     }
   }
-  if (factura.xml_path) {
-    try {
-      const xmlBuffer = await descargarArchivo(factura.xml_path);
+  if (factura.xml_raw || factura.xml_path) {
+    let xmlBuffer = factura.xml_raw ? Buffer.from(factura.xml_raw, 'utf-8') : null;
+    if (!xmlBuffer) {
+      try { xmlBuffer = await descargarArchivo(factura.xml_path); }
+      catch (err) { console.error('No se pudo descargar XML:', err.message); }
+    }
+    if (xmlBuffer) {
       attachments.push({
-        filename: factura.xml_path.split('/').pop() || 'factura.xml',
+        filename: (factura.xml_path || '').split('/').pop() || `factura_${factura.numero}.xml`,
         content: xmlBuffer,
         contentType: 'application/xml',
       });
-    } catch (err) {
-      console.error('No se pudo descargar XML:', err.message);
     }
   }
 

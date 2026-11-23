@@ -2,6 +2,7 @@ const express = require('express');
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
 
+const { borrarManual } = require('../services/storageService');
 const router = express.Router();
 
 // ── GET /api/coincidencias — listar pendientes de revisión ───────────────────
@@ -27,12 +28,14 @@ router.put('/:id/aceptar', authMiddleware, async (req, res) => {
     const coinc = await pool.query('SELECT * FROM coincidencias_gmail WHERE id = $1', [req.params.id]);
     if (!coinc.rows.length) return res.status(404).json({ error: 'Coincidencia no encontrada' });
     const c = coinc.rows[0];
+    const antes = await pool.query('SELECT pdf_path FROM facturas WHERE id = $1', [c.factura_manual_id]);
+    const pdfManualViejo = c.pdf_path ? antes.rows[0]?.pdf_path : null;
 
     // Actualizar la factura manual con los datos más completos del XML/Gmail,
     // SIN tocar estado_contable, documento_ingreso, notas ni responsables
     await pool.query(
       `UPDATE facturas SET
-        cufe = $1, pdf_path = $2, xml_path = $3, xml_raw = $4,
+        cufe = $1, pdf_path = COALESCE($2, pdf_path), xml_path = COALESCE($3, xml_path), xml_raw = COALESCE($4, xml_raw),
         forma_pago = $5, gmail_message_id = $6, origen = 'gmail'
        WHERE id = $7`,
       [c.cufe, c.pdf_path, c.xml_path, c.xml_raw, c.forma_pago, c.gmail_message_id, c.factura_manual_id]
@@ -51,6 +54,7 @@ router.put('/:id/aceptar', authMiddleware, async (req, res) => {
     }
 
     await pool.query('UPDATE coincidencias_gmail SET revisada = true, accion = $1 WHERE id = $2', ['aceptada', req.params.id]);
+    await borrarManual(pdfManualViejo); // el PDF oficial ya llegó por Gmail
 
     res.json({ ok: true });
   } catch (err) {

@@ -90,6 +90,13 @@ router.post('/r2/iniciar', authMiddleware, adminOnly, (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
+router.post('/r2/limpiar-gmail', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    if (req.body?.confirmacion !== 'BORRAR') return res.status(400).json({ error: 'Confirmación requerida' });
+    res.json(await copiaR2.limpiarGmail());
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
 router.get('/r2/estado', authMiddleware, adminOnly, (req, res) => {
   res.json(copiaR2.obtenerEstado());
 });

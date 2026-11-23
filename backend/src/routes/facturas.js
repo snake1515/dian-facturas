@@ -2,7 +2,7 @@ const express = require('express');
 const { reenviarFactura } = require('../services/emailService');
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
-const { descargarArchivo } = require('../services/storageService');
+const { descargarArchivo, esArchivoGmail, borrarManual } = require('../services/storageService');
 const { recuperarPdfDesdeGmail } = require('../services/gmailService');
 const { CATEGORIA_SQL, sincronizarProveedores } = require('../services/clasificacion');
 
@@ -246,6 +246,8 @@ router.post('/coincidencias/:id/aceptar', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Coincidencia no encontrada o ya revisada' });
     }
     const coinc = coincRes.rows[0];
+    const antes = await client.query('SELECT pdf_path FROM facturas WHERE id = $1', [coinc.factura_manual_id]);
+    const pdfManualViejo = coinc.pdf_path ? antes.rows[0]?.pdf_path : null;
 
     // Actualizar la factura manual con los datos oficiales del Gmail
     await client.query(`
@@ -306,6 +308,7 @@ router.post('/coincidencias/:id/aceptar', authMiddleware, async (req, res) => {
     );
 
     await client.query('COMMIT');
+    await borrarManual(pdfManualViejo); // el PDF oficial ya llegó por Gmail
     res.json({ ok: true });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -504,8 +507,8 @@ async function obtenerPdfFactura(id) {
   let buffer = null;
   let motivo = null;
 
-  // 1) Intento normal: leer del Storage
-  if (f.pdf_path) {
+  // 1) Intento normal: leer del Storage (los PDF de Gmail ya no se guardan: van directo al correo)
+  if (f.pdf_path && !(f.gmail_message_id && esArchivoGmail(f.pdf_path))) {
     try {
       buffer = await descargarArchivo(f.pdf_path);
     } catch (err) {
@@ -518,7 +521,7 @@ async function obtenerPdfFactura(id) {
         motivo = `Error leyendo el PDF en Storage${err.statusCode ? ` (HTTP ${err.statusCode})` : ''}.`;
       }
     }
-  } else {
+  } else if (!f.pdf_path) {
     motivo = 'La factura no tiene PDF asociado (el correo no lo traía o falló su subida al sincronizar).';
   }
 
@@ -623,7 +626,9 @@ router.get('/:id/xml', authMiddleware, async (req, res) => {
     const result = await pool.query('SELECT xml_path, xml_raw, numero FROM facturas WHERE id = $1', [id]);
     if (!result.rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
     let buffer = null;
-    if (result.rows[0].xml_path) {
+    // El XML está completo en la base (xml_raw): se usa primero y no se gasta Storage
+    if (result.rows[0].xml_raw) buffer = Buffer.from(result.rows[0].xml_raw, 'utf-8');
+    if (!buffer && result.rows[0].xml_path) {
       try { buffer = await descargarArchivo(result.rows[0].xml_path); }
       catch (err) { console.error(`❌ XML factura ${id} (${result.rows[0].xml_path}):`, err.message); }
     }

@@ -2,7 +2,7 @@ const { google } = require('googleapis');
 const AdmZip = require('adm-zip');
 const { pool } = require('../models/db');
 const { parsearXMLDIAN } = require('./xmlParser');
-const { subirArchivo } = require('./storageService');
+const { subirArchivo, GUARDAR_GMAIL } = require('./storageService');
 
 const getOAuth2Client = () => {
   return new google.auth.OAuth2(
@@ -223,7 +223,7 @@ const procesarMensaje = async (gmail, messageId) => {
     return false;
   }
 
-  if (pdfBuffer && pdfFilename) {
+  if (pdfBuffer && pdfFilename && GUARDAR_GMAIL) {
     try {
       await subirArchivo(pdfBuffer, pdfFilename, 'application/pdf');
       console.log(`☁️ PDF subido: ${pdfFilename}`);
@@ -232,7 +232,7 @@ const procesarMensaje = async (gmail, messageId) => {
       pdfFilename = null;
     }
   }
-  if (xmlContent && xmlFilename) {
+  if (xmlContent && xmlFilename && GUARDAR_GMAIL) {
     try {
       await subirArchivo(Buffer.from(xmlContent, 'utf-8'), xmlFilename, 'application/xml');
       console.log(`☁️ XML subido: ${xmlFilename}`);
@@ -262,11 +262,11 @@ const procesarMensaje = async (gmail, messageId) => {
     // si fusiona los datos (Aceptar) o la deja como está (Ignorar).
     console.log(`ℹ️ Factura ${datos.numero} ya existe como manual — guardando coincidencia pendiente`);
 
-    if (pdfBuffer && pdfFilename) {
+    if (pdfBuffer && pdfFilename && GUARDAR_GMAIL) {
       try { await subirArchivo(pdfBuffer, pdfFilename, 'application/pdf'); }
       catch (err) { console.error('Error subiendo PDF coincidencia:', err.message); pdfFilename = null; }
     }
-    if (xmlContent && xmlFilename) {
+    if (xmlContent && xmlFilename && GUARDAR_GMAIL) {
       try { await subirArchivo(Buffer.from(xmlContent, 'utf-8'), xmlFilename, 'application/xml'); }
       catch (err) { console.error('Error subiendo XML coincidencia:', err.message); xmlFilename = null; }
     }
@@ -403,6 +403,7 @@ const recuperarPdfDesdeGmail = async (messageId) => {
   const pdfFilename = `${messageId}_${nombreBase}`;
   // Si Storage falla (p. ej. cuota excedida), igual se devuelve el PDF para
   // entregarlo al usuario; solo no queda guardado (filename = null).
+  if (!GUARDAR_GMAIL) return { filename: pdfFilename, buffer: encontrado.data }; // se lee del correo, no se guarda
   try {
     await subirArchivo(encontrado.data, pdfFilename, 'application/pdf');
     console.log(`☁️ PDF recuperado desde Gmail: ${pdfFilename}`);

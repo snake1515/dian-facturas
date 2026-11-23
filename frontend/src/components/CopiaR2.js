@@ -12,6 +12,7 @@ export default function CopiaR2() {
   const [vista, setVista] = useState(null);
   const [estado, setEstado] = useState(null);
   const [cargando, setCargando] = useState(false);
+  const [limpieza, setLimpieza] = useState(null);
   const timer = useRef(null);
 
   const consultar = async () => {
@@ -48,6 +49,15 @@ export default function CopiaR2() {
     } catch (err) { alert(err.response?.data?.error || err.message); }
   };
 
+  const limpiarGmail = async () => {
+    const txt = window.prompt('Se borrarán de R2 los PDF y XML que llegaron por Gmail.\nSe pueden volver a abrir: el PDF se trae del correo y el XML está en la base.\nLos PDF subidos a mano y los soportes de Préstamos NO se tocan.\n\nEscriba BORRAR para confirmar:');
+    if (txt !== 'BORRAR') return;
+    setCargando(true);
+    try { const r = await api.post('/storage-admin/r2/limpiar-gmail', { confirmacion: 'BORRAR' }, { timeout: 0 }); setLimpieza(r.data); }
+    catch (err) { alert(err.response?.data?.error || err.message); }
+    finally { setCargando(false); }
+  };
+
   const enCurso = estado && EN_CURSO.includes(estado.fase);
   const hechos = (estado?.copiados || 0) + (estado?.saltados || 0) + (estado?.errores?.length || 0) + (estado?.erroresExtra || 0);
   const pct = estado?.total ? Math.round((hechos / estado.total) * 100) : 0;
@@ -65,13 +75,23 @@ export default function CopiaR2() {
 
       {vista && (
         <div style={caja}>
-          <div style={{ fontSize: 13, color: '#e2e8f0', marginBottom: 8 }}><b>{vista.archivos}</b> archivos · <b>{mb(vista.bytes)}</b></div>
+          <div style={{ fontSize: 13, color: '#e2e8f0', marginBottom: 8 }}><b>{vista.archivos}</b> archivos · <b>{mb(vista.bytes)}</b> por copiar</div>
+          {vista.gmail?.archivos > 0 && <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>No se copian {vista.gmail.archivos} archivos de Gmail ({mb(vista.gmail.bytes)}): se leen del correo y de la base.</div>}
           <table style={{ fontSize: 12, color: '#cbd5e1', marginBottom: 10 }}><tbody>
             {Object.entries(vista.porCarpeta).sort((a, b) => b[1].bytes - a[1].bytes).map(([c, v]) => (
               <tr key={c}><td style={{ paddingRight: 12 }}>{c}</td><td style={{ paddingRight: 12 }}>{v.n} archivos</td><td>{mb(v.bytes)}</td></tr>
             ))}
           </tbody></table>
           <button onClick={iniciar} disabled={enCurso || !vista.archivos} style={btn('#16a34a')}>☁️ Copiar todo a R2</button>
+        </div>
+      )}
+
+      <button onClick={limpiarGmail} disabled={cargando || enCurso} style={{ ...btn('#b45309'), marginBottom: 12, marginLeft: 8 }}>
+        🧹 Quitar de R2 los archivos de Gmail
+      </button>
+      {limpieza && (
+        <div style={{ ...caja, fontSize: 12, color: '#cbd5e1' }}>
+          Borrados de R2: <b>{limpieza.borrados}</b> ({mb(limpieza.bytesLiberados)}) · Quedan: <b>{limpieza.quedan}</b> archivos ({mb(limpieza.bytesQuedan)})
         </div>
       )}
 

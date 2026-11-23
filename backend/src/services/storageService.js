@@ -181,4 +181,17 @@ const eliminarArchivo = async (filename) => {
   try { await eliminarSupabase(filename); } catch (err) { /* puede no existir o estar bloqueado */ }
 };
 
-module.exports = { subirArchivo, descargarArchivo, eliminarArchivo, R2_ACTIVO };
+// Los PDF y XML que llegan por Gmail NO se guardan en el Storage: el PDF se lee del correo
+// cuando se necesita y el XML está en la base (xml_raw). Así el almacenamiento no se llena.
+// Para volver a guardarlos, poner GUARDAR_ARCHIVOS_GMAIL=1 en Render.
+const GUARDAR_GMAIL = process.env.GUARDAR_ARCHIVOS_GMAIL === '1';
+const esArchivoGmail = (ruta) => !!ruta && !String(ruta).startsWith('manual_') && /^[0-9a-f]{16}_/i.test(String(ruta).split('/')[0]);
+
+// Borra un archivo subido a mano (manual_…) cuando ya llegó la factura oficial por Gmail
+const borrarManual = async (ruta) => {
+  if (!ruta || !String(ruta).startsWith('manual_')) return;
+  try { await eliminarArchivo(ruta); console.log(`🗑️ PDF manual borrado (ya llegó por Gmail): ${ruta}`); }
+  catch (err) { console.error(`⚠️ No se pudo borrar ${ruta}:`, err.message); }
+};
+
+module.exports = { subirArchivo, descargarArchivo, eliminarArchivo, R2_ACTIVO, GUARDAR_GMAIL, esArchivoGmail, borrarManual };
