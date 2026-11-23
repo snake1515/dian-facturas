@@ -591,7 +591,7 @@ router.get('/reasignadas/zip', authMiddleware, async (req, res) => {
       cond.push(`(COALESCE(f.categoria_manual, pc.categoria) = $${vals.length} OR COALESCE(f.categoria_manual, pc.categoria) IS NULL)`);
     }
     const { rows } = await pool.query(`
-      SELECT f.id, f.numero, f.fecha_emision, f.cufe, f.proveedor_nombre, f.proveedor_nit, f.total
+      SELECT f.id, f.numero, f.fecha_emision, f.cufe, f.proveedor_nombre, f.proveedor_nit, f.total, f.notas
       FROM facturas f
       LEFT JOIN proveedores pc ON pc.nit = TRIM(f.proveedor_nit)
       WHERE ${cond.join(' AND ')}
@@ -631,20 +631,21 @@ router.get('/reasignadas/zip', authMiddleware, async (req, res) => {
       { header: 'Proveedor', key: 'proveedor', width: 40 },
       { header: 'NIT', key: 'nit', width: 14 },
       { header: 'Valor', key: 'valor', width: 16, style: { numFmt: '"$" #,##0' } },
+      { header: 'Notas', key: 'notas', width: 45, style: { alignment: { wrapText: true, vertical: 'top' } } },
       { header: 'Archivo PDF', key: 'archivo', width: 40 },
     ];
     for (const f of rows) {
       ws.addRow({
         numero: f.numero, fecha: f.fecha_emision ? new Date(f.fecha_emision) : null, cufe: f.cufe || '',
         proveedor: f.proveedor_nombre || '', nit: f.proveedor_nit || '', valor: Number(f.total) || 0,
-        archivo: archivoDe[f.id] || 'SIN PDF',
+        notas: f.notas || '', archivo: archivoDe[f.id] || 'SIN PDF',
       });
     }
     const tot = ws.addRow({ proveedor: 'TOTAL', valor: rows.reduce((a, f) => a + (Number(f.total) || 0), 0) });
     tot.font = { bold: true };
     ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC2410C' } };
-    ws.autoFilter = { from: 'A1', to: 'G1' };
+    ws.autoFilter = { from: 'A1', to: 'H1' };
     ws.views = [{ state: 'frozen', ySplit: 1 }];
     zip.addFile('REASIGNADAS.xlsx', Buffer.from(await wb.xlsx.writeBuffer()));
     if (faltantes.length) {
