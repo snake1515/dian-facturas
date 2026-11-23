@@ -59,6 +59,7 @@ router.get('/', authMiddleware, async (req, res) => {
       r.gestionMes = (await pool.query(`
         SELECT ${CAT} AS cat,
           CASE
+            WHEN COALESCE(f.es_contrato, false) THEN 'contrato'
             WHEN ${SIN_GESTION} THEN 'sin_gestion'
             WHEN ${POR_GESTIONAR} THEN 'cruzada_nc'
             WHEN f.estado_contable = 'aprobado' THEN 'aprobado'

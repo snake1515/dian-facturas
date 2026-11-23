@@ -416,6 +416,7 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
         <select style={{ ...inputSt, flex: '0 1 170px' }} value={filterEstadoContable} onChange={e => setFilterEstadoContable(e.target.value)}>
           <option value="">Todo estado contable</option>
           {ESTADOS_CONTABLES.map(e => <option key={e.value} value={e.value}>{e.label}</option>)}
+          <option value="contrato">Contrato</option>
         </select>
         {puede.eliminarFacturas && selected.size > 0 && (
           <button style={btnDanger} onClick={handleEliminarSeleccionados}>🗑 Eliminar ({selected.size})</button>

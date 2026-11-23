@@ -32,9 +32,13 @@ router.get('/', authMiddleware, async (req, res) => {
       valores.push(estado);
     }
 
-    if (estado_contable) {
+    if (estado_contable === 'contrato') {
+      condiciones.push('COALESCE(f.es_contrato, false) = true');
+    } else if (estado_contable) {
       condiciones.push(`f.estado_contable = $${i++}`);
       valores.push(estado_contable);
+      // Un contrato ya cuenta como gestionado: no aparece en «Por gestionar»
+      if (estado_contable === 'por_gestionar') condiciones.push('COALESCE(f.es_contrato, false) = false');
     }
 
     if (origen === 'pdf_manual_sin_pdf') {
