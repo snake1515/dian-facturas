@@ -51,6 +51,31 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
   const { puede, isAdmin } = useAuth();
   const location = useLocation();
   const nombreCategoria = categoria === 'administrativa' ? 'administrativas' : 'obra';
+  const [bajandoReasig, setBajandoReasig] = useState(false);
+  const descargarReasignadas = async () => {
+    setBajandoReasig(true);
+    try {
+      const base = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+      const res = await fetch(`${base}/facturas/reasignadas/zip?tipo=${tipo}&categoria=${categoria}`,
+        { headers: { Authorization: 'Bearer ' + localStorage.getItem('token') } });
+      if (!res.ok) {
+        let msg = 'No se pudo armar el ZIP';
+        try { const j = await res.json(); if (j?.error) msg = j.error; } catch (e) {}
+        alert(msg); return;
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename="([^"]+)"/i);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = m ? m[1] : `reasignadas_${nombreCategoria}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      const falt = Number(res.headers.get('X-Pdf-Faltantes') || 0);
+      if (falt) alert(`ZIP descargado. ${falt} factura(s) no tenían PDF disponible: quedan marcadas en el Excel y en NO_INCLUIDAS.txt.`);
+    } catch (err) { alert('Error al descargar: ' + err.message); }
+    finally { setBajandoReasig(false); }
+  };
   // La columna notas_infraestructura se llama "Notas almacén" en las pestañas administrativas
   const etiquetaNotasInfra = categoria === 'administrativa' ? 'Notas almacén' : 'Notas infraestructura';
   const [facturas, setFacturas] = useState([]);
@@ -411,6 +436,12 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
         <button style={btnGhost} onClick={() => setModal('exportar')} title="Descargar reporte Excel">
           📥 Exportar
         </button>
+        {tipo === 'FE' && (
+          <button style={{ ...btnGhost, ...(bajandoReasig ? { color: '#fb923c' } : {}) }} onClick={descargarReasignadas} disabled={bajandoReasig}
+            title="ZIP con los PDF de todas las facturas reasignadas y un Excel con número, fecha, CUFE, proveedor y valor">
+            {bajandoReasig ? '⏳ Armando ZIP…' : '↪ Reasignadas (ZIP)'}
+          </button>
+        )}
       </div>
 
       {/* Tabla */}

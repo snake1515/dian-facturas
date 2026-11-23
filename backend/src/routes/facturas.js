@@ -577,6 +577,93 @@ router.get('/:id/pdf', authMiddleware, async (req, res) => {
   }
 });
 
+// ── GET /api/facturas/reasignadas/zip?tipo=FE&categoria=obra ────────────────────
+// ZIP con el PDF de cada factura reasignada + REASIGNADAS.xlsx (número, fecha, CUFE, proveedor, valor).
+// Las que no tengan PDF disponible quedan en el Excel marcadas y en NO_INCLUIDAS.txt.
+router.get('/reasignadas/zip', authMiddleware, async (req, res) => {
+  try {
+    const { tipo, categoria } = req.query;
+    const cond = ["f.estado_contable = 'reasignada'"];
+    const vals = [];
+    if (tipo) { vals.push(tipo); cond.push(`f.tipo = $${vals.length}`); }
+    if (categoria === 'obra' || categoria === 'administrativa') {
+      vals.push(categoria);
+      cond.push(`(COALESCE(f.categoria_manual, pc.categoria) = $${vals.length} OR COALESCE(f.categoria_manual, pc.categoria) IS NULL)`);
+    }
+    const { rows } = await pool.query(`
+      SELECT f.id, f.numero, f.fecha_emision, f.cufe, f.proveedor_nombre, f.proveedor_nit, f.total
+      FROM facturas f
+      LEFT JOIN proveedores pc ON pc.nit = TRIM(f.proveedor_nit)
+      WHERE ${cond.join(' AND ')}
+      ORDER BY f.fecha_emision ASC, f.id ASC`, vals);
+    if (!rows.length) return res.status(404).json({ error: 'No hay facturas reasignadas para descargar' });
+    if (rows.length > 400) return res.status(400).json({ error: `Hay ${rows.length} facturas reasignadas; el máximo por ZIP es 400` });
+
+    const AdmZip = require('adm-zip');
+    const ExcelJS = require('exceljs');
+    const zip = new AdmZip();
+    const usados = new Set();
+    const faltantes = [];
+    const archivoDe = {};
+    for (let i = 0; i < rows.length; i += 3) {
+      const lote = rows.slice(i, i + 3);
+      const res3 = await Promise.all(lote.map(async (f) => {
+        try { return { f, ...(await obtenerPdfFactura(f.id)) }; }
+        catch (e) { return { f, motivo: e.message }; }
+      }));
+      for (const r of res3) {
+        const base = nombreDescarga(r.f.numero, r.f.proveedor_nombre, r.f.id, 'pdf').replace(/\.pdf$/, '');
+        if (!r.buffer) { faltantes.push(`${base}: ${r.motivo}`); continue; }
+        let nombre = `${base}.pdf`;
+        for (let n = 2; usados.has(nombre.toUpperCase()); n++) nombre = `${base}_${n}.pdf`;
+        usados.add(nombre.toUpperCase());
+        archivoDe[r.f.id] = nombre;
+        zip.addFile(nombre, r.buffer);
+      }
+    }
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Reasignadas');
+    ws.columns = [
+      { header: 'N° factura', key: 'numero', width: 18 },
+      { header: 'Fecha', key: 'fecha', width: 12, style: { numFmt: 'dd/mm/yyyy' } },
+      { header: 'CUFE', key: 'cufe', width: 50 },
+      { header: 'Proveedor', key: 'proveedor', width: 40 },
+      { header: 'NIT', key: 'nit', width: 14 },
+      { header: 'Valor', key: 'valor', width: 16, style: { numFmt: '"$" #,##0' } },
+      { header: 'Archivo PDF', key: 'archivo', width: 40 },
+    ];
+    for (const f of rows) {
+      ws.addRow({
+        numero: f.numero, fecha: f.fecha_emision ? new Date(f.fecha_emision) : null, cufe: f.cufe || '',
+        proveedor: f.proveedor_nombre || '', nit: f.proveedor_nit || '', valor: Number(f.total) || 0,
+        archivo: archivoDe[f.id] || 'SIN PDF',
+      });
+    }
+    const tot = ws.addRow({ proveedor: 'TOTAL', valor: rows.reduce((a, f) => a + (Number(f.total) || 0), 0) });
+    tot.font = { bold: true };
+    ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC2410C' } };
+    ws.autoFilter = { from: 'A1', to: 'G1' };
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    zip.addFile('REASIGNADAS.xlsx', Buffer.from(await wb.xlsx.writeBuffer()));
+    if (faltantes.length) {
+      zip.addFile('NO_INCLUIDAS.txt', Buffer.from(
+        `Facturas sin PDF disponible (${faltantes.length}):\r\n\r\n${faltantes.join('\r\n')}\r\n`, 'utf8'));
+    }
+
+    const hoy = new Date().toISOString().slice(0, 10);
+    const cat = categoria === 'administrativa' ? 'administrativas' : categoria === 'obra' ? 'obra' : 'todas';
+    res.setHeader('X-Pdf-Incluidos', String(usados.size));
+    res.setHeader('X-Pdf-Faltantes', String(faltantes.length));
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Pdf-Incluidos, X-Pdf-Faltantes');
+    enviarAdjunto(res, `reasignadas_${cat}_${hoy}.zip`, 'application/zip', zip.toBuffer());
+  } catch (err) {
+    console.error('Error ZIP reasignadas:', err);
+    res.status(500).json({ error: 'Error generando el ZIP de reasignadas' });
+  }
+});
+
 // ── POST /api/facturas/zip-pdfs ───────────────────────────────────────────────
 // Descarga varios PDF en un solo ZIP. Body: { items: [{ id, nombre }], nombreZip }
 // Cada PDF se nombra con "nombre" (en el Cruce DIAN: el N° DIAN). Las que no
