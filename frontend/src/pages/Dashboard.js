@@ -14,6 +14,7 @@ const ETAPAS = [
   { id: 'en_proceso',  label: 'En proceso',  color: '#93c5fd' },
   { id: 'ingresada',   label: 'Ingresada (OC / caja menor)', color: '#3b82f6' },
   { id: 'aprobado',    label: 'Aprobada',    color: '#1d4ed8' },
+  { id: 'reasignada',  label: 'Reasignada',  color: '#fb923c' },
 ];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 

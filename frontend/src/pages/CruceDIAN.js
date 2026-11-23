@@ -14,6 +14,7 @@ const ESTADOS_CONTABLES_MAP = {
   ingresado_caja_menor: 'Ingresado por caja menor',
   ingresado_orden_compra: 'Ingresado por orden de compra',
   aprobado: 'Aprobado',
+  reasignada: 'Reasignada',
 };
 
 const estadoContableInfo = (f) => {

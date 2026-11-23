@@ -44,6 +44,7 @@ const ESTADOS_CONTABLES = [
   { value: 'ingresado_caja_menor',      label: 'Ingresado por caja menor',   color: '#a78bfa', bg: '#2e1065' },
   { value: 'ingresado_orden_compra',    label: 'Ingresado por orden de compra', color: '#f472b6', bg: '#4a044e' },
   { value: 'aprobado',                  label: 'Aprobado',                   color: '#4ade80', bg: '#052e16' },
+  { value: 'reasignada',                label: 'Reasignada',                 color: '#fb923c', bg: '#431407' },
 ];
 
 export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
@@ -938,6 +939,24 @@ function BarraProgreso({ factura, onUpdate, canEdit, canElegirFlujo, canDevolver
     );
   }
 
+  // ── Reasignada: cuenta como gestionada ──────────────────────────────────
+  if (estado === 'reasignada') {
+    return (
+      <div style={{ display:'flex', alignItems:'center', gap:6 }} onClick={e => e.stopPropagation()}>
+        <span style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, padding:'3px 10px', borderRadius:20, background:'#431407', color:'#fb923c' }}>
+          ↪ Reasignada
+        </span>
+        {(canElegirFlujo || canEdit) && (
+          <button onClick={async () => { try { await actualizarEstadoContable(factura.id, 'por_gestionar', ''); await onUpdate(); } catch { alert('Error al actualizar'); } }}
+            title="Quitar «Reasignada» y volver a Por gestionar"
+            style={{ fontSize:10, padding:'1px 6px', borderRadius:4, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'var(--t-text-muted)', cursor:'pointer' }}>
+            ↩ Deshacer
+          </button>
+        )}
+      </div>
+    );
+  }
+
   const esCM = factura.flujo_tipo === 'caja_menor' || estado === 'ingresado_caja_menor';
   const flujo = esCM ? FLUJO_CM : FLUJO_OC;
   const sinFlujo = estado === 'por_gestionar' && !factura.flujo_tipo;
@@ -982,6 +1001,10 @@ function BarraProgreso({ factura, onUpdate, canEdit, canElegirFlujo, canDevolver
         <button onClick={() => avanzar('ingresado_caja_menor', 'caja_menor')}
           style={{ fontSize:12, padding:'5px 11px', borderRadius:6, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'#a78bfa', cursor:'pointer', fontWeight:500 }}>
           💵 Caja menor
+        </button>
+        <button onClick={() => avanzar('reasignada', '')} title="La factura se reasignó (cuenta como gestionada)"
+          style={{ fontSize:12, padding:'5px 11px', borderRadius:6, border:'0.5px solid var(--t-border)', background:'var(--t-bg-card)', color:'#fb923c', cursor:'pointer', fontWeight:500 }}>
+          ↪ Reasignada
         </button>
       </div>
     );
@@ -1082,7 +1105,7 @@ function ExportModal({ facturas, tipo, etiquetaNotasInfra = 'Notas infraestructu
     const ESTADOS = {
       por_gestionar: 'Por gestionar', recibio_inventarios: 'Recibió inventarios',
       recibio_contabilidad: 'Recibió contabilidad', ingresado_caja_menor: 'Ingresado por caja menor',
-      ingresado_orden_compra: 'Ingresado por orden de compra', aprobado: 'Aprobado',
+      ingresado_orden_compra: 'Ingresado por orden de compra', aprobado: 'Aprobado', reasignada: 'Reasignada',
     };
     const estadoContableLabel = (f) => {
       if (f.es_contrato) return 'Contrato';

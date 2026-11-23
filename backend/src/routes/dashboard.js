@@ -62,6 +62,7 @@ router.get('/', authMiddleware, async (req, res) => {
             WHEN ${SIN_GESTION} THEN 'sin_gestion'
             WHEN ${POR_GESTIONAR} THEN 'cruzada_nc'
             WHEN f.estado_contable = 'aprobado' THEN 'aprobado'
+            WHEN f.estado_contable = 'reasignada' THEN 'reasignada'
             WHEN f.estado_contable IN ('ingresado_orden_compra', 'ingresado_caja_menor') THEN 'ingresada'
             ELSE 'en_proceso'
           END AS etapa,
