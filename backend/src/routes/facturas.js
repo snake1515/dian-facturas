@@ -508,7 +508,7 @@ const enviarAdjunto = (res, filename, tipo, buffer) => {
   const ascii = filename.replace(/[^\x20-\x7e]/g, '_');
   res.setHeader('Content-Type', tipo);
   res.setHeader('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+  if (!res.getHeader('Access-Control-Expose-Headers')?.toString().includes('X-Pdf')) res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
   res.setHeader('Content-Length', buffer.length);
   res.send(buffer);
 };

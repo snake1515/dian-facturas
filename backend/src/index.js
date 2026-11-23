@@ -36,7 +36,7 @@ app.use(cors({
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  exposedHeaders: ['Content-Disposition'],
+  exposedHeaders: ['Content-Disposition', 'X-Pdf-Incluidos', 'X-Pdf-Faltantes'],
 }));
 
 // Headers adicionales de seguridad
