@@ -102,6 +102,13 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
   const [syncRange, setSyncRange] = useState({ desde: '', hasta: '' });
 
   const [hoveredRow, setHoveredRow] = useState(null);
+  // En celular (< 768 px) la tabla se muestra como tarjetas
+  const [esMovil, setEsMovil] = useState(() => window.innerWidth < 768);
+  useEffect(() => {
+    const h = () => setEsMovil(window.innerWidth < 768);
+    window.addEventListener('resize', h);
+    return () => window.removeEventListener('resize', h);
+  }, []);
   const [subiendoPdf, setSubiendoPdf] = useState(false); // ventana de subida de PDF abierta
   const [filterOrigen, setFilterOrigen] = useState('');
   const [filterResponsable, setFilterResponsable] = useState('');
@@ -453,6 +460,78 @@ export default function Facturas({ tipo = 'FE', categoria = 'obra' }) {
           <div style={{ textAlign: 'center', padding: 48, color: 'var(--t-text-muted)' }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>📄</div>
             <p>No hay {tipo === 'FE' ? 'facturas' : 'notas crédito'} registradas</p>
+          </div>
+        ) : esMovil ? (
+          /* ── Vista celular: una tarjeta por factura ── */
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {sortedFacturas.map(f => {
+              const filaRoja = docIngresoDuplicado(f.documento_ingreso);
+              const etiqueta = { fontSize: 10, color: 'var(--t-text-muted)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3, fontWeight: 600 };
+              const btnMovil = { ...iconBtn, flex: 1, padding: '9px 0', fontSize: 12, whiteSpace: 'nowrap', textAlign: 'center', border: '1px solid var(--t-border)', background: 'var(--t-bg-input)', color: 'var(--t-text-secondary)', borderRadius: 8 };
+              return (
+                <div key={f.id} id={`fila-${f.id}`}
+                  style={{ padding: '14px 14px 12px', borderBottom: '1px solid var(--t-border)',
+                    background: filaRoja ? 'rgba(239,68,68,.10)' : selected.has(f.id) ? 'rgba(59,130,246,.08)' : 'transparent',
+                    borderLeft: filaRoja ? '3px solid #ef4444' : '3px solid transparent' }}>
+                  {/* Encabezado: toca para ver el detalle */}
+                  <div onClick={() => openModal('ver', f)} style={{ cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 600, color: 'var(--t-text-primary)' }}>{f.numero}</span>
+                          {estadoBadge(f)}
+                        </div>
+                        <div style={{ fontWeight: 600, fontSize: 14, marginTop: 4, color: 'var(--t-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.proveedor_nombre}</div>
+                        <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>NIT {f.proveedor_nit} · {fmtDate(f.fecha_emision)}{f.forma_pago ? ` · ${f.forma_pago}` : ''}{f.origen === 'pdf_manual' ? ' · 📄 Manual' : ''}</div>
+                      </div>
+                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 15, color: parseFloat(f.total) < 0 ? '#f87171' : 'var(--t-text-primary)', whiteSpace: 'nowrap' }}>{fmt(f.total)}</div>
+                        <div style={{ fontSize: 11, color: '#60a5fa', marginTop: 2 }}>Ver detalle ›</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 4 }}>
+                    <CategoriaChip factura={f} onUpdate={cargar} canMove={puede.gestionarProveedores} />
+                  </div>
+
+                  {/* Gestión */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+                    <div>
+                      <div style={etiqueta}>Responsable</div>
+                      <ResponsableSelect factura={f} contactos={contactos} onUpdate={cargar} canEdit={puede.editarResponsables !== false} />
+                    </div>
+                    <div>
+                      <div style={etiqueta}>Doc. ingreso</div>
+                      <DocIngresoInput factura={f} onUpdate={cargar} canEdit={puede.editarDocIngreso} />
+                      {filaRoja && <span style={{ fontSize: 10, color: '#f87171', display: 'block', marginTop: 2 }}>⚠ duplicado</span>}
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <div style={etiqueta}>Estado contable</div>
+                    <BarraProgreso factura={f} onUpdate={cargar} canEdit={puede.editarEstadoContable} canElegirFlujo={puede.elegirFlujo} canDevolver={puede.devolverEstado} esCruzada={tipo === 'FE' && !!f.tiene_nc} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+                    <div>
+                      <div style={etiqueta}>Notas</div>
+                      <NotasInput factura={f} onUpdate={cargar} canEdit={puede.editarNotas} />
+                    </div>
+                    <div>
+                      <div style={etiqueta}>{etiquetaNotasInfra}</div>
+                      <NotasInfraInput factura={f} onUpdate={cargar} canEdit={puede.editarNotasInfraestructura} etiqueta={etiquetaNotasInfra} />
+                    </div>
+                  </div>
+
+                  {/* Acciones */}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+                    <button style={btnMovil} onClick={() => descargarArchivo(f.id, 'pdf')}>📄 PDF</button>
+                    <button style={btnMovil} onClick={() => descargarArchivo(f.id, 'xml')}>📋 XML</button>
+                    <button style={btnMovil} onClick={() => openModal('reenviar', f)}>📤 Reenviar</button>
+                    <button style={btnMovil} onClick={() => openModal('responsables', f)}>👤</button>
+                    {puede.eliminarFacturas && <button style={{ ...btnMovil, flex: '0 0 44px', color: '#f87171' }} onClick={() => handleEliminar(f.id)}>🗑</button>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
