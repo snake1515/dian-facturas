@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import ArgosLogo from '../components/ArgosLogo';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
@@ -29,10 +30,10 @@ export default function Login() {
     <div style={s.wrap}>
       <div style={s.card}>
         <div style={s.logo}>
-          <div style={s.logoIcon}>FE</div>
+          <ArgosLogo size={42} />
           <div>
-            <div style={s.logoTitle}>FacturaDIAN</div>
-            <div style={s.logoSub}>Gestión de facturas electrónicas</div>
+            <div style={{ ...s.logoTitle, letterSpacing: '.12em' }}>ARGOS</div>
+            <div style={s.logoSub}>Control de facturas e inventario</div>
           </div>
         </div>
         <form onSubmit={handleSubmit}>

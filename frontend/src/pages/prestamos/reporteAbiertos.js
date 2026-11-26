@@ -243,7 +243,7 @@ function agregarTablaDinamica(bytes, o) {
   const nRef = o.filas.length + 1;
   const lastCol = colLetra(o.cols.length - 1);
   const cacheDef = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<pivotCacheDefinition xmlns="${MAIN}" xmlns:r="${REL}" r:id="rId1" refreshOnLoad="1" refreshedBy="FacturaDIAN" refreshedDate="${(Date.now() / 86400000 + 25569).toFixed(6)}" createdVersion="6" refreshedVersion="6" minRefreshableVersion="3" recordCount="${o.filas.length}"><cacheSource type="worksheet"><worksheetSource ref="A1:${lastCol}${nRef}" sheet="${esc(o.hojaDatos)}"/></cacheSource><cacheFields count="${o.cols.length}">${cacheFields}</cacheFields></pivotCacheDefinition>`;
+<pivotCacheDefinition xmlns="${MAIN}" xmlns:r="${REL}" r:id="rId1" refreshOnLoad="1" refreshedBy="Argos" refreshedDate="${(Date.now() / 86400000 + 25569).toFixed(6)}" createdVersion="6" refreshedVersion="6" minRefreshableVersion="3" recordCount="${o.filas.length}"><cacheSource type="worksheet"><worksheetSource ref="A1:${lastCol}${nRef}" sheet="${esc(o.hojaDatos)}"/></cacheSource><cacheFields count="${o.cols.length}">${cacheFields}</cacheFields></pivotCacheDefinition>`;
   const records = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <pivotCacheRecords xmlns="${MAIN}" xmlns:r="${REL}" count="${o.filas.length}">${o.filas.map(f => '<r>' + f.map((v, ci) => numericos.has(ci) ? `<n v="${Number(v) || 0}"/>` : `<x v="${idx[ci].get(String(v))}"/>`).join('') + '</r>').join('')}</pivotCacheRecords>`;
 

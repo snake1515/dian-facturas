@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ArgosLogo from './components/ArgosLogo';
 import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider, useTheme, TEMAS } from './context/ThemeContext';
@@ -76,10 +77,10 @@ function Layout({ children }) {
       transition: 'transform .25s ease',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 28, paddingLeft: 4 }}>
-        <div style={{ width: 34, height: 34, background: 'var(--t-accent)', borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, color: '#fff' }}>FE</div>
+        <ArgosLogo size={34} />
         <div>
-          <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--t-text-primary)' }}>FacturaDIAN</div>
-          <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Facturas electrónicas</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--t-text-primary)', letterSpacing: '.12em' }}>ARGOS</div>
+          <div style={{ fontSize: 11, color: 'var(--t-text-muted)' }}>Control de facturas e inventario</div>
         </div>
         {isMobile && (
           <button onClick={() => setSidebarOpen(false)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--t-text-muted)', fontSize: 20, cursor: 'pointer', lineHeight: 1 }}>✕</button>
@@ -204,8 +205,8 @@ function Layout({ children }) {
               ☰
             </button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ width: 26, height: 26, background: 'var(--t-accent)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 11, color: '#fff' }}>FE</div>
-              <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--t-text-primary)' }}>FacturaDIAN</span>
+              <ArgosLogo size={26} radius={6} />
+              <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--t-text-primary)', letterSpacing: '.12em' }}>ARGOS</span>
             </div>
           </div>
         )}
