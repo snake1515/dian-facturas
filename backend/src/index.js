@@ -32,7 +32,9 @@ app.use(helmet({
 
 // CORS
 app.use(cors({
-  origin: [process.env.FRONTEND_URL, 'http://localhost:3000'],
+  // FRONTEND_URL admite varias direcciones separadas por coma (p. ej. la nueva y la antigua
+  // mientras se hace el cambio de dirección). La primera es la principal.
+  origin: [...String(process.env.FRONTEND_URL || '').split(',').map(u => u.trim().replace(/\/+$/, '')).filter(Boolean), 'http://localhost:3000'],
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],

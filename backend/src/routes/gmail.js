@@ -3,6 +3,8 @@ const { pool } = require('../models/db');
 const { getAuthUrl, exchangeCodeForTokens, sincronizarCorreos } = require('../services/gmailService');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 
+// Primera dirección de FRONTEND_URL (puede traer varias separadas por coma)
+const frontendPrincipal = () => String(process.env.FRONTEND_URL || '').split(',')[0].trim().replace(/\/+$/, '');
 const router = express.Router();
 
 // Obtener URL de autorización Gmail
@@ -48,10 +50,10 @@ router.get('/callback', async (req, res) => {
     });
 
     // Redirigir al frontend con éxito
-    res.redirect(`${process.env.FRONTEND_URL}?gmail=conectado`);
+    res.redirect(`${frontendPrincipal()}?gmail=conectado`);
   } catch (err) {
     console.error('Error OAuth callback:', err);
-    res.redirect(`${process.env.FRONTEND_URL}?gmail=error`);
+    res.redirect(`${frontendPrincipal()}?gmail=error`);
   }
 });
 
